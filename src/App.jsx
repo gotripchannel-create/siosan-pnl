@@ -11,7 +11,8 @@ import {
   Download, Lock, Unlock, Search, AlertTriangle, TrendingUp, TrendingDown,
   Copy as CopyIcon, Check, Minus, Printer, ChevronDown, ChevronUp, Info,
   UserPlus, Truck as TruckIcon, Megaphone, ClipboardList, Banknote,
-  History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw
+  History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw,
+  RefreshCw, Link2, Unlink, FileSpreadsheet
 } from 'lucide-react';
 
 
@@ -532,61 +533,50 @@ const NAV = [
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
-function AuthScreen({ onReady }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [mode, setMode] = useState('signin');
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!supabase) return;
-    setBusy(true); setMessage('');
-    try {
-      if (mode === 'signin') {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        if (data?.session) onReady(data.session);
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        if (data?.session) onReady(data.session);
-        else setMessage('Регистрация создана. Проверьте почту и подтвердите email, затем войдите.');
-      }
-    } catch (err) {
-      setMessage(err?.message || 'Не удалось выполнить вход');
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'#F4F3EF',fontFamily:'Inter,Arial,sans-serif',padding:20}}>
-      <div style={{width:'100%',maxWidth:420,background:'#fff',border:'1px solid #E4E1D8',borderRadius:16,padding:28,boxShadow:'0 12px 40px rgba(28,35,33,.08)'}}>
-        <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:24}}>
-          <div style={{width:42,height:42,borderRadius:12,display:'grid',placeItems:'center',background:'#1F6F54',color:'#fff',fontWeight:800,fontSize:20}}>С</div>
-          <div><div style={{fontWeight:800,fontSize:20}}>СИОСАН</div><div style={{fontSize:12,color:'#5B645F'}}>Управленческий P&L · облачная версия</div></div>
-        </div>
-        <h2 style={{margin:'0 0 6px',fontSize:22}}>{mode==='signin'?'Вход':'Создать аккаунт'}</h2>
-        <p style={{margin:'0 0 20px',color:'#5B645F',fontSize:13}}>Данные хранятся в общей базе ресторана.</p>
-        <form onSubmit={submit} style={{display:'grid',gap:12}}>
-          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
-          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Пароль<input type="password" required minLength={6} value={password} onChange={e=>setPassword(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
-          {message && <div style={{padding:10,borderRadius:8,background:'#F7EEE7',color:'#8C4B22',fontSize:12}}>{message}</div>}
-          <button disabled={busy} style={{border:0,borderRadius:9,padding:'12px 14px',background:'#1F6F54',color:'#fff',fontWeight:700,cursor:'pointer'}}>{busy?'Подождите…':mode==='signin'?'Войти':'Зарегистрироваться'}</button>
-        </form>
-        <button onClick={()=>{setMode(mode==='signin'?'signup':'signin');setMessage('')}} style={{width:'100%',marginTop:12,border:0,background:'transparent',color:'#1F6F54',cursor:'pointer',fontSize:13}}>{mode==='signin'?'Нет аккаунта? Зарегистрироваться':'Уже есть аккаунт? Войти'}</button>
-      </div>
-    </div>
-  );
+async function loadAllMonths() {
+  const months = {};
+  try {
+    const listRes = await window.storage.list('siosan-month:');
+    const keys = (listRes && listRes.keys) || [];
+    for (const k of keys) {
+      try {
+        const r = await window.storage.get(k);
+        if (r && r.value) {
+          const mk = k.startsWith('siosan-month:') ? k.slice('siosan-month:'.length) : k;
+          months[mk] = JSON.parse(r.value);
+        }
+      } catch (e) { /* skip an unreadable month rather than fail the whole load */ }
+    }
+  } catch (e) { /* listing unavailable; return whatever we have (empty) */ }
+  return months;
 }
 
-export default function App() {
+// Reconciles storage with the given months object: deletes any 'siosan-month:*'
+// key not present in it, and (re)writes every month that is. Used by reset and
+// by "restore from backup" so stale months don't linger after either action.
+async function persistAllMonths(monthsObj) {
+  try {
+    const listRes = await window.storage.list('siosan-month:');
+    const existingKeys = (listRes && listRes.keys) || [];
+    const wantedKeys = new Set(Object.keys(monthsObj).map((k) => `siosan-month:${k}`));
+    for (const k of existingKeys) {
+      if (!wantedKeys.has(k)) {
+        try { await window.storage.delete(k); } catch (e) { /* ignore */ }
+      }
+    }
+  } catch (e) { /* listing failed; still try to write below */ }
+  for (const [mk, mv] of Object.entries(monthsObj)) {
+    try { await window.storage.set(`siosan-month:${mk}`, JSON.stringify(mv)); } catch (e) { /* ignore */ }
+  }
+}
+
+function CoreApp() {
   const t = todayObj();
-  const [session, setSession] = useState(undefined);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [syncError, setSyncError] = useState('');
   const [page, setPage] = useState('dashboard');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
   const [year, setYear] = useState(t.y);
   const [monthIdx, setMonthIdx] = useState(t.m);
   const [selectedDate, setSelectedDate] = useState(dateStr(t.y, t.m, Math.min(t.d, daysInMonth(t.y, t.m))));
@@ -597,100 +587,82 @@ export default function App() {
   const [months, setMonths] = useState({});
   const [auditLog, setAuditLog] = useState([]);
 
-  const saveTimer = useRef(null);
-  const cloudRowId = useRef(null);
-  const hydrated = useRef(false);
+  const metaSaveTimer = useRef(null);
+  const auditSaveTimer = useRef(null);
+  const monthSaveTimers = useRef({});
 
-  // ---- auth ----
+  // ---- load ----
+  // Storage layout: 'siosan-meta' (settings/employees/suppliers), 'siosan-audit' (log),
+  // and one 'siosan-month:<YYYY-MM>' key per month. Splitting per month means editing
+  // August doesn't rewrite (or risk clobbering, if another tab/device is open) September's data.
   useEffect(() => {
-    if (!supabase) { setSession(null); return; }
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession || null));
-    return () => sub?.subscription?.unsubscribe();
+    (async () => {
+      try {
+        let metaRes = null;
+        try { metaRes = await window.storage.get('siosan-meta'); } catch (e) { /* not found */ }
+
+        if (metaRes && metaRes.value) {
+          const meta = JSON.parse(metaRes.value);
+          setSettings(meta.settings || defaultSettings());
+          setEmployees(meta.employees || seedEmployees());
+          setSuppliers(meta.suppliers || seedSuppliers());
+
+          let auditRes = null;
+          try { auditRes = await window.storage.get('siosan-audit'); } catch (e) { /* not found */ }
+          setAuditLog(auditRes && auditRes.value ? JSON.parse(auditRes.value) : []);
+
+          setMonths(await loadAllMonths());
+        } else {
+          // Migration: an earlier version of this app stored everything under one key.
+          let legacy = null;
+          try { legacy = await window.storage.get('restaurant-pnl-data'); } catch (e) { /* not found */ }
+          if (legacy && legacy.value) {
+            const parsed = JSON.parse(legacy.value);
+            setSettings(parsed.settings || defaultSettings());
+            setEmployees(parsed.employees || seedEmployees());
+            setSuppliers(parsed.suppliers || seedSuppliers());
+            setMonths(parsed.months || {});
+            setAuditLog(parsed.auditLog || []);
+            // Write it straight into the new split layout so future saves are per-month.
+            try {
+              await window.storage.set('siosan-meta', JSON.stringify({ settings: parsed.settings || defaultSettings(), employees: parsed.employees || [], suppliers: parsed.suppliers || [] }));
+              await window.storage.set('siosan-audit', JSON.stringify(parsed.auditLog || []));
+              await persistAllMonths(parsed.months || {});
+            } catch (e) { /* best-effort; legacy key stays intact either way */ }
+          } else {
+            setEmployees(seedEmployees());
+            setSuppliers(seedSuppliers());
+          }
+        }
+      } catch (e) {
+        setEmployees(seedEmployees());
+        setSuppliers(seedSuppliers());
+      }
+      setLoaded(true);
+    })();
   }, []);
 
-  // ---- cloud load ----
+  // ---- autosave: settings/employees/suppliers (debounced, own key) ----
   useEffect(() => {
-    if (!session || !supabase) { setLoaded(false); hydrated.current = false; return; }
-    let cancelled = false;
-    (async () => {
-      setLoaded(false); setSyncError(''); hydrated.current = false;
-      try {
-        const { data: rows, error } = await supabase
-          .from('restaurant_data')
-          .select('id,data')
-          .eq('restaurant_id', RESTAURANT_ID)
-          .limit(1);
-        if (error) throw error;
-        if (cancelled) return;
-        let row = rows?.[0] || null;
-        let parsed = row?.data && Object.keys(row.data).length ? row.data : null;
-
-        // First cloud launch: migrate this browser's existing local data, if any.
-        if (!parsed) {
-          try {
-            const raw = window.localStorage.getItem('restaurant-pnl-data');
-            if (raw) parsed = JSON.parse(raw);
-          } catch (_) {}
-        }
-
-        if (parsed) {
-          setSettings(parsed.settings || defaultSettings());
-          setEmployees(parsed.employees || seedEmployees());
-          setSuppliers(parsed.suppliers || seedSuppliers());
-          setMonths(parsed.months || {});
-          setAuditLog(parsed.auditLog || []);
-        } else {
-          setSettings(defaultSettings());
-          setEmployees(seedEmployees());
-          setSuppliers(seedSuppliers());
-          setMonths({});
-          setAuditLog([]);
-        }
-
-        if (row) cloudRowId.current = row.id;
-        else {
-          const initial = parsed || { settings: defaultSettings(), employees: seedEmployees(), suppliers: seedSuppliers(), months: {}, auditLog: [] };
-          const { data: inserted, error: insErr } = await supabase
-            .from('restaurant_data')
-            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: new Date().toISOString() })
-            .select('id')
-            .single();
-          if (insErr) throw insErr;
-          cloudRowId.current = inserted.id;
-        }
-      } catch (e) {
-        setSyncError(e?.message || 'Ошибка загрузки общей базы');
-        setEmployees(seedEmployees()); setSuppliers(seedSuppliers());
-      }
-      if (!cancelled) { hydrated.current = true; setLoaded(true); }
-    })();
-    return () => { cancelled = true; };
-  }, [session?.user?.id]);
-
-  // ---- cloud autosave (debounced) ----
-  useEffect(() => {
-    if (!loaded || !hydrated.current || !session || !supabase || !cloudRowId.current) return;
+    if (!loaded) return;
     setSaving(true);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const payload = { settings, employees, suppliers, months, auditLog };
-        const { error } = await supabase
-          .from('restaurant_data')
-          .update({ data: payload, updated_at: new Date().toISOString() })
-          .eq('id', cloudRowId.current);
-        if (error) throw error;
-        // Local backup only; cloud is the source of truth.
-        window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
-        setSyncError('');
-      } catch (e) {
-        setSyncError(e?.message || 'Не удалось сохранить данные в облако');
-      }
+    if (metaSaveTimer.current) clearTimeout(metaSaveTimer.current);
+    metaSaveTimer.current = setTimeout(async () => {
+      try { await window.storage.set('siosan-meta', JSON.stringify({ settings, employees, suppliers })); } catch (e) { /* ignore */ }
       setSaving(false);
-    }, 900);
-    return () => clearTimeout(saveTimer.current);
-  }, [settings, employees, suppliers, months, auditLog, loaded, session?.user?.id]);
+    }, 700);
+    return () => clearTimeout(metaSaveTimer.current);
+  }, [settings, employees, suppliers, loaded]);
+
+  // ---- autosave: audit log (debounced, own key) ----
+  useEffect(() => {
+    if (!loaded) return;
+    if (auditSaveTimer.current) clearTimeout(auditSaveTimer.current);
+    auditSaveTimer.current = setTimeout(async () => {
+      try { await window.storage.set('siosan-audit', JSON.stringify(auditLog)); } catch (e) { /* ignore */ }
+    }, 700);
+    return () => clearTimeout(auditSaveTimer.current);
+  }, [auditLog, loaded]);
 
   const monthKey = monthKeyOf(year, monthIdx);
 
@@ -722,6 +694,12 @@ export default function App() {
     setMonths((prev) => {
       const cur = prev[monthKey] || emptyMonth(settings, null);
       const next = updater(cur);
+      if (monthSaveTimers.current[monthKey]) clearTimeout(monthSaveTimers.current[monthKey]);
+      setSaving(true);
+      monthSaveTimers.current[monthKey] = setTimeout(async () => {
+        try { await window.storage.set(`siosan-month:${monthKey}`, JSON.stringify(next)); } catch (e) { /* ignore */ }
+        setSaving(false);
+      }, 700);
       return { ...prev, [monthKey]: next };
     });
   }, [monthKey, settings]);
@@ -760,43 +738,39 @@ export default function App() {
     selectedDate, setSelectedDate, pnl, prevPnl, logAudit, auditLog, setAuditLog, goMonth, applyRevert,
   };
 
-  if (!supabase) {
-    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:COLORS.danger}}>Не настроено подключение Supabase. Проверьте VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY в Vercel.</div>;
-  }
-  if (session === undefined) {
-    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Проверка входа…</div>;
-  }
-  if (!session) return <AuthScreen onReady={setSession} />;
   if (!loaded) {
-    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Загрузка общей базы…</div>;
+    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Загрузка…</div>;
   }
 
   return (
     <div className="rp-root">
       <GlobalStyle />
-      <aside className="rp-sidebar">
+      {mobileNavOpen && <div className="rp-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
+      <aside className={`rp-sidebar ${mobileNavOpen ? 'open' : ''}`}>
         <div className="rp-brand">
           <div className="rp-brand-mark">С</div>
           <div>
             <div className="rp-brand-name">СИОСАН</div>
             <div className="rp-brand-sub">Управленческий P&L</div>
           </div>
+          <button className="rp-icon-btn rp-nav-close" onClick={() => setMobileNavOpen(false)}><X size={18} /></button>
         </div>
         <nav className="rp-nav">
           {NAV.map((n) => (
-            <button key={n.id} className={`rp-nav-item ${page === n.id ? 'active' : ''}`} onClick={() => setPage(n.id)}>
+            <button key={n.id} className={`rp-nav-item ${page === n.id ? 'active' : ''}`} onClick={() => { setPage(n.id); setMobileNavOpen(false); }}>
               <n.icon size={17} /> {n.label}
             </button>
           ))}
         </nav>
-        <div className="rp-sidebar-foot" style={{display:'grid',gap:6}}>
-          <div><span className={`rp-save-dot ${saving ? 'busy' : ''}`} />{syncError ? 'Ошибка синхронизации' : saving ? 'Сохранение…' : 'Облако синхронизировано'}</div>
-          <button onClick={() => supabase.auth.signOut()} style={{border:0,background:'transparent',padding:0,textAlign:'left',fontSize:11,color:'#8A928E',cursor:'pointer'}}>Выйти · {session.user.email}</button>
+        <div className="rp-sidebar-foot">
+          <span className={`rp-save-dot ${saving ? 'busy' : ''}`} />
+          {saving ? 'Сохранение…' : 'Сохранено'}
         </div>
       </aside>
 
       <div className="rp-main">
         <header className="rp-topbar">
+          <button className="rp-icon-btn rp-nav-hamburger" onClick={() => setMobileNavOpen(true)}><Menu size={20} /></button>
           <div className="rp-month-switch">
             <button className="rp-icon-btn" onClick={() => goMonth(-1)}><ChevronLeft size={18} /></button>
             <select className="rp-period-select" value={monthIdx} onChange={(e) => setMonthIdx(Number(e.target.value))}>
@@ -812,9 +786,12 @@ export default function App() {
               : <button className="rp-chip" onClick={() => { updateMonth((m) => ({ ...m, closed: true })); logAudit({ what: 'Месяц закрыт', month: monthKey }); }}><Unlock size={13} /> Закрыть месяц</button>}
           </div>
           <div className="rp-topbar-right">
+            <button className="rp-btn rp-btn-ghost" onClick={() => setSyncOpen(true)}><RefreshCw size={14} /> Синхронизация</button>
             <ExportMenu ctx={ctx} />
           </div>
         </header>
+
+        {syncOpen && <SyncModal ctx={ctx} onClose={() => setSyncOpen(false)} />}
 
         <main className="rp-content">
           {page === 'dashboard' && <Dashboard ctx={ctx} setPage={setPage} />}
@@ -902,7 +879,7 @@ function Dashboard({ ctx, setPage }) {
           <ResponsiveContainer width="100%" height={260}>
             <AreaChart data={dailySeries}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+              <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
               <Tooltip formatter={(v) => fmtRub(v)} />
               <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent} fill={COLORS.accent} fillOpacity={0.15} strokeWidth={2} />
@@ -915,7 +892,7 @@ function Dashboard({ ctx, setPage }) {
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={dailySeries}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+              <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
               <Tooltip formatter={(v) => fmtRub(v)} />
               <Bar dataKey="Прибыль" radius={[3, 3, 0, 0]}>
@@ -981,7 +958,7 @@ function ExpenseBreakdownTable({ pnl }) {
     ['Постоянные расходы', pnl.fixedTotal],
   ];
   return (
-    <table className="rp-table">
+    <div className="rp-table-wrap"><table className="rp-table">
       <thead><tr><th>Статья</th><th>Сумма</th><th>% от расходов</th></tr></thead>
       <tbody>
         {rows.map(([name, val]) => (
@@ -989,7 +966,7 @@ function ExpenseBreakdownTable({ pnl }) {
         ))}
         <tr className="rp-total-row"><td>Итого расходов</td><td className="rp-num">{fmtRub(pnl.totalExpenses)}</td><td /></tr>
       </tbody>
-    </table>
+    </table></div>
   );
 }
 
@@ -1021,6 +998,70 @@ function DayEntry({ ctx }) {
       days[selectedDate] = d;
       return { ...m, days };
     });
+  };
+
+  // Track focus->blur value changes so we can log a single, meaningful history
+  // entry (with a revert payload) per edit instead of one per keystroke.
+  const focusValuesRef = useRef({});
+  const trackFocus = (key, val) => { focusValuesRef.current[key] = Number(val) || 0; };
+  const trackRevenueBlur = (channelId) => {
+    const key = `rev:${channelId}`;
+    const oldVal = focusValuesRef.current[key];
+    const newVal = Number(getDay(month, selectedDate).revenue?.[channelId]) || 0;
+    if (oldVal !== undefined && oldVal !== newVal) {
+      const channelName = settings.revenueChannels.find((c) => c.id === channelId)?.name || channelId;
+      logAudit({
+        what: `Выручка изменена (${channelName})`, date: selectedDate, from: oldVal, to: newVal,
+        revert: { kind: 'revenueField', monthKey: ctx.monthKey, date: selectedDate, channelId, oldValue: oldVal, newValue: newVal },
+      });
+    }
+    delete focusValuesRef.current[key];
+  };
+  const trackCourierBlur = (field, label) => {
+    const key = `courier:${field}`;
+    const oldVal = focusValuesRef.current[key];
+    const newVal = Number(getDay(month, selectedDate).courier?.[field]) || 0;
+    if (oldVal !== undefined && oldVal !== newVal) {
+      logAudit({
+        what: `Курьер изменён (${label})`, date: selectedDate, from: oldVal, to: newVal,
+        revert: { kind: 'courierField', monthKey: ctx.monthKey, date: selectedDate, field, oldValue: oldVal, newValue: newVal },
+      });
+    }
+    delete focusValuesRef.current[key];
+  };
+  const trackPromoBlur = () => {
+    const key = 'promo:pay';
+    const oldVal = focusValuesRef.current[key];
+    const newVal = Number(getDay(month, selectedDate).promo?.pay) || 0;
+    if (oldVal !== undefined && oldVal !== newVal) {
+      logAudit({
+        what: 'Промо изменено', date: selectedDate, from: oldVal, to: newVal,
+        revert: { kind: 'promoField', monthKey: ctx.monthKey, date: selectedDate, oldValue: oldVal, newValue: newVal },
+      });
+    }
+    delete focusValuesRef.current[key];
+  };
+
+  // "Кто работал сегодня" — quick shift roster, writes straight into month.shifts
+  // (the same store the Employees→shift-grid and Payroll page already read from),
+  // so nothing needs to be duplicated or reconciled.
+  const [rosterModal, setRosterModal] = useState(null); // true (add) | employeeId (edit existing)
+  const todaysShifts = (ctx.employees || [])
+    .map((e) => ({ emp: e, hours: month.shifts?.[e.id]?.[selectedDate] }))
+    .filter((x) => x.hours !== undefined && x.hours !== null && Number(x.hours) > 0);
+  const rosterEmployeeIds = new Set(todaysShifts.map((x) => x.emp.id));
+  const availableForRoster = (ctx.employees || []).filter((e) => e.status === 'active' && !rosterEmployeeIds.has(e.id));
+
+  const setShiftHours = (employeeId, hours) => {
+    updateMonth((m) => {
+      const empShifts = { ...(m.shifts?.[employeeId] || {}) };
+      if (!hours || Number(hours) <= 0) delete empShifts[selectedDate]; else empShifts[selectedDate] = Number(hours);
+      return { ...m, shifts: { ...m.shifts, [employeeId]: empShifts } };
+    });
+  };
+  const removeFromRoster = (employeeId) => {
+    setShiftHours(employeeId, 0);
+    logAudit({ what: 'Смена сотрудника удалена', date: selectedDate });
   };
 
   const total = dayRevenueTotal(day, settings.revenueChannels);
@@ -1148,7 +1189,11 @@ function DayEntry({ ctx }) {
           <div className="rp-form-grid">
             {settings.revenueChannels.map((c) => (
               <Field key={c.id} label={c.name}>
-                <input disabled={locked} type="number" value={day.revenue?.[c.id] ?? ''} onChange={(e) => setRevenue(c.id, e.target.value)} placeholder="0" />
+                <input disabled={locked} type="number" value={day.revenue?.[c.id] ?? ''}
+                  onFocus={(e) => trackFocus(`rev:${c.id}`, e.target.value)}
+                  onChange={(e) => setRevenue(c.id, e.target.value)}
+                  onBlur={() => trackRevenueBlur(c.id)}
+                  placeholder="0" />
               </Field>
             ))}
           </div>
@@ -1159,16 +1204,32 @@ function DayEntry({ ctx }) {
           <div className="rp-card-title">Курьеры и промо</div>
           <div className="rp-form-grid">
             <Field label="Доставок за день">
-              <input disabled={locked} type="number" value={day.courier?.deliveries ?? ''} onChange={(e) => setCourier('deliveries', Number(e.target.value))} placeholder="0" />
+              <input disabled={locked} type="number" value={day.courier?.deliveries ?? ''}
+                onFocus={(e) => trackFocus('courier:deliveries', e.target.value)}
+                onChange={(e) => setCourier('deliveries', Number(e.target.value))}
+                onBlur={() => trackCourierBlur('deliveries', 'доставок')}
+                placeholder="0" />
             </Field>
             <Field label="Ставка курьера за день">
-              <input disabled={locked} type="number" value={day.courier?.pay ?? ''} onChange={(e) => setCourier('pay', Number(e.target.value))} placeholder="0" />
+              <input disabled={locked} type="number" value={day.courier?.pay ?? ''}
+                onFocus={(e) => trackFocus('courier:pay', e.target.value)}
+                onChange={(e) => setCourier('pay', Number(e.target.value))}
+                onBlur={() => trackCourierBlur('pay', 'ставка курьера')}
+                placeholder="0" />
             </Field>
             <Field label="Пробег курьера, км">
-              <input disabled={locked} type="number" value={day.courier?.km ?? ''} onChange={(e) => setCourier('km', Number(e.target.value))} placeholder="0" />
+              <input disabled={locked} type="number" value={day.courier?.km ?? ''}
+                onFocus={(e) => trackFocus('courier:km', e.target.value)}
+                onChange={(e) => setCourier('km', Number(e.target.value))}
+                onBlur={() => trackCourierBlur('km', 'пробег')}
+                placeholder="0" />
             </Field>
             <Field label="Зарплата промо">
-              <input disabled={locked} type="number" value={day.promo?.pay ?? ''} onChange={(e) => setPromo('pay', Number(e.target.value))} placeholder="0" />
+              <input disabled={locked} type="number" value={day.promo?.pay ?? ''}
+                onFocus={(e) => trackFocus('promo:pay', e.target.value)}
+                onChange={(e) => setPromo('pay', Number(e.target.value))}
+                onBlur={trackPromoBlur}
+                placeholder="0" />
             </Field>
           </div>
           <div className="rp-day-total">
@@ -1177,6 +1238,39 @@ function DayEntry({ ctx }) {
           </div>
         </Card>
       </div>
+
+      <Card>
+        <div className="rp-card-title-row">
+          <div className="rp-card-title">Кто работал сегодня <span className="rp-muted">— {todaysShifts.length} {todaysShifts.length === 1 ? 'человек' : 'человек(а)'}</span></div>
+          <button className="rp-btn rp-btn-sm" disabled={locked || availableForRoster.length === 0} onClick={() => setRosterModal(true)}><UserPlus size={14} /> Добавить на смену</button>
+        </div>
+        {todaysShifts.length === 0 ? (
+          <EmptyState icon={<Users size={26} color={COLORS.inkSoft} />} title="Пока никого не отметили" sub="Добавьте сотрудников, которые сегодня работали" />
+        ) : (
+          <div className="rp-list">
+            {todaysShifts.map(({ emp, hours }) => {
+              const standard = emp.standardShift || settings.standardShiftHours;
+              let dayPay = null;
+              if (emp.payType === 'shift') dayPay = emp.rate * (hours / standard);
+              else if (emp.payType === 'hour') dayPay = emp.rate * hours;
+              return (
+                <div className="rp-list-row" key={emp.id}>
+                  <div className={`rp-list-main ${!locked ? 'rp-clickable' : ''}`} onClick={() => !locked && setRosterModal(emp.id)}>
+                    <div className="rp-list-cat">{emp.name} <span className="rp-muted-sm">· {emp.position}</span></div>
+                    <div className="rp-list-comment">{fmt0(hours)} ч{emp.payType === 'oklad' ? ' · оклад (не по дням)' : ` из ${standard} ч`}</div>
+                  </div>
+                  <div className="rp-list-amount">{dayPay !== null ? fmtRub(dayPay) : '—'}</div>
+                  {!locked && <button className="rp-icon-btn" onClick={() => setRosterModal(emp.id)}>✎</button>}
+                  {!locked && <button className="rp-icon-btn rp-icon-btn-danger" onClick={() => removeFromRoster(emp.id)}><Trash2 size={14} /></button>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <p className="rp-muted" style={{ marginTop: 10 }}>
+          Записи попадают в общие часы сотрудника за месяц — итоговая зарплата, авансы и график смен считаются на странице «Зарплата».
+        </p>
+      </Card>
 
       <div className="rp-grid-2">
         <Card>
@@ -1240,6 +1334,25 @@ function DayEntry({ ctx }) {
         />
       )}
 
+      {rosterModal && (
+        <RosterModal
+          mode={typeof rosterModal === 'string' ? 'edit' : 'add'}
+          employees={ctx.employees}
+          availableForRoster={availableForRoster}
+          editingEmployee={typeof rosterModal === 'string' ? ctx.employees.find((e) => e.id === rosterModal) : null}
+          editingHours={typeof rosterModal === 'string' ? month.shifts?.[rosterModal]?.[selectedDate] : null}
+          standardShiftHours={settings.standardShiftHours}
+          onClose={() => setRosterModal(null)}
+          onSave={(employeeId, hours) => {
+            const isNew = !rosterEmployeeIds.has(employeeId);
+            setShiftHours(employeeId, hours);
+            const emp = ctx.employees.find((e) => e.id === employeeId);
+            logAudit({ what: isNew ? `Добавлен на смену (${emp?.name || ''})` : `Смена изменена (${emp?.name || ''})`, date: selectedDate, to: hours });
+            setRosterModal(null);
+          }}
+        />
+      )}
+
       {expenseModal && (
         <AddExpenseModal
           title={(expenseModal.editItem ? 'Изменить расход — ' : 'Новый расход — ') + (expenseModal.kind === 'kitchen' ? 'кухня / бар' : 'прочее')}
@@ -1248,16 +1361,20 @@ function DayEntry({ ctx }) {
           initial={expenseModal.editItem}
           onClose={() => setExpenseModal(null)}
           onSave={(exp) => {
+            const key = expenseModal.kind === 'kitchen' ? 'kitchenExpenses' : 'otherExpenses';
+            const oldItem = expenseModal.editItem;
+            const newItem = oldItem ? { ...oldItem, ...exp } : { id: uid(), ...exp };
             updateMonth((m) => {
               const d = { ...getDay(m, selectedDate) };
-              const key = expenseModal.kind === 'kitchen' ? 'kitchenExpenses' : 'otherExpenses';
               const list = d[key] || [];
-              d[key] = expenseModal.editItem
-                ? list.map((x) => (x.id === expenseModal.editItem.id ? { ...x, ...exp } : x))
-                : [...list, { id: uid(), ...exp }];
+              d[key] = oldItem ? list.map((x) => (x.id === oldItem.id ? newItem : x)) : [...list, newItem];
               return { ...m, days: { ...m.days, [selectedDate]: d } };
             });
-            logAudit({ what: `${expenseModal.editItem ? 'Изменён' : 'Добавлен'} расход (${expenseModal.kind})`, date: selectedDate, amount: exp.amount, category: exp.category });
+            logAudit({
+              what: `${oldItem ? 'Изменён' : 'Добавлен'} расход (${expenseModal.kind === 'kitchen' ? 'кухня/бар' : 'прочее'})`,
+              date: selectedDate, from: oldItem ? oldItem.amount : undefined, to: exp.amount, category: exp.category,
+              revert: oldItem ? { kind: 'expenseItem', monthKey: ctx.monthKey, date: selectedDate, listKey: key, itemId: oldItem.id, oldItem, newItem } : undefined,
+            });
             setExpenseModal(null);
           }}
         />
@@ -1347,10 +1464,57 @@ function AdvanceModal({ employees, onClose, onSave, initial }) {
   );
 }
 
+function RosterModal({ mode, employees, availableForRoster, editingEmployee, editingHours, standardShiftHours, onClose, onSave }) {
+  const [employeeId, setEmployeeId] = useState(editingEmployee?.id || availableForRoster[0]?.id || '');
+  const emp = mode === 'edit' ? editingEmployee : employees.find((e) => e.id === employeeId);
+  const standard = emp?.standardShift || standardShiftHours;
+  const [hours, setHours] = useState(editingHours != null ? String(editingHours) : String(standard));
+
+  const dayPayPreview = () => {
+    if (!emp) return null;
+    const h = Number(hours) || 0;
+    if (emp.payType === 'shift') return emp.rate * (h / standard);
+    if (emp.payType === 'hour') return emp.rate * h;
+    return null; // oklad — not day-based
+  };
+  const preview = dayPayPreview();
+
+  const options = mode === 'edit' ? [editingEmployee].filter(Boolean) : availableForRoster;
+
+  return (
+    <Modal title={mode === 'edit' ? `Смена — ${editingEmployee?.name}` : 'Добавить на смену'} onClose={onClose}>
+      {options.length === 0 ? (
+        <EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Все активные сотрудники уже добавлены на сегодня" />
+      ) : (
+        <>
+          <div className="rp-form-grid">
+            <Field label="Сотрудник">
+              <select value={employeeId} disabled={mode === 'edit'} onChange={(e) => { setEmployeeId(e.target.value); const ne = employees.find((x) => x.id === e.target.value); setHours(String(ne?.standardShift || standardShiftHours)); }}>
+                {options.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.position}</option>)}
+              </select>
+            </Field>
+            <Field label={`Часы (${emp?.payType === 'oklad' ? 'для учёта, оклад не по дням' : `ставка/смена: ${emp ? fmtRub(emp.rate) : '—'}`})`}>
+              <input type="number" autoFocus={mode === 'edit'} value={hours} onChange={(e) => setHours(e.target.value)} />
+            </Field>
+          </div>
+          <div className="rp-toolbar" style={{ marginBottom: 8 }}>
+            <button type="button" className="rp-btn rp-btn-xs rp-btn-ghost" onClick={() => setHours(String(standard))}>Полная смена ({standard} ч)</button>
+            <button type="button" className="rp-btn rp-btn-xs rp-btn-ghost" onClick={() => setHours(String(Math.round(standard / 2)))}>Полсмены ({Math.round(standard / 2)} ч)</button>
+          </div>
+          {preview !== null && <div className="rp-day-total">Оплата за день <b>{fmtRub(preview)}</b></div>}
+          <div className="rp-modal-actions">
+            <button className="rp-btn" disabled={!employeeId || !hours} onClick={() => onSave(employeeId, Number(hours))}>{mode === 'edit' ? 'Сохранить' : 'Добавить'}</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 /* ============================== EMPLOYEES ============================== */
 
 function EmployeesPage({ ctx }) {
-  const { employees, setEmployees, month, updateMonth, settings, year, monthIdx, logAudit } = ctx;
+  const { employees, setEmployees, month, updateMonth, settings, year, monthIdx, monthKey, logAudit } = ctx;
   const [editing, setEditing] = useState(null); // employee obj or 'new'
   const [shiftsFor, setShiftsFor] = useState(null); // employee id
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -1381,7 +1545,7 @@ function EmployeesPage({ ctx }) {
       </div>
 
       <Card>
-        <table className="rp-table">
+        <div className="rp-table-wrap"><table className="rp-table">
           <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th>Аванс</th><th>Начислено</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
@@ -1405,7 +1569,7 @@ function EmployeesPage({ ctx }) {
             })}
             {visible.length === 0 && <tr><td colSpan={9}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
-        </table>
+        </table></div>
       </Card>
 
       {editing && (
@@ -1417,8 +1581,8 @@ function EmployeesPage({ ctx }) {
       {shiftsFor && (
         <ShiftGridModal
           emp={employees.find((e) => e.id === shiftsFor)}
-          month={month} updateMonth={updateMonth} nd={nd} year={year} monthIdx={monthIdx}
-          settings={settings} locked={month.closed}
+          month={month} updateMonth={updateMonth} nd={nd} year={year} monthIdx={monthIdx} monthKey={monthKey}
+          settings={settings} locked={month.closed} logAudit={logAudit}
           onClose={() => setShiftsFor(null)}
         />
       )}
@@ -1474,7 +1638,7 @@ function EmployeeForm({ emp, onSave }) {
   );
 }
 
-function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, settings, locked, onClose }) {
+function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey, settings, locked, onClose, logAudit }) {
   const standard = emp.standardShift || settings.standardShiftHours;
   const shifts = month.shifts?.[emp.id] || {};
   const setHours = (d, val) => {
@@ -1522,31 +1686,50 @@ function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, settings,
         </>
       )}
 
-      {tab === 'adjust' && <AdjustmentsPanel emp={emp} month={month} updateMonth={updateMonth} locked={locked} year={year} monthIdx={monthIdx} />}
+      {tab === 'adjust' && <AdjustmentsPanel emp={emp} month={month} updateMonth={updateMonth} locked={locked} year={year} monthIdx={monthIdx} monthKey={monthKey} logAudit={logAudit} />}
     </Modal>
   );
 }
 
-function AdjustmentsPanel({ emp, month, updateMonth, locked }) {
+function AdjustmentsPanel({ emp, month, updateMonth, locked, year, monthIdx, monthKey, logAudit }) {
+  const defaultDateFor = (h) => dateStr(year, monthIdx, h === 1 ? 1 : Math.min(16, daysInMonth(year, monthIdx)));
   const [amount, setAmount] = useState(''); const [type, setType] = useState('bonus'); const [half, setHalf] = useState(1); const [comment, setComment] = useState('');
+  const [date, setDate] = useState(defaultDateFor(1));
   const [editingId, setEditingId] = useState(null);
+  const [editingOriginal, setEditingOriginal] = useState(null);
   const list = (month.adjustments || []).filter((a) => a.employeeId === emp.id);
   const typeLabel = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', manual: 'Ручная корректировка' };
 
-  const resetForm = () => { setAmount(''); setType('bonus'); setHalf(1); setComment(''); setEditingId(null); };
+  const resetForm = () => { setAmount(''); setType('bonus'); setHalf(1); setComment(''); setDate(defaultDateFor(1)); setEditingId(null); setEditingOriginal(null); };
 
-  const startEdit = (a) => { setEditingId(a.id); setType(a.type); setHalf(a.half); setAmount(String(a.amount)); setComment(a.comment || ''); };
+  const startEdit = (a) => {
+    setEditingId(a.id); setEditingOriginal(a); setType(a.type); setHalf(a.half); setAmount(String(a.amount));
+    setComment(a.comment || ''); setDate(a.date || defaultDateFor(a.half));
+  };
+
+  const onHalfChange = (h) => { setHalf(h); if (!editingId) setDate(defaultDateFor(h)); };
 
   const save = () => {
     if (!amount) return;
     if (editingId) {
-      updateMonth((m) => ({ ...m, adjustments: (m.adjustments || []).map((a) => (a.id === editingId ? { ...a, type, half, amount: Number(amount), comment } : a)) }));
+      const newItem = { ...editingOriginal, type, half, amount: Number(amount), comment, date };
+      updateMonth((m) => ({ ...m, adjustments: (m.adjustments || []).map((a) => (a.id === editingId ? newItem : a)) }));
+      if (logAudit) {
+        logAudit({
+          what: `Корректировка изменена (${emp.name})`, date, from: editingOriginal.amount, to: Number(amount), category: typeLabel[type],
+          revert: { kind: 'adjustmentItem', monthKey, employeeId: emp.id, adjustmentId: editingId, oldItem: editingOriginal, newItem },
+        });
+      }
     } else {
-      updateMonth((m) => ({ ...m, adjustments: [...(m.adjustments || []), { id: uid(), employeeId: emp.id, type, half, amount: Number(amount), comment, date: new Date().toISOString().slice(0, 10) }] }));
+      updateMonth((m) => ({ ...m, adjustments: [...(m.adjustments || []), { id: uid(), employeeId: emp.id, type, half, amount: Number(amount), comment, date }] }));
+      if (logAudit) logAudit({ what: `Добавлена корректировка (${emp.name})`, date, amount: Number(amount), category: typeLabel[type] });
     }
     resetForm();
   };
-  const del = (id) => { updateMonth((m) => ({ ...m, adjustments: (m.adjustments || []).filter((a) => a.id !== id) })); if (editingId === id) resetForm(); };
+  const del = (id) => {
+    updateMonth((m) => ({ ...m, adjustments: (m.adjustments || []).filter((a) => a.id !== id) }));
+    if (editingId === id) resetForm();
+  };
 
   return (
     <div>
@@ -1558,10 +1741,11 @@ function AdjustmentsPanel({ emp, month, updateMonth, locked }) {
             </select>
           </Field>
           <Field label="Половина месяца">
-            <select value={half} onChange={(e) => setHalf(Number(e.target.value))}>
+            <select value={half} onChange={(e) => onHalfChange(Number(e.target.value))}>
               <option value={1}>1-я (1–15)</option><option value={2}>2-я (16–конец)</option>
             </select>
           </Field>
+          <Field label="Дата"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
           <Field label="Сумма ₽"><input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
           <Field label="Комментарий"><input value={comment} onChange={(e) => setComment(e.target.value)} /></Field>
         </div>
@@ -1577,7 +1761,7 @@ function AdjustmentsPanel({ emp, month, updateMonth, locked }) {
         {list.map((a) => (
           <div className={`rp-list-row ${editingId === a.id ? 'rp-list-row-editing' : ''}`} key={a.id}>
             <div className={`rp-list-main ${!locked ? 'rp-clickable' : ''}`} onClick={() => !locked && startEdit(a)}>
-              <div className="rp-list-cat">{typeLabel[a.type]} · {a.half}-я половина</div>{a.comment && <div className="rp-list-comment">{a.comment}</div>}
+              <div className="rp-list-cat">{typeLabel[a.type]} · {a.half}-я половина{a.date ? ` · ${a.date.split('-').reverse().join('.')}` : ''}</div>{a.comment && <div className="rp-list-comment">{a.comment}</div>}
             </div>
             <div className="rp-list-amount">{['penalty', 'advance'].includes(a.type) ? '−' : '+'}{fmtRub(a.amount)}</div>
             {!locked && <button className="rp-icon-btn" onClick={() => startEdit(a)}>✎</button>}
@@ -1626,7 +1810,7 @@ function PayrollPage({ ctx }) {
       )}
 
       <Card>
-        <table className="rp-table">
+        <div className="rp-table-wrap"><table className="rp-table">
           <thead><tr><th>Сотрудник</th><th>Смены/часы</th><th>Ставка</th><th>Начислено</th><th>Бонус</th><th>Удержано</th><th>Аванс</th><th>К выплате</th></tr></thead>
           <tbody>
             {payroll.rows.map((r) => (
@@ -1643,7 +1827,7 @@ function PayrollPage({ ctx }) {
             ))}
             <tr className="rp-total-row"><td colSpan={3}>Итого ФОТ (начислено)</td><td className="rp-num">{fmtRub(payroll.totalFot)}</td><td colSpan={4} /></tr>
           </tbody>
-        </table>
+        </table></div>
       </Card>
     </div>
   );
@@ -1671,7 +1855,12 @@ function SuppliersPage({ ctx }) {
     setName(''); setNewSupplier(false);
   };
   const archive = (id) => setSuppliers((p) => p.map((s) => (s.id === id ? { ...s, archived: !s.archived } : s)));
-  const rename = (id, newName) => { setSuppliers((p) => p.map((s) => (s.id === id ? { ...s, name: newName } : s))); logAudit({ what: 'Переименован поставщик', to: newName }); setRenaming(null); };
+  const rename = (id, newName) => {
+    const oldName = renaming?.name;
+    setSuppliers((p) => p.map((s) => (s.id === id ? { ...s, name: newName } : s)));
+    logAudit({ what: 'Переименован поставщик', from: oldName, to: newName, revert: { kind: 'supplierName', supplierId: id, oldValue: oldName, newValue: newName } });
+    setRenaming(null);
+  };
   const removeForever = (id, supplierName) => { setSuppliers((p) => p.filter((s) => s.id !== id)); logAudit({ what: 'Удалён поставщик', supplier: supplierName }); setDeleting(null); };
 
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
@@ -1696,7 +1885,7 @@ function SuppliersPage({ ctx }) {
       </div>
 
       <Card>
-        <table className="rp-table">
+        <div className="rp-table-wrap"><table className="rp-table">
           <thead><tr><th>Поставщик</th><th>Поставлено</th><th>Оплачено</th><th>Долг</th><th /></tr></thead>
           <tbody>
             {visibleSuppliers.map((s) => {
@@ -1724,7 +1913,7 @@ function SuppliersPage({ ctx }) {
             })}
             {visibleSuppliers.length === 0 && <tr><td colSpan={5}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Поставщиков нет" /></td></tr>}
           </tbody>
-        </table>
+        </table></div>
       </Card>
 
       {newSupplier && (
@@ -1832,7 +2021,7 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
   ].sort((a, b) => (a.date < b.date ? 1 : -1));
   return (
     <Modal title={`История — ${supplier?.name}`} onClose={onClose} wide>
-      <table className="rp-table">
+      <div className="rp-table-wrap"><table className="rp-table">
         <thead><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Комментарий</th></tr></thead>
         <tbody>
           {events.map((e) => (
@@ -1840,7 +2029,7 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
           ))}
           {events.length === 0 && <tr><td colSpan={4}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Пока нет операций" /></td></tr>}
         </tbody>
-      </table>
+      </table></div>
     </Modal>
   );
 }
@@ -1928,13 +2117,13 @@ function DrillModal({ kind, pnl, onClose }) {
       {kind === 'acquiring' ? (
         <div>
           <p className="rp-muted">Эквайринг = {pnl.acquiring && ''}{fmt0(2)}%... формула считается автоматически по настройке (сейчас {fmtPct((pnl.acquiring.amount / (pnl.acquiring.base || 1)) * 100)} от базы).</p>
-          <table className="rp-table"><thead><tr><th>Канал</th><th>Сумма</th></tr></thead>
+          <div className="rp-table-wrap"><table className="rp-table"><thead><tr><th>Канал</th><th>Сумма</th></tr></thead>
             <tbody>{Object.entries(pnl.acquiring.byChannel).map(([k, v]) => <tr key={k}><td>{k}</td><td className="rp-num">{fmtRub(v)}</td></tr>)}</tbody>
-          </table>
+          </table></div>
           <div className="rp-day-total">База для эквайринга: <b>{fmtRub(pnl.acquiring.base)}</b> → комиссия <b>{fmtRub(pnl.acquiring.amount)}</b></div>
         </div>
       ) : (
-        <table className="rp-table">
+        <div className="rp-table-wrap"><table className="rp-table">
           <thead><tr>{c.cols.map((col) => <th key={col}>{colLabel[col]}</th>)}</tr></thead>
           <tbody>
             {(c.items || []).length === 0 && <tr><td colSpan={c.cols.length}><EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Нет операций" /></td></tr>}
@@ -1942,7 +2131,7 @@ function DrillModal({ kind, pnl, onClose }) {
               <tr key={i}>{c.cols.map((col) => <td key={col} className={['amount', 'pay', 'base', 'bonus', 'accrued', 'hours', 'deliveries', 'km', 'fuel'].includes(col) ? 'rp-num' : ''}>{['amount', 'pay', 'base', 'bonus', 'accrued', 'fuel'].includes(col) ? fmtRub(it[col]) : (it[col] ?? '—')}</td>)}</tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Modal>
   );
@@ -2118,24 +2307,29 @@ function BackupPanel({ ctx }) {
     e.target.value = '';
   };
 
-  const applyImport = () => {
+  const applyImport = async () => {
     if (!pendingImport) return;
+    const importedMonths = pendingImport.months || {};
     setSettings(pendingImport.settings || defaultSettings());
     setEmployees(pendingImport.employees || []);
     setSuppliers(pendingImport.suppliers || []);
-    setMonths(pendingImport.months || {});
+    setMonths(importedMonths);
     setAuditLog(pendingImport.auditLog || []);
     logAudit({ what: 'Восстановлено из резервной копии', from: pendingImport.exportedAt });
     setPendingImport(null);
+    // Reconcile the per-month storage keys with what was just imported (deletes
+    // any month that existed before but isn't in this backup, writes the rest).
+    await persistAllMonths(importedMonths);
   };
 
-  const doReset = () => {
+  const doReset = async () => {
     setSettings(defaultSettings());
     setEmployees([]);
     setSuppliers([]);
     setMonths({});
     setAuditLog([{ id: uid(), ts: new Date().toISOString(), what: 'База очищена вручную' }]);
     setConfirmReset(false);
+    await persistAllMonths({});
   };
 
   const monthCount = Object.keys(months).length;
@@ -2144,8 +2338,8 @@ function BackupPanel({ ctx }) {
     <Card>
       <div className="rp-card-title">Резервная копия всей базы</div>
       <p className="rp-muted">
-        Все данные (сотрудники, поставщики, настройки, {monthCount} {monthCount === 1 ? 'месяц' : 'месяцев'} и журнал истории) хранятся только в этом браузере.
-        Скачивайте копию регулярно — при очистке кэша или переходе на другое устройство данные без копии не восстановить.
+        Все данные (сотрудники, поставщики, настройки, {monthCount} {monthCount === 1 ? 'месяц' : 'месяцев'} и журнал истории) хранятся в общей облачной базе ресторана.
+        Резервную копию всё равно полезно скачивать периодически — она позволяет вручную восстановить состояние базы при необходимости.
       </p>
       <div className="rp-toolbar" style={{ marginTop: 12 }}>
         <button className="rp-btn" onClick={downloadBackup}><DatabaseBackup size={15} /> Скачать резервную копию (.json)</button>
@@ -2210,7 +2404,7 @@ function FixedExpensesEditor({ settings, update }) {
   const groupLabel = { fixed: 'Постоянный', variable: 'Переменный', fot_tax: 'Налог на ФОТ' };
   return (
     <div>
-      <table className="rp-table">
+      <div className="rp-table-wrap"><table className="rp-table">
         <thead><tr><th>Статья</th><th>Тип</th><th>Сумма</th><th>Повтор ежемесячно</th><th /></tr></thead>
         <tbody>
           {settings.fixedExpenses.map((f) => (
@@ -2227,7 +2421,7 @@ function FixedExpensesEditor({ settings, update }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       <div className="rp-toolbar" style={{ marginTop: 10 }}>
         <input placeholder="Название статьи" value={name} onChange={(e) => setName(e.target.value)} />
         <input placeholder="Сумма" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ width: 120 }} />
@@ -2244,8 +2438,9 @@ function FixedExpensesEditor({ settings, update }) {
 /* ============================== HISTORY ============================== */
 
 function HistoryPage({ ctx }) {
-  const { auditLog } = ctx;
+  const { auditLog, applyRevert } = ctx;
   const [search, setSearch] = useState('');
+  const [justReverted, setJustReverted] = useState(null);
 
   const rows = auditLog.filter((e) => {
     if (!search.trim()) return true;
@@ -2265,6 +2460,12 @@ function HistoryPage({ ctx }) {
     const parts = Object.entries(rest).filter(([, v]) => v !== undefined && v !== null && v !== '');
     if (!parts.length) return null;
     return parts.map(([k, v]) => `${historyFieldLabel[k] || k}: ${typeof v === 'number' ? fmtRub(v) : v}`).join(' · ');
+  };
+
+  const handleRevert = (e) => {
+    applyRevert(e);
+    setJustReverted(e.id);
+    setTimeout(() => setJustReverted((cur) => (cur === e.id ? null : cur)), 2500);
   };
 
   return (
@@ -2290,12 +2491,21 @@ function HistoryPage({ ctx }) {
                   <div className="rp-history-what">{e.what}</div>
                   {describe(e) && <div className="rp-history-detail">{describe(e)}</div>}
                 </div>
+                {e.revert && (
+                  <button className="rp-btn rp-btn-xs rp-btn-ghost rp-history-revert" onClick={() => handleRevert(e)}>
+                    {justReverted === e.id ? <><Check size={12} /> Готово</> : <><RotateCcw size={12} /> Восстановить</>}
+                  </button>
+                )}
               </div>
             ))}
           </div>
         )}
       </Card>
-      <p className="rp-muted">Хранятся последние 500 действий. Восстановление предыдущего значения вручную из журнала пока не поддерживается — используйте резервную копию в Настройках, если нужно откатить крупные изменения.</p>
+      <p className="rp-muted">
+        Хранятся последние 500 действий. Кнопка «Восстановить» доступна для изменений выручки, курьера, промо, расходов дня,
+        корректировок сотрудника и переименований поставщика — она возвращает предыдущее значение и сама становится обратимой.
+        Для остальных изменений (настройки, добавление/удаление сущностей) откатывайте через резервную копию в Настройках.
+      </p>
     </div>
   );
 }
@@ -2390,7 +2600,7 @@ function ComparePage({ ctx }) {
       </Card>
 
       <Card>
-        <table className="rp-table">
+        <div className="rp-table-wrap"><table className="rp-table">
           <thead><tr><th>Показатель</th><th>{labelA(a)}</th><th>{labelB(b)}</th><th>Δ</th><th>Δ %</th></tr></thead>
           <tbody>
             {rows.map(([name, va, vb]) => {
@@ -2410,13 +2620,459 @@ function ComparePage({ ctx }) {
             })}
             <tr><td>Рентабельность</td><td className="rp-num">{fmtPct(pnlA.margin)}</td><td className="rp-num">{fmtPct(pnlB.margin)}</td><td className="rp-num">{(pnlB.margin - pnlA.margin) >= 0 ? '+' : ''}{(pnlB.margin - pnlA.margin).toFixed(1)} п.п.</td><td /></tr>
           </tbody>
-        </table>
+        </table></div>
       </Card>
     </div>
   );
 }
 
 /* ============================== EXPORT ============================== */
+
+/* ---------- Excel two-way sync (raw editable data ⇄ app state) ----------
+   Different from the P&L export above: this workbook exposes the RAW entered
+   records (not aggregates) for the currently viewed month, with a hidden ID
+   column on list-type sheets so edits/adds/deletes made in Excel can be
+   matched back up on import. See the in-app "Синхронизация" modal for the
+   confirm-before-apply flow. */
+
+const PAYTYPE_LABEL = { shift: 'руб/смена', hour: 'руб/час', oklad: 'оклад' };
+const PAYTYPE_FROM_LABEL = { 'руб/смена': 'shift', 'руб/час': 'hour', 'оклад': 'oklad' };
+const ADJTYPE_LABEL = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', manual: 'Ручная корректировка' };
+const ADJTYPE_FROM_LABEL = Object.fromEntries(Object.entries(ADJTYPE_LABEL).map(([k, v]) => [v, k]));
+
+function normalizeSyncDate(v) {
+  if (!v && v !== 0) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  if (/^\d+(\.\d+)?$/.test(s) && Number(s) > 20000) {
+    // Excel serial date number (in case the cell got auto-formatted as a number)
+    const epoch = new Date(Date.UTC(1899, 11, 30));
+    const dt = new Date(epoch.getTime() + Number(s) * 86400000);
+    return dt.toISOString().slice(0, 10);
+  }
+  return s.slice(0, 10);
+}
+
+function buildSyncWorkbook(ctx) {
+  const { settings, employees, suppliers, month, year, monthIdx } = ctx;
+  const nd = daysInMonth(year, monthIdx);
+  const wb = XLSX.utils.book_new();
+
+  const revHeader = ['Дата', ...settings.revenueChannels.map((c) => c.name)];
+  const revRows = [revHeader];
+  for (let d = 1; d <= nd; d++) {
+    const ds = dateStr(year, monthIdx, d);
+    const day = getDay(month, ds);
+    revRows.push([ds, ...settings.revenueChannels.map((c) => Number(day.revenue?.[c.id]) || 0)]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(revRows), 'Выручка');
+
+  const kitchenRows = [['ID', 'Дата', 'Категория', 'Сумма', 'Комментарий']];
+  for (let d = 1; d <= nd; d++) {
+    const ds = dateStr(year, monthIdx, d);
+    (getDay(month, ds).kitchenExpenses || []).forEach((e) => kitchenRows.push([e.id, ds, e.category || '', Number(e.amount) || 0, e.comment || '']));
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(kitchenRows), 'Расходы_кухня');
+
+  const otherRows = [['ID', 'Дата', 'Категория', 'Сумма', 'Способ', 'Комментарий']];
+  for (let d = 1; d <= nd; d++) {
+    const ds = dateStr(year, monthIdx, d);
+    (getDay(month, ds).otherExpenses || []).forEach((e) => otherRows.push([e.id, ds, e.category || '', Number(e.amount) || 0, e.method === 'cashless' ? 'Безналичные' : 'Наличные', e.comment || '']));
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(otherRows), 'Расходы_прочие');
+
+  const cpRows = [['Дата', 'Доставок', 'СтавкаКурьера', 'КмКурьера', 'Промо', 'КоммКурьера', 'КоммПромо']];
+  for (let d = 1; d <= nd; d++) {
+    const ds = dateStr(year, monthIdx, d);
+    const day = getDay(month, ds);
+    cpRows.push([ds, Number(day.courier?.deliveries) || 0, Number(day.courier?.pay) || 0, Number(day.courier?.km) || 0, Number(day.promo?.pay) || 0, day.courier?.comment || '', day.promo?.comment || '']);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cpRows), 'Курьер_и_промо');
+
+  const shiftRows = [['Дата', 'Сотрудник', 'Часы']];
+  Object.entries(month.shifts || {}).forEach(([empId, byDate]) => {
+    const emp = employees.find((e) => e.id === empId);
+    Object.entries(byDate || {}).forEach(([ds, hours]) => {
+      if (Number(hours) > 0) shiftRows.push([ds, emp?.name || empId, Number(hours)]);
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(shiftRows), 'Смены');
+
+  const adjRows = [['ID', 'Дата', 'Сотрудник', 'Тип', 'Половина', 'Сумма', 'Комментарий']];
+  (month.adjustments || []).forEach((a) => {
+    const emp = employees.find((e) => e.id === a.employeeId);
+    adjRows.push([a.id, a.date || '', emp?.name || a.employeeId, ADJTYPE_LABEL[a.type] || a.type, a.half, Number(a.amount) || 0, a.comment || '']);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(adjRows), 'Корректировки');
+
+  const ordRows = [['ID', 'Дата', 'Поставщик', 'Сумма', 'Накладная', 'Комментарий']];
+  (month.supplierOrders || []).forEach((o) => {
+    const sup = suppliers.find((s) => s.id === o.supplierId);
+    ordRows.push([o.id, o.date || '', sup?.name || o.supplierId, Number(o.amount) || 0, o.invoice || '', o.comment || '']);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ordRows), 'Поставки');
+
+  const payRows = [['ID', 'Дата', 'Поставщик', 'Сумма', 'Способ', 'Комментарий']];
+  (month.supplierPayments || []).forEach((p) => {
+    const sup = suppliers.find((s) => s.id === p.supplierId);
+    payRows.push([p.id, p.date || '', sup?.name || p.supplierId, Number(p.amount) || 0, p.method === 'cash' ? 'Наличные' : 'Безналичные', p.comment || '']);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(payRows), 'Оплаты_поставщикам');
+
+  const empRows = [['ID', 'ФИО', 'Должность', 'ТипОплаты', 'Ставка', 'Статус', 'СтандартнаяСмена', 'ДатаНачала', 'ДатаУвольнения', 'Комментарий']];
+  employees.forEach((e) => empRows.push([e.id, e.name, e.position || '', PAYTYPE_LABEL[e.payType] || e.payType, Number(e.rate) || 0, e.status === 'active' ? 'активен' : 'уволен', e.standardShift ?? '', e.startDate || '', e.endDate || '', e.comment || '']));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(empRows), 'Сотрудники');
+
+  const supRows = [['ID', 'Название', 'Архив']];
+  suppliers.forEach((s) => supRows.push([s.id, s.name, s.archived ? 'да' : 'нет']));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(supRows), 'Поставщики');
+
+  const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+  const url = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
+  const filename = `SIOSAN_данные_${MONTHS_RU[monthIdx]}_${year}.xlsx`;
+  return { url, filename };
+}
+
+function parseSyncWorkbook(arrayBuffer, ctx) {
+  const { settings, employees, suppliers, month, year, monthIdx } = ctx;
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  const sheet = (name) => {
+    const ws = wb.Sheets[name];
+    return ws ? XLSX.utils.sheet_to_json(ws, { defval: '' }) : [];
+  };
+
+  const empByName = new Map(employees.map((e) => [e.name.trim().toLowerCase(), e]));
+  const supByName = new Map(suppliers.map((s) => [s.name.trim().toLowerCase(), s]));
+  const nd = daysInMonth(year, monthIdx);
+  const monthPrefix = monthKeyOf(year, monthIdx);
+  const inThisMonth = (ds) => typeof ds === 'string' && ds.startsWith(monthPrefix);
+
+  const newDaysRevenue = {};
+  sheet('Выручка').forEach((row) => {
+    const ds = normalizeSyncDate(row['Дата']);
+    if (!inThisMonth(ds)) return;
+    const rev = {};
+    settings.revenueChannels.forEach((c) => { rev[c.id] = Number(row[c.name]) || 0; });
+    newDaysRevenue[ds] = rev;
+  });
+
+  function parseExpenseSheet(name, showMethod) {
+    const byDate = {};
+    sheet(name).forEach((row) => {
+      const ds = normalizeSyncDate(row['Дата']);
+      if (!inThisMonth(ds)) return;
+      const amount = Number(row['Сумма']) || 0;
+      if (!amount && !row['Категория']) return;
+      const id = row['ID'] ? String(row['ID']) : uid();
+      const item = { id, category: row['Категория'] || '', amount, comment: row['Комментарий'] || '' };
+      if (showMethod) item.method = row['Способ'] === 'Безналичные' ? 'cashless' : 'cash';
+      byDate[ds] = byDate[ds] || [];
+      byDate[ds].push(item);
+    });
+    return byDate;
+  }
+  const kitchenByDate = parseExpenseSheet('Расходы_кухня', false);
+  const otherByDate = parseExpenseSheet('Расходы_прочие', true);
+
+  const newCourierPromo = {};
+  sheet('Курьер_и_промо').forEach((row) => {
+    const ds = normalizeSyncDate(row['Дата']);
+    if (!inThisMonth(ds)) return;
+    newCourierPromo[ds] = {
+      courier: { deliveries: Number(row['Доставок']) || 0, pay: Number(row['СтавкаКурьера']) || 0, km: Number(row['КмКурьера']) || 0, comment: row['КоммКурьера'] || '' },
+      promo: { pay: Number(row['Промо']) || 0, comment: row['КоммПромо'] || '' },
+    };
+  });
+
+  const newShifts = {};
+  const unmatchedShiftNames = new Set();
+  sheet('Смены').forEach((row) => {
+    const ds = normalizeSyncDate(row['Дата']);
+    if (!inThisMonth(ds)) return;
+    const name = String(row['Сотрудник'] || '').trim();
+    const emp = empByName.get(name.toLowerCase());
+    const hours = Number(row['Часы']) || 0;
+    if (!emp) { if (name) unmatchedShiftNames.add(name); return; }
+    if (hours <= 0) return;
+    newShifts[emp.id] = newShifts[emp.id] || {};
+    newShifts[emp.id][ds] = hours;
+  });
+
+  const newAdjustments = [];
+  const unmatchedAdjNames = new Set();
+  sheet('Корректировки').forEach((row) => {
+    const ds = normalizeSyncDate(row['Дата']);
+    const name = String(row['Сотрудник'] || '').trim();
+    const amount = Number(row['Сумма']) || 0;
+    if (!name && !amount) return;
+    const emp = empByName.get(name.toLowerCase());
+    if (!emp) { if (name) unmatchedAdjNames.add(name); return; }
+    const type = ADJTYPE_FROM_LABEL[row['Тип']] || 'manual';
+    const half = Number(row['Половина']) === 2 ? 2 : 1;
+    const id = row['ID'] ? String(row['ID']) : uid();
+    newAdjustments.push({ id, employeeId: emp.id, type, half, amount, comment: row['Комментарий'] || '', date: ds || dateStr(year, monthIdx, half === 1 ? 1 : 16) });
+  });
+
+  function parseSupplierOpSheet(name, isPayment) {
+    const out = [];
+    const unmatched = new Set();
+    sheet(name).forEach((row) => {
+      const ds = normalizeSyncDate(row['Дата']);
+      const supName = String(row['Поставщик'] || '').trim();
+      const amount = Number(row['Сумма']) || 0;
+      if (!supName && !amount) return;
+      const sup = supByName.get(supName.toLowerCase());
+      if (!sup) { if (supName) unmatched.add(supName); return; }
+      const id = row['ID'] ? String(row['ID']) : uid();
+      const item = { id, supplierId: sup.id, date: ds, amount, comment: row['Комментарий'] || '' };
+      if (isPayment) item.method = row['Способ'] === 'Наличные' ? 'cash' : 'cashless'; else item.invoice = row['Накладная'] || '';
+      out.push(item);
+    });
+    return { out, unmatched };
+  }
+  const ordersParsed = parseSupplierOpSheet('Поставки', false);
+  const paymentsParsed = parseSupplierOpSheet('Оплаты_поставщикам', true);
+
+  const employeeUpserts = [];
+  sheet('Сотрудники').forEach((row) => {
+    const name = String(row['ФИО'] || '').trim();
+    if (!name) return;
+    const id = row['ID'] ? String(row['ID']) : uid();
+    employeeUpserts.push({
+      id, name, position: row['Должность'] || '',
+      payType: PAYTYPE_FROM_LABEL[row['ТипОплаты']] || 'shift',
+      rate: Number(row['Ставка']) || 0,
+      status: row['Статус'] === 'уволен' ? 'fired' : 'active',
+      standardShift: row['СтандартнаяСмена'] === '' ? null : Number(row['СтандартнаяСмена']),
+      startDate: row['ДатаНачала'] || '', endDate: row['ДатаУвольнения'] || '', comment: row['Комментарий'] || '',
+    });
+  });
+
+  const supplierUpserts = [];
+  sheet('Поставщики').forEach((row) => {
+    const name = String(row['Название'] || '').trim();
+    if (!name) return;
+    const id = row['ID'] ? String(row['ID']) : uid();
+    supplierUpserts.push({ id, name, archived: row['Архив'] === 'да' });
+  });
+
+  const newMonth = {
+    ...month,
+    days: {},
+    shifts: newShifts,
+    adjustments: newAdjustments,
+    supplierOrders: ordersParsed.out,
+    supplierPayments: paymentsParsed.out,
+  };
+  for (let d = 1; d <= nd; d++) {
+    const ds = dateStr(year, monthIdx, d);
+    const oldDay = getDay(month, ds);
+    const cp = newCourierPromo[ds] || { courier: oldDay.courier, promo: oldDay.promo };
+    newMonth.days[ds] = {
+      closed: oldDay.closed,
+      revenue: newDaysRevenue[ds] || {},
+      kitchenExpenses: kitchenByDate[ds] || [],
+      otherExpenses: otherByDate[ds] || [],
+      courier: cp.courier,
+      promo: cp.promo,
+    };
+  }
+
+  const diff = computeSyncDiff(month, newMonth, employees, employeeUpserts, suppliers, supplierUpserts, settings.revenueChannels);
+
+  return {
+    newMonth, employeeUpserts, supplierUpserts, diff,
+    warnings: {
+      unmatchedShiftNames: [...unmatchedShiftNames],
+      unmatchedAdjNames: [...unmatchedAdjNames],
+      unmatchedOrderSuppliers: [...ordersParsed.unmatched],
+      unmatchedPaymentSuppliers: [...paymentsParsed.unmatched],
+    },
+  };
+}
+
+function computeSyncDiff(oldMonth, newMonth, employees, employeeUpserts, suppliers, supplierUpserts, revenueChannels) {
+  const channelIds = revenueChannels.map((c) => c.id);
+  const canon = (obj, fields) => JSON.stringify(fields.map((f) => obj?.[f] ?? null));
+
+  let revenueDaysChanged = 0;
+  Object.keys(newMonth.days).forEach((ds) => {
+    const oldRev = getDay(oldMonth, ds).revenue || {};
+    const newRev = newMonth.days[ds].revenue || {};
+    const same = channelIds.every((cid) => (Number(oldRev[cid]) || 0) === (Number(newRev[cid]) || 0));
+    if (!same) revenueDaysChanged++;
+  });
+
+  let courierPromoDaysChanged = 0;
+  const cpFields = ['deliveries', 'pay', 'km', 'comment'];
+  const promoFields = ['pay', 'comment'];
+  Object.keys(newMonth.days).forEach((ds) => {
+    const a = getDay(oldMonth, ds), b = newMonth.days[ds];
+    if (canon(a.courier, cpFields) !== canon(b.courier, cpFields) || canon(a.promo, promoFields) !== canon(b.promo, promoFields)) courierPromoDaysChanged++;
+  });
+
+  const diffList = (oldList, newList, fields) => {
+    const oldIds = new Set(oldList.map((x) => x.id));
+    const added = newList.filter((x) => !oldIds.has(x.id)).length;
+    const newIds = new Set(newList.map((x) => x.id));
+    const removed = oldList.filter((x) => !newIds.has(x.id)).length;
+    let changed = 0;
+    newList.forEach((n) => {
+      const o = oldList.find((x) => x.id === n.id);
+      if (o && canon(o, fields) !== canon(n, fields)) changed++;
+    });
+    return { added, removed, changed };
+  };
+
+  const flattenExp = (monthObj, key) => Object.entries(monthObj.days || {}).flatMap(([ds, d]) => (d[key] || []).map((x) => ({ ...x, date: ds })));
+
+  return {
+    revenueDaysChanged,
+    courierPromoDaysChanged,
+    kitchen: diffList(flattenExp(oldMonth, 'kitchenExpenses'), flattenExp(newMonth, 'kitchenExpenses'), ['category', 'amount', 'comment', 'date']),
+    other: diffList(flattenExp(oldMonth, 'otherExpenses'), flattenExp(newMonth, 'otherExpenses'), ['category', 'amount', 'comment', 'method', 'date']),
+    adjustments: diffList(oldMonth.adjustments || [], newMonth.adjustments || [], ['employeeId', 'type', 'half', 'amount', 'comment', 'date']),
+    orders: diffList(oldMonth.supplierOrders || [], newMonth.supplierOrders || [], ['supplierId', 'amount', 'invoice', 'comment', 'date']),
+    payments: diffList(oldMonth.supplierPayments || [], newMonth.supplierPayments || [], ['supplierId', 'amount', 'method', 'comment', 'date']),
+    newEmployees: employeeUpserts.filter((e) => !employees.some((x) => x.id === e.id)).length,
+    changedEmployees: employeeUpserts.filter((e) => { const o = employees.find((x) => x.id === e.id); return o && JSON.stringify(o) !== JSON.stringify({ ...o, ...e }); }).length,
+    newSuppliers: supplierUpserts.filter((s) => !suppliers.some((x) => x.id === s.id)).length,
+    changedSuppliers: supplierUpserts.filter((s) => { const o = suppliers.find((x) => x.id === s.id); return o && JSON.stringify(o) !== JSON.stringify({ ...o, ...s }); }).length,
+  };
+}
+
+function SyncModal({ ctx, onClose }) {
+  const { settings, employees, suppliers, month, year, monthIdx, monthKey, setMonths, setEmployees, setSuppliers, logAudit } = ctx;
+  const fileInputRef = useRef(null);
+  const [error, setError] = useState('');
+  const [exportFile, setExportFile] = useState(null);
+  const [parsed, setParsed] = useState(null); // result of parseSyncWorkbook, awaiting confirm
+  const [applied, setApplied] = useState(false);
+
+  const handleExport = () => {
+    setError('');
+    try {
+      const result = buildSyncWorkbook(ctx);
+      setExportFile(result);
+      try {
+        const a = document.createElement('a');
+        a.href = result.url; a.download = result.filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      } catch (e) { /* fall back to the manual link rendered below */ }
+    } catch (e) {
+      setError('Не удалось сформировать файл: ' + (e?.message || 'неизвестная ошибка'));
+    }
+  };
+
+  const onFilePicked = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(''); setApplied(false);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const result = parseSyncWorkbook(reader.result, ctx);
+        setParsed(result);
+      } catch (err) {
+        setError('Не удалось прочитать файл. Убедитесь, что это файл, скачанный из этой же синхронизации, и что вы не меняли названия листов.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const applyImport = () => {
+    if (!parsed) return;
+    setMonths((prev) => ({ ...prev, [monthKey]: parsed.newMonth }));
+    if (parsed.employeeUpserts.length) {
+      setEmployees((prev) => {
+        const byId = new Map(prev.map((x) => [x.id, x]));
+        parsed.employeeUpserts.forEach((u) => byId.set(u.id, { ...(byId.get(u.id) || {}), ...u }));
+        return Array.from(byId.values());
+      });
+    }
+    if (parsed.supplierUpserts.length) {
+      setSuppliers((prev) => {
+        const byId = new Map(prev.map((x) => [x.id, x]));
+        parsed.supplierUpserts.forEach((u) => byId.set(u.id, { ...(byId.get(u.id) || {}), ...u }));
+        return Array.from(byId.values());
+      });
+    }
+    logAudit({ what: 'Импорт из Excel применён', month: monthKey });
+    setApplied(true);
+    setParsed(null);
+  };
+
+  const d = parsed?.diff;
+  const totalChanges = d ? d.revenueDaysChanged + d.courierPromoDaysChanged + d.kitchen.added + d.kitchen.changed + d.kitchen.removed
+    + d.other.added + d.other.changed + d.other.removed + d.adjustments.added + d.adjustments.changed + d.adjustments.removed
+    + d.orders.added + d.orders.changed + d.orders.removed + d.payments.added + d.payments.changed + d.payments.removed
+    + d.newEmployees + d.changedEmployees + d.newSuppliers + d.changedSuppliers : 0;
+  const hasWarnings = parsed && Object.values(parsed.warnings).some((arr) => arr.length > 0);
+
+  return (
+    <Modal title="Синхронизация с Excel" onClose={onClose} wide>
+      <p className="rp-muted" style={{ marginTop: 0 }}>
+        Файл — это все первичные данные {MONTHS_RU[monthIdx].toLowerCase()} {year} (не итоговый отчёт, а именно то, что можно
+        редактировать): выручка по дням, расходы, курьер, промо, смены, корректировки, поставки и справочники сотрудников/поставщиков.
+        Автоматической живой синхронизации файла на диске браузер не позволяет — рабочий цикл: скачали → отредактировали
+        в Excel → загрузили обратно тем же файлом → приложение покажет, что изменилось, и применит только после вашего подтверждения.
+      </p>
+
+      <div className="rp-sync-actions">
+        <button className="rp-btn" onClick={handleExport}><FileSpreadsheet size={15} /> Скачать файл для редактирования</button>
+        <button className="rp-btn rp-btn-ghost" onClick={() => fileInputRef.current?.click()}><UploadCloud size={15} /> Загрузить изменённый файл</button>
+        <input ref={fileInputRef} type="file" accept=".xlsx" style={{ display: 'none' }} onChange={onFilePicked} />
+      </div>
+
+      {exportFile && (
+        <a className="rp-export-fallback rp-export-fallback-primary" href={exportFile.url} download={exportFile.filename}>
+          <Download size={12} /> Скачать «{exportFile.filename}» (если не началось само)
+        </a>
+      )}
+      {error && <div className="rp-export-error">{error}</div>}
+      {applied && !parsed && <div className="rp-sync-applied"><Check size={14} /> Изменения применены.</div>}
+
+      {parsed && (
+        <div className="rp-sync-diff">
+          <div className="rp-card-title">Что изменится ({totalChanges} {totalChanges === 1 ? 'изменение' : 'изменений'})</div>
+          {totalChanges === 0 ? (
+            <p className="rp-muted">Отличий от текущих данных приложения не найдено.</p>
+          ) : (
+            <ul className="rp-sync-diff-list">
+              {d.revenueDaysChanged > 0 && <li>Выручка: изменено дней — {d.revenueDaysChanged}</li>}
+              {d.courierPromoDaysChanged > 0 && <li>Курьер/промо: изменено дней — {d.courierPromoDaysChanged}</li>}
+              {(d.kitchen.added || d.kitchen.changed || d.kitchen.removed) > 0 && <li>Расходы кухня/бар: +{d.kitchen.added} / изменено {d.kitchen.changed} / удалено {d.kitchen.removed}</li>}
+              {(d.other.added || d.other.changed || d.other.removed) > 0 && <li>Прочие расходы: +{d.other.added} / изменено {d.other.changed} / удалено {d.other.removed}</li>}
+              {(d.adjustments.added || d.adjustments.changed || d.adjustments.removed) > 0 && <li>Корректировки сотрудников: +{d.adjustments.added} / изменено {d.adjustments.changed} / удалено {d.adjustments.removed}</li>}
+              {(d.orders.added || d.orders.changed || d.orders.removed) > 0 && <li>Поставки: +{d.orders.added} / изменено {d.orders.changed} / удалено {d.orders.removed}</li>}
+              {(d.payments.added || d.payments.changed || d.payments.removed) > 0 && <li>Оплаты поставщикам: +{d.payments.added} / изменено {d.payments.changed} / удалено {d.payments.removed}</li>}
+              {d.newEmployees > 0 && <li>Новых сотрудников: {d.newEmployees}</li>}
+              {d.changedEmployees > 0 && <li>Изменённых карточек сотрудников: {d.changedEmployees}</li>}
+              {d.newSuppliers > 0 && <li>Новых поставщиков: {d.newSuppliers}</li>}
+              {d.changedSuppliers > 0 && <li>Изменённых поставщиков: {d.changedSuppliers}</li>}
+            </ul>
+          )}
+          {hasWarnings && (
+            <div className="rp-inline-warn" style={{ marginTop: 8 }}>
+              <AlertTriangle size={13} />
+              <span>
+                Не удалось сопоставить по имени, строки пропущены:
+                {[...parsed.warnings.unmatchedShiftNames, ...parsed.warnings.unmatchedAdjNames, ...parsed.warnings.unmatchedOrderSuppliers, ...parsed.warnings.unmatchedPaymentSuppliers]
+                  .filter((v, i, arr) => arr.indexOf(v) === i).join(', ')} — проверьте точное написание имени/названия на листе «Сотрудники»/«Поставщики».
+              </span>
+            </div>
+          )}
+          <div className="rp-modal-actions">
+            <button className="rp-btn rp-btn-ghost" onClick={() => setParsed(null)}>Отмена</button>
+            <button className="rp-btn" disabled={totalChanges === 0} onClick={applyImport}>Применить изменения</button>
+          </div>
+          <p className="rp-muted" style={{ fontSize: 11 }}>Справочники сотрудников и поставщиков обновляются только добавлением/правкой — пропавшая из файла строка сотрудника или поставщика не удаляет его из приложения.</p>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 function ExportMenu({ ctx }) {
   const [open, setOpen] = useState(false);
@@ -2550,6 +3206,8 @@ function GlobalStyle() {
       * { box-sizing: border-box; }
       .rp-root { display: flex; min-height: 100vh; background: ${COLORS.bg}; font-family: 'Inter', -apple-system, sans-serif; color: ${COLORS.ink}; font-size: 13.5px; }
       .rp-sidebar { width: 216px; flex-shrink: 0; background: #1B2420; color: #EDEBE3; display: flex; flex-direction: column; padding: 20px 14px; }
+      .rp-nav-close, .rp-nav-hamburger { display: none; }
+      .rp-nav-backdrop { display: none; }
       .rp-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px; }
       .rp-brand-mark { width: 34px; height: 34px; border-radius: 9px; background: ${COLORS.accent}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: white; }
       .rp-brand-name { font-weight: 700; font-size: 14.5px; letter-spacing: 0.02em; }
@@ -2578,6 +3236,43 @@ function GlobalStyle() {
       .rp-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
       .rp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
       @media (max-width: 980px) { .rp-grid-4 { grid-template-columns: repeat(2,1fr); } .rp-grid-2 { grid-template-columns: 1fr; } }
+      @media (max-width: 760px) {
+        .rp-nav-hamburger { display: inline-flex; }
+        .rp-nav-close { display: inline-flex; margin-left: auto; color: #C7CDC4; }
+        .rp-sidebar {
+          position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: 250px;
+          transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+        }
+        .rp-sidebar.open { transform: translateX(0); }
+        .rp-nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,18,15,0.45); z-index: 55; }
+        .rp-topbar { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+        .rp-month-switch { flex-wrap: wrap; gap: 6px; }
+        .rp-content { padding: 16px 14px 50px; }
+        .rp-grid-4 { grid-template-columns: 1fr 1fr; }
+        .rp-day-header { flex-wrap: wrap; gap: 8px; }
+        .rp-shift-grid { grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); }
+        .rp-icon-btn { padding: 8px; }
+        .rp-modal-body, .rp-modal-head { padding-left: 14px; padding-right: 14px; }
+        .rp-day-strip { gap: 4px; }
+        .rp-day-chip { width: 30px; height: 30px; font-size: 11px; }
+        .rp-toolbar { flex-wrap: wrap; }
+        .rp-list-row { flex-wrap: wrap; }
+        .rp-list-amount { margin-left: auto; }
+      }
+      @media (max-width: 520px) {
+        .rp-grid-4 { grid-template-columns: 1fr; }
+        .rp-form-grid { grid-template-columns: 1fr; }
+        .rp-payslip { grid-template-columns: 1fr; }
+        .rp-payslip-total { grid-column: span 1; }
+        .rp-pnl-row { grid-template-columns: 1fr 88px 46px; font-size: 11.5px; }
+        .rp-compare-picker { flex-wrap: wrap; }
+        .rp-history-row { flex-direction: column; align-items: flex-start; gap: 6px; }
+        .rp-history-ts { min-width: 0; }
+        .rp-history-revert { align-self: flex-end; }
+        .rp-export-menu { max-width: calc(100vw - 28px); }
+        .rp-brand-sub { display: none; }
+        .rp-page-head h1 { font-size: 18px; }
+      }
       .rp-stat { background: ${COLORS.panel}; border: 1px solid ${COLORS.line}; border-radius: 12px; padding: 13px 15px; }
       .rp-clickable { cursor: pointer; transition: box-shadow .15s, transform .15s; }
       .rp-clickable:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.07); transform: translateY(-1px); }
@@ -2603,7 +3298,9 @@ function GlobalStyle() {
       .rp-icon-btn-danger:hover { color: ${COLORS.danger}; }
       .rp-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid ${COLORS.line}; background: #F1F4F1; padding: 5px 10px; border-radius: 20px; font-size: 11.5px; cursor: pointer; color: ${COLORS.inkSoft}; }
       .rp-chip-locked { background: #FBF3E7; border-color: #EAD9BB; color: ${COLORS.warn}; }
+      .rp-table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .rp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .rp-table td, .rp-table th { white-space: nowrap; }
       .rp-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: ${COLORS.inkSoft}; border-bottom: 1px solid ${COLORS.line}; padding: 8px 8px; position: sticky; top: 0; background: ${COLORS.panel}; }
       .rp-table td { padding: 9px 8px; border-bottom: 1px solid #F0EFEA; }
       .rp-table .rp-num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -2678,11 +3375,16 @@ function GlobalStyle() {
       .rp-export-menu button:hover { background: ${COLORS.bg}; }
       .rp-export-fallback { display: flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 11px; color: ${COLORS.accent}; text-decoration: none; border-top: 1px solid ${COLORS.line}; }
       .rp-export-fallback-primary { font-weight: 700; background: #EAF3EE; font-size: 11.5px; }
+      .rp-sync-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+      .rp-sync-applied { display: flex; align-items: center; gap: 6px; background: #EAF3EE; color: ${COLORS.accent}; padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-top: 10px; }
+      .rp-sync-diff { margin-top: 16px; padding-top: 14px; border-top: 1px solid ${COLORS.line}; }
+      .rp-sync-diff-list { margin: 8px 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
       .rp-export-fallback:hover { background: ${COLORS.bg}; }
       .rp-export-error { padding: 8px 14px; font-size: 11px; color: ${COLORS.danger}; border-top: 1px solid ${COLORS.line}; }
       .rp-divider-line { height: 1px; background: ${COLORS.line}; margin: 18px 0; }
       .rp-history-list { display: flex; flex-direction: column; gap: 2px; max-height: 640px; overflow-y: auto; }
-      .rp-history-row { display: flex; gap: 14px; padding: 9px 6px; border-bottom: 1px solid #F0EFEA; }
+      .rp-history-row { display: flex; gap: 14px; padding: 9px 6px; border-bottom: 1px solid #F0EFEA; align-items: center; }
+      .rp-history-revert { flex-shrink: 0; }
       .rp-history-ts { font-size: 11px; color: ${COLORS.inkSoft}; white-space: nowrap; padding-top: 1px; min-width: 118px; font-variant-numeric: tabular-nums; }
       .rp-history-body { flex: 1; }
       .rp-history-what { font-weight: 600; font-size: 12.5px; }
@@ -2695,3 +3397,199 @@ function GlobalStyle() {
     `}</style>
   );
 }
+
+function AuthScreen({ onReady }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState('signin');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!supabase) return;
+    setBusy(true); setMessage('');
+    try {
+      if (mode === 'signin') {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        if (data?.session) onReady(data.session);
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        if (data?.session) onReady(data.session);
+        else setMessage('Регистрация создана. Проверьте почту и подтвердите email, затем войдите.');
+      }
+    } catch (err) {
+      setMessage(err?.message || 'Не удалось выполнить вход');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'#F4F3EF',fontFamily:'Inter,Arial,sans-serif',padding:20}}>
+      <div style={{width:'100%',maxWidth:420,background:'#fff',border:'1px solid #E4E1D8',borderRadius:16,padding:28,boxShadow:'0 12px 40px rgba(28,35,33,.08)'}}>
+        <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:24}}>
+          <div style={{width:42,height:42,borderRadius:12,display:'grid',placeItems:'center',background:'#1F6F54',color:'#fff',fontWeight:800,fontSize:20}}>С</div>
+          <div><div style={{fontWeight:800,fontSize:20}}>СИОСАН</div><div style={{fontSize:12,color:'#5B645F'}}>Управленческий P&L · облачная версия</div></div>
+        </div>
+        <h2 style={{margin:'0 0 6px',fontSize:22}}>{mode==='signin'?'Вход':'Создать аккаунт'}</h2>
+        <p style={{margin:'0 0 20px',color:'#5B645F',fontSize:13}}>Данные хранятся в общей базе ресторана.</p>
+        <form onSubmit={submit} style={{display:'grid',gap:12}}>
+          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
+          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Пароль<input type="password" required minLength={6} value={password} onChange={e=>setPassword(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
+          {message && <div style={{padding:10,borderRadius:8,background:'#F7EEE7',color:'#8C4B22',fontSize:12}}>{message}</div>}
+          <button disabled={busy} style={{border:0,borderRadius:9,padding:'12px 14px',background:'#1F6F54',color:'#fff',fontWeight:700,cursor:'pointer'}}>{busy?'Подождите…':mode==='signin'?'Войти':'Зарегистрироваться'}</button>
+        </form>
+        <button onClick={()=>{setMode(mode==='signin'?'signup':'signin');setMessage('')}} style={{width:'100%',marginTop:12,border:0,background:'transparent',color:'#1F6F54',cursor:'pointer',fontSize:13}}>{mode==='signin'?'Нет аккаунта? Зарегистрироваться':'Уже есть аккаунт? Войти'}</button>
+      </div>
+    </div>
+  );
+}
+
+async function createCloudStorageAdapter() {
+  if (!supabase) throw new Error('Supabase не настроен');
+
+  const { data: rows, error } = await supabase
+    .from('restaurant_data')
+    .select('id,data')
+    .eq('restaurant_id', RESTAURANT_ID)
+    .limit(1);
+  if (error) throw error;
+
+  let row = rows?.[0] || null;
+  let cloudData = row?.data && typeof row.data === 'object' ? row.data : {};
+
+  // Migration from the previous cloud app format to Claude's split window.storage format.
+  let entries;
+  if (cloudData.__storageVersion === 2 && cloudData.entries && typeof cloudData.entries === 'object') {
+    entries = { ...cloudData.entries };
+  } else {
+    entries = {};
+    if (cloudData.settings || cloudData.employees || cloudData.suppliers) {
+      entries['siosan-meta'] = JSON.stringify({
+        settings: cloudData.settings || defaultSettings(),
+        employees: cloudData.employees || [],
+        suppliers: cloudData.suppliers || [],
+      });
+      entries['siosan-audit'] = JSON.stringify(cloudData.auditLog || []);
+      Object.entries(cloudData.months || {}).forEach(([mk, mv]) => {
+        entries[`siosan-month:${mk}`] = JSON.stringify(mv);
+      });
+    }
+  }
+
+  if (!row) {
+    const { data: inserted, error: insertError } = await supabase
+      .from('restaurant_data')
+      .insert({
+        restaurant_id: RESTAURANT_ID,
+        data: { __storageVersion: 2, entries },
+        updated_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+    if (insertError) throw insertError;
+    row = inserted;
+  } else if (cloudData.__storageVersion !== 2) {
+    const { error: migrateError } = await supabase
+      .from('restaurant_data')
+      .update({ data: { __storageVersion: 2, entries }, updated_at: new Date().toISOString() })
+      .eq('id', row.id);
+    if (migrateError) throw migrateError;
+  }
+
+  let queue = Promise.resolve();
+  const persist = () => {
+    const snapshot = { __storageVersion: 2, entries: { ...entries } };
+    queue = queue.then(async () => {
+      const { error: saveError } = await supabase
+        .from('restaurant_data')
+        .update({ data: snapshot, updated_at: new Date().toISOString() })
+        .eq('id', row.id);
+      if (saveError) throw saveError;
+      try { window.localStorage.setItem('siosan-cloud-backup-v2', JSON.stringify(snapshot)); } catch (_) {}
+    });
+    return queue;
+  };
+
+  return {
+    async get(key) {
+      if (!Object.prototype.hasOwnProperty.call(entries, key)) return null;
+      return { value: entries[key] };
+    },
+    async set(key, value) {
+      entries[key] = String(value);
+      await persist();
+      return { value: entries[key] };
+    },
+    async delete(key) {
+      delete entries[key];
+      await persist();
+      return { deleted: true };
+    },
+    async list(prefix = '') {
+      return { keys: Object.keys(entries).filter((k) => k.startsWith(prefix)).sort() };
+    },
+  };
+}
+
+function CloudApp() {
+  const [session, setSession] = useState(undefined);
+  const [storageReady, setStorageReady] = useState(false);
+  const [cloudError, setCloudError] = useState('');
+
+  useEffect(() => {
+    if (!supabase) { setSession(null); return; }
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
+      setStorageReady(false);
+    });
+    return () => sub?.subscription?.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session || !supabase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setCloudError('');
+        const adapter = await createCloudStorageAdapter();
+        if (cancelled) return;
+        window.storage = adapter;
+        setStorageReady(true);
+      } catch (e) {
+        if (!cancelled) setCloudError(e?.message || 'Ошибка подключения к общей базе');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.user?.id]);
+
+  if (!supabase) {
+    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#B33F3F'}}>Не настроено подключение Supabase. Проверьте VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY в Vercel.</div>;
+  }
+  if (session === undefined) {
+    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#5B645F'}}>Проверка входа…</div>;
+  }
+  if (!session) return <AuthScreen onReady={setSession} />;
+  if (cloudError) {
+    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#B33F3F'}}>Ошибка облачной синхронизации: {cloudError}</div>;
+  }
+  if (!storageReady) {
+    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#5B645F'}}>Подключение общей базы…</div>;
+  }
+
+  return (
+    <>
+      <CoreApp />
+      <button
+        onClick={() => supabase.auth.signOut()}
+        title={session.user?.email || ''}
+        style={{position:'fixed',right:14,bottom:14,zIndex:9999,border:'1px solid #E4E1D8',background:'#fff',color:'#5B645F',borderRadius:9,padding:'8px 11px',fontSize:12,cursor:'pointer',boxShadow:'0 4px 16px rgba(0,0,0,.08)'}}
+      >Выйти</button>
+    </>
+  );
+}
+
+export default CloudApp;
+
