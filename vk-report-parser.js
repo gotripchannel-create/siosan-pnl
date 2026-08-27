@@ -1,112 +1,429 @@
-// ============================================================================
-// VK report message parser — best-effort, rule-based. Never treated as ground
-// truth: every field it produces is meant to be reviewed by a human before it
-// is written into real P&L data (see "Входящие отчёты" screen).
-// ============================================================================
+// vk-report-parser.js
+// Разбор отчётов, которые сотрудник копирует из VK.
 
-function normalizeNumber(str) {
-  const cleaned = String(str).replace(/\s/g, '').replace(',', '.');
-  const n = parseFloat(cleaned);
+function normalizeNumber(value) {
+  if (value === null || value === undefined) return null;
+
+  let s = String(value)
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s/g, '')
+    .replace(/[₽рруб.]+$/i, '')
+    .replace(',', '.');
+
+  // Если случайно попали лишние символы
+  s = s.replace(/[^\d.-]/g, '');
+
+  const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
 
-const KNOWN_KEYWORD_RE = /достав|(^|\s)км\b|км$|курьер|промо|итог.*выруч|выруч.*нал|нал.*выруч|выруч.*карт|карт.*выруч/i;
+function normalizeDate(text, fallbackDate) {
+  const value = String(text || '').toLowerCase();
 
-function parseVkReport(text, ctx = {}) {
-  const { revenueChannels = [], employees = [], fallbackDate = null, expenseCeiling = 5000, expenseCategories = [] } = ctx;
-  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  // 26.08.2026 / 26/08/2026
+  let m = value.match(/\b(\d{1,2})[./](\d{1,2})[./](\d{2,4})\b/);
+
+  if (m) {
+    let year = Number(m[3]);
+    if (year < 100) year += 2000;
+
+    return `${year}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[1])).padStart(2, '0')}`;
+  }
+
+  // 26.08
+  m = value.match(/\b(\d{1,2})[./](\d{1,2})\b/);
+
+  if (m) {
+    const year = fallbackDate
+      ? Number(String(fallbackDate).slice(0, 4))
+      : new Date().getFullYear();
+
+    return `${year}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[1])).padStart(2, '0')}`;
+  }
+
+  // Вчера
+  if (value.includes('вчера')) {
+    const d = new Date(`${fallbackDate}T12:00:00`);
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }
+
+  return fallbackDate || null;
+}
+
+function findEmployee(name, employees) {
+  const clean = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.:,]/g, '');
+
+  if (!clean) return null;
+
+  // Сначала точное совпадение полного имени
+  const exact = employees.find(
+    (e) => String(e.name || '').trim().toLowerCase() === clean
+  );
+
+  if (exact) return exact;
+
+  // Потом первое слово — имя
+  const first = clean.split(/\s+/)[0];
+
+  const matches = employees.filter((e) => {
+    const employeeFirst = String(e.name || '')
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)[0];
+
+    return employeeFirst === first;
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export function parseVkReport(text, ctx = {}) {
+  const {
+    revenueChannels = [],
+    employees = [],
+    fallbackDate = null,
+  } = ctx;
+
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 
   const result = {
-    date: null,
+    date: normalizeDate(text, fallbackDate),
+
     revenue: {},
-    courier: { pay: null, km: null, deliveries: null },
-    promo: { pay: null },
-    otherExpenses: [],
-    advances: [],
-    rosterNames: [],
-    rosterMatches: [],
-    unmatchedLines: [],
+
     totalHint: null,
+
+    purchases: [],
+
+    otherExpenses: [],
+
+    courier: {
+      pay: null,
+      km: null,
+      deliveries: null,
+    },
+
+    promo: {
+      pay: null,
+    },
+
+    advances: [],
+
+    rosterMatches: [],
+
+    unmatchedLines: [],
   };
 
-  const numRe = /(\d[\d\s]*[.,]?\d*)/;
-  const dateRe = /^(\d{2})[.\/](\d{2})[.\/](\d{2,4})$/;
-  const empByFirstName = new Map();
-  employees.forEach((e) => empByFirstName.set(e.name.trim().split(/\s+/)[0].toLowerCase(), e));
-
-  let inAdvancesBlock = false;
+  let advancesMode = false;
 
   for (const line of lines) {
     const lower = line.toLowerCase();
 
-    const dm = line.match(dateRe);
-    if (dm) {
-      let [, dd, mm, yy] = dm;
-      if (yy.length === 2) yy = '20' + yy;
-      result.date = `${yy}-${mm}-${dd}`;
+    // --------------------------------------------------
+    // ДАТА
+    // --------------------------------------------------
+
+    if (
+      /^отч[её]т/.test(lower) ||
+      /^дата/.test(lower) ||
+      /^за\s+\d{1,2}[./]\d{1,2}/.test(lower)
+    ) {
+      const parsedDate = normalizeDate(line, fallbackDate);
+      if (parsedDate) result.date = parsedDate;
+    }
+
+    // --------------------------------------------------
+    // БЛОК АВАНСОВ
+    // --------------------------------------------------
+
+    if (/^аванс(ы)?\s*:?\s*$/i.test(line)) {
+      advancesMode = true;
       continue;
     }
 
-    if (/^авансы\s*:?$/i.test(line)) { inAdvancesBlock = true; continue; }
-
-    const numMatch = line.match(numRe);
-    const amount = numMatch ? normalizeNumber(numMatch[1]) : null;
-
-    if (inAdvancesBlock && amount !== null && !KNOWN_KEYWORD_RE.test(lower)) {
-      const name = line.replace(numMatch[0], '').trim();
-      const looksLikeAName = name && /^[А-ЯЁа-яё]+\.?$/.test(name);
-      if (looksLikeAName) { result.advances.push({ name, amount }); continue; }
+    // Если начинается новый раздел — выходим из блока авансов
+    if (
+      /^(выручка|покупки|расходы|другие расходы|прочие расходы|курьер|доставки|промо|итого)/i.test(
+        lower
+      )
+    ) {
+      advancesMode = false;
     }
-    inAdvancesBlock = false;
 
-    if (amount === null) {
-      const tokens = line.split(/\s+/).filter(Boolean);
-      const nameLikeCount = tokens.filter((t) => empByFirstName.has(t.toLowerCase().replace(/\.$/, ''))
-        || /^[А-ЯЁа-яё]+\.?$/.test(t)).length;
-      const looksLikeNames = tokens.length >= 1 && nameLikeCount === tokens.length && tokens.length <= 8;
-      if (looksLikeNames) result.rosterNames.push(...tokens);
-      else result.unmatchedLines.push(line);
+    // --------------------------------------------------
+    // АВАНС
+    // --------------------------------------------------
+
+    if (advancesMode) {
+      const m = line.match(/^(.+?)\s*[:\-]?\s*(\d[\d\s.,]*)\s*(?:₽|руб|р)?$/i);
+
+      if (m) {
+        const name = m[1].trim();
+        const amount = normalizeNumber(m[2]);
+
+        if (amount !== null) {
+          const employee = findEmployee(name, employees);
+
+          result.advances.push({
+            name,
+            amount,
+            employeeId: employee?.id || null,
+            matchedName: employee?.name || null,
+            include: !!employee,
+          });
+
+          continue;
+        }
+      }
+    }
+
+    // --------------------------------------------------
+    // ЧИСЛО
+    // --------------------------------------------------
+
+    const numberMatch = line.match(/-?\d[\d\s]*(?:[.,]\d+)?/);
+
+    const amount = numberMatch
+      ? normalizeNumber(numberMatch[0])
+      : null;
+
+    // --------------------------------------------------
+    // ИТОГО ВЫРУЧКА
+    // --------------------------------------------------
+
+    if (
+      /итого.*выруч|выруч.*итого|общая.*выруч/i.test(lower)
+    ) {
+      if (amount !== null) {
+        result.totalHint = amount;
+      }
+
       continue;
     }
 
-    if (/итог.*выруч/i.test(lower)) { result.totalHint = amount; continue; }
+    // --------------------------------------------------
+    // НАЛИЧНЫЕ
+    // --------------------------------------------------
 
-    if (/выруч.*нал|нал.*выруч/i.test(lower)) {
-      const ch = revenueChannels.find((c) => /налич/i.test(c.name));
-      if (ch) result.revenue[ch.id] = amount; else result.unmatchedLines.push(line);
+    if (
+      /налич|нал\b|наличка/.test(lower) &&
+      !/аванс/.test(lower)
+    ) {
+      const channel = revenueChannels.find((c) =>
+        /налич/i.test(String(c.name || ''))
+      );
+
+      if (channel && amount !== null) {
+        result.revenue[channel.id] = amount;
+        continue;
+      }
+    }
+
+    // --------------------------------------------------
+    // КАРТА
+    // --------------------------------------------------
+
+    if (
+      /карт|карта|карты|безнал/.test(lower) &&
+      !/аванс/.test(lower)
+    ) {
+      const channel = revenueChannels.find((c) =>
+        /карт/i.test(String(c.name || ''))
+      );
+
+      if (channel && amount !== null) {
+        result.revenue[channel.id] = amount;
+        continue;
+      }
+    }
+
+    // --------------------------------------------------
+    // ЯНДЕКС ЕДА
+    // --------------------------------------------------
+
+    if (/яндекс/.test(lower) && amount !== null) {
+      const channel = revenueChannels.find((c) =>
+        /яндекс/i.test(String(c.name || ''))
+      );
+
+      if (channel) {
+        result.revenue[channel.id] = amount;
+        continue;
+      }
+    }
+
+    // --------------------------------------------------
+    // НЕТМОНЕТ
+    // --------------------------------------------------
+
+    if (/нет\s*монет|нетмонет/.test(lower) && amount !== null) {
+      const channel = revenueChannels.find((c) =>
+        /нет\s*монет|нетмонет/i.test(String(c.name || ''))
+      );
+
+      if (channel) {
+        result.revenue[channel.id] = amount;
+        continue;
+      }
+    }
+
+    // --------------------------------------------------
+    // ЛЮБОЙ ДРУГОЙ КАНАЛ ВЫРУЧКИ
+    // --------------------------------------------------
+
+    const revenueChannel = revenueChannels.find((channel) => {
+      const channelName = String(channel.name || '')
+        .toLowerCase()
+        .trim();
+
+      return channelName && lower.includes(channelName);
+    });
+
+    if (
+      revenueChannel &&
+      amount !== null &&
+      /выруч|оплат|оборот/.test(lower)
+    ) {
+      result.revenue[revenueChannel.id] = amount;
       continue;
     }
-    if (/выруч.*карт|карт.*выруч/i.test(lower)) {
-      const ch = revenueChannels.find((c) => /карт/i.test(c.name));
-      if (ch) result.revenue[ch.id] = amount; else result.unmatchedLines.push(line);
+
+    // --------------------------------------------------
+    // КУРЬЕР
+    // --------------------------------------------------
+
+    if (/достав/.test(lower) && amount !== null) {
+      result.courier.deliveries = amount;
       continue;
     }
-    const matchedChannel = revenueChannels.find((c) => lower.includes(c.name.toLowerCase()));
-    if (matchedChannel) { result.revenue[matchedChannel.id] = amount; continue; }
 
-    if (/достав/i.test(lower)) { result.courier.deliveries = amount; continue; }
-    if (/(^|\s)км\b/i.test(lower) || /км$/i.test(line)) { result.courier.km = amount; continue; }
-    if (/курьер/i.test(lower)) { result.courier.pay = amount; continue; }
-    if (/промо/i.test(lower)) { result.promo.pay = amount; continue; }
+    if (
+      /\bкм\b/.test(lower) &&
+      amount !== null
+    ) {
+      result.courier.km = amount;
+      continue;
+    }
 
-    const category = line.replace(numMatch[0], '').trim();
-    const looksLikeExpense = category && (amount <= expenseCeiling || expenseCategories.some((c) => lower.includes(c.toLowerCase())));
-    if (looksLikeExpense) result.otherExpenses.push({ category, amount });
-    else result.unmatchedLines.push(line);
+    if (
+      /курьер/.test(lower) &&
+      amount !== null
+    ) {
+      result.courier.pay = amount;
+      continue;
+    }
+
+    // --------------------------------------------------
+    // ПРОМО
+    // --------------------------------------------------
+
+    if (/промо/.test(lower) && amount !== null) {
+      result.promo.pay = amount;
+      continue;
+    }
+
+    // --------------------------------------------------
+    // ПОКУПКИ
+    // --------------------------------------------------
+
+    if (
+      /покупк|закупк/.test(lower) &&
+      amount !== null
+    ) {
+      const category = line
+        .replace(numberMatch?.[0] || '', '')
+        .replace(/покупки|покупка|закупки|закупка/gi, '')
+        .replace(/[:\-]/g, '')
+        .trim();
+
+      result.purchases.push({
+        category: category || 'Покупки',
+        amount,
+        include: true,
+      });
+
+      continue;
+    }
+
+    // --------------------------------------------------
+    // ДРУГИЕ РАСХОДЫ
+    // --------------------------------------------------
+
+    if (
+      /другие расходы|прочие расходы|расход\b|расходы\b/.test(lower) &&
+      amount !== null
+    ) {
+      const category = line
+        .replace(numberMatch?.[0] || '', '')
+        .replace(/другие расходы|прочие расходы|расходы|расход/gi, '')
+        .replace(/[:\-]/g, '')
+        .trim();
+
+      result.otherExpenses.push({
+        category: category || 'Прочее',
+        amount,
+        include: true,
+      });
+
+      continue;
+    }
+
+    // --------------------------------------------------
+    // НЕРАСПОЗНАННАЯ СТРОКА
+    // --------------------------------------------------
+
+    if (
+      !/^(отч[её]т|дата|авансы|выручка|покупки|закупки|расходы|курьер|промо)/i.test(
+        lower
+      )
+    ) {
+      // Не считать просто текст ошибкой.
+      // Но сохраняем его, чтобы пользователь мог увидеть.
+      if (amount !== null) {
+        result.unmatchedLines.push(line);
+      }
+    }
   }
 
-  if (!result.date) result.date = fallbackDate;
+  // --------------------------------------------------
+  // РОСПИСЬ / КТО РАБОТАЛ
+  // --------------------------------------------------
 
-  result.advances = result.advances.map((a) => {
-    const m = empByFirstName.get(a.name.trim().toLowerCase());
-    return { ...a, employeeId: m ? m.id : null, matchedName: m ? m.name : null };
-  });
-  result.rosterMatches = result.rosterNames.map((n) => {
-    const m = empByFirstName.get(n.toLowerCase().replace(/\.$/, ''));
-    return { raw: n, employeeId: m ? m.id : null, matchedName: m ? m.name : null };
-  });
+  result.rosterMatches = [];
+
+  for (const employee of employees) {
+    const firstName = String(employee.name || '')
+      .trim()
+      .split(/\s+/)[0]
+      .toLowerCase();
+
+    if (
+      firstName &&
+      lines.some((line) => {
+        const l = line.toLowerCase().trim();
+
+        return (
+          l === firstName ||
+          l === `${firstName}.` ||
+          l.startsWith(`${firstName} `)
+        );
+      })
+    ) {
+      result.rosterMatches.push({
+        raw: employee.name,
+        employeeId: employee.id,
+        matchedName: employee.name,
+        include: true,
+      });
+    }
+  }
 
   return result;
 }
-
-module.exports = { parseVkReport, normalizeNumber };
