@@ -533,47 +533,62 @@ const NAV = [
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
-async function loadAllMonths() {
-  const months = {};
-  try {
-    const listRes = await window.storage.list('siosan-month:');
-    const keys = (listRes && listRes.keys) || [];
-    for (const k of keys) {
-      try {
-        const r = await window.storage.get(k);
-        if (r && r.value) {
-          const mk = k.startsWith('siosan-month:') ? k.slice('siosan-month:'.length) : k;
-          months[mk] = JSON.parse(r.value);
-        }
-      } catch (e) { /* skip an unreadable month rather than fail the whole load */ }
-    }
-  } catch (e) { /* listing unavailable; return whatever we have (empty) */ }
-  return months;
-}
 
-// Reconciles storage with the given months object: deletes any 'siosan-month:*'
-// key not present in it, and (re)writes every month that is. Used by reset and
-// by "restore from backup" so stale months don't linger after either action.
-async function persistAllMonths(monthsObj) {
-  try {
-    const listRes = await window.storage.list('siosan-month:');
-    const existingKeys = (listRes && listRes.keys) || [];
-    const wantedKeys = new Set(Object.keys(monthsObj).map((k) => `siosan-month:${k}`));
-    for (const k of existingKeys) {
-      if (!wantedKeys.has(k)) {
-        try { await window.storage.delete(k); } catch (e) { /* ignore */ }
+
+function AuthScreen({ onReady }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState('signin');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!supabase) return;
+    setBusy(true); setMessage('');
+    try {
+      if (mode === 'signin') {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        if (data?.session) onReady(data.session);
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        if (data?.session) onReady(data.session);
+        else setMessage('Регистрация создана. Проверьте почту и подтвердите email, затем войдите.');
       }
-    }
-  } catch (e) { /* listing failed; still try to write below */ }
-  for (const [mk, mv] of Object.entries(monthsObj)) {
-    try { await window.storage.set(`siosan-month:${mk}`, JSON.stringify(mv)); } catch (e) { /* ignore */ }
-  }
+    } catch (err) {
+      setMessage(err?.message || 'Не удалось выполнить вход');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'#F4F3EF',fontFamily:'Inter,Arial,sans-serif',padding:20}}>
+      <div style={{width:'100%',maxWidth:420,background:'#fff',border:'1px solid #E4E1D8',borderRadius:16,padding:28,boxShadow:'0 12px 40px rgba(28,35,33,.08)'}}>
+        <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:24}}>
+          <div style={{width:42,height:42,borderRadius:12,display:'grid',placeItems:'center',background:'#1F6F54',color:'#fff',fontWeight:800,fontSize:20}}>С</div>
+          <div><div style={{fontWeight:800,fontSize:20}}>СИОСАН</div><div style={{fontSize:12,color:'#5B645F'}}>Управленческий P&L · облачная версия</div></div>
+        </div>
+        <h2 style={{margin:'0 0 6px',fontSize:22}}>{mode==='signin'?'Вход':'Создать аккаунт'}</h2>
+        <p style={{margin:'0 0 20px',color:'#5B645F',fontSize:13}}>Данные хранятся в общей базе ресторана.</p>
+        <form onSubmit={submit} style={{display:'grid',gap:12}}>
+          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
+          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Пароль<input type="password" required minLength={6} value={password} onChange={e=>setPassword(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
+          {message && <div style={{padding:10,borderRadius:8,background:'#F7EEE7',color:'#8C4B22',fontSize:12}}>{message}</div>}
+          <button disabled={busy} style={{border:0,borderRadius:9,padding:'12px 14px',background:'#1F6F54',color:'#fff',fontWeight:700,cursor:'pointer'}}>{busy?'Подождите…':mode==='signin'?'Войти':'Зарегистрироваться'}</button>
+        </form>
+        <button onClick={()=>{setMode(mode==='signin'?'signup':'signin');setMessage('')}} style={{width:'100%',marginTop:12,border:0,background:'transparent',color:'#1F6F54',cursor:'pointer',fontSize:13}}>{mode==='signin'?'Нет аккаунта? Зарегистрироваться':'Уже есть аккаунт? Войти'}</button>
+      </div>
+    </div>
+  );
 }
 
-function CoreApp() {
+export default function App() {
   const t = todayObj();
+  const [session, setSession] = useState(undefined);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [syncError, setSyncError] = useState('');
   const [page, setPage] = useState('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -587,82 +602,100 @@ function CoreApp() {
   const [months, setMonths] = useState({});
   const [auditLog, setAuditLog] = useState([]);
 
-  const metaSaveTimer = useRef(null);
-  const auditSaveTimer = useRef(null);
-  const monthSaveTimers = useRef({});
+  const saveTimer = useRef(null);
+  const cloudRowId = useRef(null);
+  const hydrated = useRef(false);
 
-  // ---- load ----
-  // Storage layout: 'siosan-meta' (settings/employees/suppliers), 'siosan-audit' (log),
-  // and one 'siosan-month:<YYYY-MM>' key per month. Splitting per month means editing
-  // August doesn't rewrite (or risk clobbering, if another tab/device is open) September's data.
+  // ---- auth ----
   useEffect(() => {
-    (async () => {
-      try {
-        let metaRes = null;
-        try { metaRes = await window.storage.get('siosan-meta'); } catch (e) { /* not found */ }
-
-        if (metaRes && metaRes.value) {
-          const meta = JSON.parse(metaRes.value);
-          setSettings(meta.settings || defaultSettings());
-          setEmployees(meta.employees || seedEmployees());
-          setSuppliers(meta.suppliers || seedSuppliers());
-
-          let auditRes = null;
-          try { auditRes = await window.storage.get('siosan-audit'); } catch (e) { /* not found */ }
-          setAuditLog(auditRes && auditRes.value ? JSON.parse(auditRes.value) : []);
-
-          setMonths(await loadAllMonths());
-        } else {
-          // Migration: an earlier version of this app stored everything under one key.
-          let legacy = null;
-          try { legacy = await window.storage.get('restaurant-pnl-data'); } catch (e) { /* not found */ }
-          if (legacy && legacy.value) {
-            const parsed = JSON.parse(legacy.value);
-            setSettings(parsed.settings || defaultSettings());
-            setEmployees(parsed.employees || seedEmployees());
-            setSuppliers(parsed.suppliers || seedSuppliers());
-            setMonths(parsed.months || {});
-            setAuditLog(parsed.auditLog || []);
-            // Write it straight into the new split layout so future saves are per-month.
-            try {
-              await window.storage.set('siosan-meta', JSON.stringify({ settings: parsed.settings || defaultSettings(), employees: parsed.employees || [], suppliers: parsed.suppliers || [] }));
-              await window.storage.set('siosan-audit', JSON.stringify(parsed.auditLog || []));
-              await persistAllMonths(parsed.months || {});
-            } catch (e) { /* best-effort; legacy key stays intact either way */ }
-          } else {
-            setEmployees(seedEmployees());
-            setSuppliers(seedSuppliers());
-          }
-        }
-      } catch (e) {
-        setEmployees(seedEmployees());
-        setSuppliers(seedSuppliers());
-      }
-      setLoaded(true);
-    })();
+    if (!supabase) { setSession(null); return; }
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession || null));
+    return () => sub?.subscription?.unsubscribe();
   }, []);
 
-  // ---- autosave: settings/employees/suppliers (debounced, own key) ----
+  // ---- cloud load ----
   useEffect(() => {
-    if (!loaded) return;
-    setSaving(true);
-    if (metaSaveTimer.current) clearTimeout(metaSaveTimer.current);
-    metaSaveTimer.current = setTimeout(async () => {
-      try { await window.storage.set('siosan-meta', JSON.stringify({ settings, employees, suppliers })); } catch (e) { /* ignore */ }
-      setSaving(false);
-    }, 700);
-    return () => clearTimeout(metaSaveTimer.current);
-  }, [settings, employees, suppliers, loaded]);
+    if (!session || !supabase) { setLoaded(false); hydrated.current = false; return; }
+    let cancelled = false;
+    (async () => {
+      setLoaded(false); setSyncError(''); hydrated.current = false;
+      try {
+        const { data: rows, error } = await supabase
+          .from('restaurant_data')
+          .select('id,data')
+          .eq('restaurant_id', RESTAURANT_ID)
+          .limit(1);
+        if (error) throw error;
+        if (cancelled) return;
+        let row = rows?.[0] || null;
+        let parsed = row?.data && Object.keys(row.data).length ? row.data : null;
 
-  // ---- autosave: audit log (debounced, own key) ----
+        // First cloud launch: migrate this browser's existing local data, if any.
+        if (!parsed) {
+          try {
+            const raw = window.localStorage.getItem('restaurant-pnl-data');
+            if (raw) parsed = JSON.parse(raw);
+          } catch (_) {}
+        }
+
+        if (parsed) {
+          setSettings(parsed.settings || defaultSettings());
+          setEmployees(parsed.employees || seedEmployees());
+          setSuppliers(parsed.suppliers || seedSuppliers());
+          setMonths(parsed.months || {});
+          setAuditLog(parsed.auditLog || []);
+        } else {
+          setSettings(defaultSettings());
+          setEmployees(seedEmployees());
+          setSuppliers(seedSuppliers());
+          setMonths({});
+          setAuditLog([]);
+        }
+
+        if (row) cloudRowId.current = row.id;
+        else {
+          const initial = parsed || { settings: defaultSettings(), employees: seedEmployees(), suppliers: seedSuppliers(), months: {}, auditLog: [] };
+          const { data: inserted, error: insErr } = await supabase
+            .from('restaurant_data')
+            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: new Date().toISOString() })
+            .select('id')
+            .single();
+          if (insErr) throw insErr;
+          cloudRowId.current = inserted.id;
+        }
+      } catch (e) {
+        setSyncError(e?.message || 'Ошибка загрузки общей базы');
+        setEmployees(seedEmployees()); setSuppliers(seedSuppliers());
+      }
+      if (!cancelled) { hydrated.current = true; setLoaded(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.user?.id]);
+
+  // ---- cloud autosave (debounced) ----
   useEffect(() => {
-    if (!loaded) return;
-    if (auditSaveTimer.current) clearTimeout(auditSaveTimer.current);
-    auditSaveTimer.current = setTimeout(async () => {
-      try { await window.storage.set('siosan-audit', JSON.stringify(auditLog)); } catch (e) { /* ignore */ }
-    }, 700);
-    return () => clearTimeout(auditSaveTimer.current);
-  }, [auditLog, loaded]);
+    if (!loaded || !hydrated.current || !session || !supabase || !cloudRowId.current) return;
+    setSaving(true);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const payload = { settings, employees, suppliers, months, auditLog };
+        const { error } = await supabase
+          .from('restaurant_data')
+          .update({ data: payload, updated_at: new Date().toISOString() })
+          .eq('id', cloudRowId.current);
+        if (error) throw error;
+        // Local backup only; cloud is the source of truth.
+        window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
+        setSyncError('');
+      } catch (e) {
+        setSyncError(e?.message || 'Не удалось сохранить данные в облако');
+      }
+      setSaving(false);
+    }, 900);
+    return () => clearTimeout(saveTimer.current);
+  }, [settings, employees, suppliers, months, auditLog, loaded, session?.user?.id]);
 
   const monthKey = monthKeyOf(year, monthIdx);
 
@@ -694,12 +727,6 @@ function CoreApp() {
     setMonths((prev) => {
       const cur = prev[monthKey] || emptyMonth(settings, null);
       const next = updater(cur);
-      if (monthSaveTimers.current[monthKey]) clearTimeout(monthSaveTimers.current[monthKey]);
-      setSaving(true);
-      monthSaveTimers.current[monthKey] = setTimeout(async () => {
-        try { await window.storage.set(`siosan-month:${monthKey}`, JSON.stringify(next)); } catch (e) { /* ignore */ }
-        setSaving(false);
-      }, 700);
       return { ...prev, [monthKey]: next };
     });
   }, [monthKey, settings]);
@@ -738,8 +765,15 @@ function CoreApp() {
     selectedDate, setSelectedDate, pnl, prevPnl, logAudit, auditLog, setAuditLog, goMonth, applyRevert,
   };
 
+  if (!supabase) {
+    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:COLORS.danger}}>Не настроено подключение Supabase. Проверьте VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY в Vercel.</div>;
+  }
+  if (session === undefined) {
+    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Проверка входа…</div>;
+  }
+  if (!session) return <AuthScreen onReady={setSession} />;
   if (!loaded) {
-    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Загрузка…</div>;
+    return <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', color: COLORS.inkSoft }}>Загрузка общей базы…</div>;
   }
 
   return (
@@ -762,9 +796,9 @@ function CoreApp() {
             </button>
           ))}
         </nav>
-        <div className="rp-sidebar-foot">
-          <span className={`rp-save-dot ${saving ? 'busy' : ''}`} />
-          {saving ? 'Сохранение…' : 'Сохранено'}
+        <div className="rp-sidebar-foot" style={{display:'grid',gap:6}}>
+          <div><span className={`rp-save-dot ${saving ? 'busy' : ''}`} />{syncError ? 'Ошибка синхронизации' : saving ? 'Сохранение…' : 'Облако синхронизировано'}</div>
+          <button onClick={() => supabase.auth.signOut()} style={{border:0,background:'transparent',padding:0,textAlign:'left',fontSize:11,color:'#8A928E',cursor:'pointer'}}>Выйти · {session.user.email}</button>
         </div>
       </aside>
 
@@ -2307,29 +2341,24 @@ function BackupPanel({ ctx }) {
     e.target.value = '';
   };
 
-  const applyImport = async () => {
+  const applyImport = () => {
     if (!pendingImport) return;
-    const importedMonths = pendingImport.months || {};
     setSettings(pendingImport.settings || defaultSettings());
     setEmployees(pendingImport.employees || []);
     setSuppliers(pendingImport.suppliers || []);
-    setMonths(importedMonths);
+    setMonths(pendingImport.months || {});
     setAuditLog(pendingImport.auditLog || []);
     logAudit({ what: 'Восстановлено из резервной копии', from: pendingImport.exportedAt });
     setPendingImport(null);
-    // Reconcile the per-month storage keys with what was just imported (deletes
-    // any month that existed before but isn't in this backup, writes the rest).
-    await persistAllMonths(importedMonths);
   };
 
-  const doReset = async () => {
+  const doReset = () => {
     setSettings(defaultSettings());
     setEmployees([]);
     setSuppliers([]);
     setMonths({});
     setAuditLog([{ id: uid(), ts: new Date().toISOString(), what: 'База очищена вручную' }]);
     setConfirmReset(false);
-    await persistAllMonths({});
   };
 
   const monthCount = Object.keys(months).length;
@@ -2338,8 +2367,8 @@ function BackupPanel({ ctx }) {
     <Card>
       <div className="rp-card-title">Резервная копия всей базы</div>
       <p className="rp-muted">
-        Все данные (сотрудники, поставщики, настройки, {monthCount} {monthCount === 1 ? 'месяц' : 'месяцев'} и журнал истории) хранятся в общей облачной базе ресторана.
-        Резервную копию всё равно полезно скачивать периодически — она позволяет вручную восстановить состояние базы при необходимости.
+        Все данные (сотрудники, поставщики, настройки, {monthCount} {monthCount === 1 ? 'месяц' : 'месяцев'} и журнал истории) хранятся в общей облачной базе Supabase.
+        Локальная копия полезна как дополнительная страховка (например, перед крупными правками) — скачайте её на всякий случай.
       </p>
       <div className="rp-toolbar" style={{ marginTop: 12 }}>
         <button className="rp-btn" onClick={downloadBackup}><DatabaseBackup size={15} /> Скачать резервную копию (.json)</button>
@@ -2350,13 +2379,13 @@ function BackupPanel({ ctx }) {
 
       <div className="rp-divider-line" />
       <div className="rp-card-title" style={{ color: COLORS.danger }}>Опасная зона</div>
-      <p className="rp-muted">Полностью очистить базу (сотрудники, поставщики, все месяцы). Действие необратимо без резервной копии.</p>
+      <p className="rp-muted">Полностью очистить облачную базу (сотрудники, поставщики, все месяцы). Действие необратимо без резервной копии.</p>
       <button className="rp-btn" style={{ background: COLORS.danger }} onClick={() => setConfirmReset(true)}><Trash2 size={15} /> Очистить всю базу</button>
 
       {pendingImport && (
         <ConfirmDialog
           title="Восстановить из резервной копии?"
-          message={`Текущие данные в браузере будут полностью заменены содержимым файла${pendingImport.exportedAt ? ' (копия от ' + new Date(pendingImport.exportedAt).toLocaleString('ru-RU') + ')' : ''}. Это необратимо — если текущие данные важны, сначала скачайте их резервную копию.`}
+          message={`Текущие данные будут полностью заменены содержимым файла${pendingImport.exportedAt ? ' (копия от ' + new Date(pendingImport.exportedAt).toLocaleString('ru-RU') + ')' : ''}. Это необратимо — если текущие данные важны, сначала скачайте их резервную копию.`}
           danger
           onCancel={() => setPendingImport(null)}
           onConfirm={applyImport}
@@ -3397,199 +3426,3 @@ function GlobalStyle() {
     `}</style>
   );
 }
-
-function AuthScreen({ onReady }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [mode, setMode] = useState('signin');
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!supabase) return;
-    setBusy(true); setMessage('');
-    try {
-      if (mode === 'signin') {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        if (data?.session) onReady(data.session);
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        if (data?.session) onReady(data.session);
-        else setMessage('Регистрация создана. Проверьте почту и подтвердите email, затем войдите.');
-      }
-    } catch (err) {
-      setMessage(err?.message || 'Не удалось выполнить вход');
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'#F4F3EF',fontFamily:'Inter,Arial,sans-serif',padding:20}}>
-      <div style={{width:'100%',maxWidth:420,background:'#fff',border:'1px solid #E4E1D8',borderRadius:16,padding:28,boxShadow:'0 12px 40px rgba(28,35,33,.08)'}}>
-        <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:24}}>
-          <div style={{width:42,height:42,borderRadius:12,display:'grid',placeItems:'center',background:'#1F6F54',color:'#fff',fontWeight:800,fontSize:20}}>С</div>
-          <div><div style={{fontWeight:800,fontSize:20}}>СИОСАН</div><div style={{fontSize:12,color:'#5B645F'}}>Управленческий P&L · облачная версия</div></div>
-        </div>
-        <h2 style={{margin:'0 0 6px',fontSize:22}}>{mode==='signin'?'Вход':'Создать аккаунт'}</h2>
-        <p style={{margin:'0 0 20px',color:'#5B645F',fontSize:13}}>Данные хранятся в общей базе ресторана.</p>
-        <form onSubmit={submit} style={{display:'grid',gap:12}}>
-          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
-          <label style={{display:'grid',gap:6,fontSize:12,color:'#5B645F'}}>Пароль<input type="password" required minLength={6} value={password} onChange={e=>setPassword(e.target.value)} style={{padding:'11px 12px',border:'1px solid #E4E1D8',borderRadius:9,fontSize:14}} /></label>
-          {message && <div style={{padding:10,borderRadius:8,background:'#F7EEE7',color:'#8C4B22',fontSize:12}}>{message}</div>}
-          <button disabled={busy} style={{border:0,borderRadius:9,padding:'12px 14px',background:'#1F6F54',color:'#fff',fontWeight:700,cursor:'pointer'}}>{busy?'Подождите…':mode==='signin'?'Войти':'Зарегистрироваться'}</button>
-        </form>
-        <button onClick={()=>{setMode(mode==='signin'?'signup':'signin');setMessage('')}} style={{width:'100%',marginTop:12,border:0,background:'transparent',color:'#1F6F54',cursor:'pointer',fontSize:13}}>{mode==='signin'?'Нет аккаунта? Зарегистрироваться':'Уже есть аккаунт? Войти'}</button>
-      </div>
-    </div>
-  );
-}
-
-async function createCloudStorageAdapter() {
-  if (!supabase) throw new Error('Supabase не настроен');
-
-  const { data: rows, error } = await supabase
-    .from('restaurant_data')
-    .select('id,data')
-    .eq('restaurant_id', RESTAURANT_ID)
-    .limit(1);
-  if (error) throw error;
-
-  let row = rows?.[0] || null;
-  let cloudData = row?.data && typeof row.data === 'object' ? row.data : {};
-
-  // Migration from the previous cloud app format to Claude's split window.storage format.
-  let entries;
-  if (cloudData.__storageVersion === 2 && cloudData.entries && typeof cloudData.entries === 'object') {
-    entries = { ...cloudData.entries };
-  } else {
-    entries = {};
-    if (cloudData.settings || cloudData.employees || cloudData.suppliers) {
-      entries['siosan-meta'] = JSON.stringify({
-        settings: cloudData.settings || defaultSettings(),
-        employees: cloudData.employees || [],
-        suppliers: cloudData.suppliers || [],
-      });
-      entries['siosan-audit'] = JSON.stringify(cloudData.auditLog || []);
-      Object.entries(cloudData.months || {}).forEach(([mk, mv]) => {
-        entries[`siosan-month:${mk}`] = JSON.stringify(mv);
-      });
-    }
-  }
-
-  if (!row) {
-    const { data: inserted, error: insertError } = await supabase
-      .from('restaurant_data')
-      .insert({
-        restaurant_id: RESTAURANT_ID,
-        data: { __storageVersion: 2, entries },
-        updated_at: new Date().toISOString(),
-      })
-      .select('id')
-      .single();
-    if (insertError) throw insertError;
-    row = inserted;
-  } else if (cloudData.__storageVersion !== 2) {
-    const { error: migrateError } = await supabase
-      .from('restaurant_data')
-      .update({ data: { __storageVersion: 2, entries }, updated_at: new Date().toISOString() })
-      .eq('id', row.id);
-    if (migrateError) throw migrateError;
-  }
-
-  let queue = Promise.resolve();
-  const persist = () => {
-    const snapshot = { __storageVersion: 2, entries: { ...entries } };
-    queue = queue.then(async () => {
-      const { error: saveError } = await supabase
-        .from('restaurant_data')
-        .update({ data: snapshot, updated_at: new Date().toISOString() })
-        .eq('id', row.id);
-      if (saveError) throw saveError;
-      try { window.localStorage.setItem('siosan-cloud-backup-v2', JSON.stringify(snapshot)); } catch (_) {}
-    });
-    return queue;
-  };
-
-  return {
-    async get(key) {
-      if (!Object.prototype.hasOwnProperty.call(entries, key)) return null;
-      return { value: entries[key] };
-    },
-    async set(key, value) {
-      entries[key] = String(value);
-      await persist();
-      return { value: entries[key] };
-    },
-    async delete(key) {
-      delete entries[key];
-      await persist();
-      return { deleted: true };
-    },
-    async list(prefix = '') {
-      return { keys: Object.keys(entries).filter((k) => k.startsWith(prefix)).sort() };
-    },
-  };
-}
-
-function CloudApp() {
-  const [session, setSession] = useState(undefined);
-  const [storageReady, setStorageReady] = useState(false);
-  const [cloudError, setCloudError] = useState('');
-
-  useEffect(() => {
-    if (!supabase) { setSession(null); return; }
-    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession || null);
-      setStorageReady(false);
-    });
-    return () => sub?.subscription?.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session || !supabase) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        setCloudError('');
-        const adapter = await createCloudStorageAdapter();
-        if (cancelled) return;
-        window.storage = adapter;
-        setStorageReady(true);
-      } catch (e) {
-        if (!cancelled) setCloudError(e?.message || 'Ошибка подключения к общей базе');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [session?.user?.id]);
-
-  if (!supabase) {
-    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#B33F3F'}}>Не настроено подключение Supabase. Проверьте VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY в Vercel.</div>;
-  }
-  if (session === undefined) {
-    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#5B645F'}}>Проверка входа…</div>;
-  }
-  if (!session) return <AuthScreen onReady={setSession} />;
-  if (cloudError) {
-    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#B33F3F'}}>Ошибка облачной синхронизации: {cloudError}</div>;
-  }
-  if (!storageReady) {
-    return <div style={{padding:40,fontFamily:'Inter, sans-serif',color:'#5B645F'}}>Подключение общей базы…</div>;
-  }
-
-  return (
-    <>
-      <CoreApp />
-      <button
-        onClick={() => supabase.auth.signOut()}
-        title={session.user?.email || ''}
-        style={{position:'fixed',right:14,bottom:14,zIndex:9999,border:'1px solid #E4E1D8',background:'#fff',color:'#5B645F',borderRadius:9,padding:'8px 11px',fontSize:12,cursor:'pointer',boxShadow:'0 4px 16px rgba(0,0,0,.08)'}}
-      >Выйти</button>
-    </>
-  );
-}
-
-export default CloudApp;
-
