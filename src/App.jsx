@@ -12,7 +12,7 @@ import {
   Copy as CopyIcon, Check, Minus, Printer, ChevronDown, ChevronUp, Info,
   UserPlus, Truck as TruckIcon, Megaphone, ClipboardList, Banknote,
   History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw,
-  RefreshCw, Link2, Unlink, FileSpreadsheet
+  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox
 } from 'lucide-react';
 
 
@@ -524,6 +524,7 @@ function EmptyState({ icon, title, sub }) {
 const NAV = [
   { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
   { id: 'day', label: 'День', icon: CalendarDays },
+  { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
   { id: 'employees', label: 'Сотрудники', icon: Users },
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
@@ -592,6 +593,7 @@ export default function App() {
   const [page, setPage] = useState('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [pendingReportsCount, setPendingReportsCount] = useState(0);
   const [year, setYear] = useState(t.y);
   const [monthIdx, setMonthIdx] = useState(t.m);
   const [selectedDate, setSelectedDate] = useState(dateStr(t.y, t.m, Math.min(t.d, daysInMonth(t.y, t.m))));
@@ -759,10 +761,25 @@ export default function App() {
     applyRevertEntry(entry, { setMonths, setSuppliers, logAudit });
   }, [setMonths, setSuppliers, logAudit]);
 
+  const refreshPendingReportsCount = useCallback(async () => {
+    if (!supabase) return;
+    try {
+      const { count } = await supabase
+        .from('vk_report_drafts')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', RESTAURANT_ID)
+        .eq('status', 'pending');
+      setPendingReportsCount(count || 0);
+    } catch (e) { /* table may not exist yet if the VK bot isn't set up — ignore */ }
+  }, []);
+
+  useEffect(() => { if (loaded) refreshPendingReportsCount(); }, [loaded, refreshPendingReportsCount]);
+
   const ctx = {
     settings, setSettings, employees, setEmployees, suppliers, setSuppliers,
     months, setMonths, month, updateMonth, monthKey, year, monthIdx, setYear, setMonthIdx,
     selectedDate, setSelectedDate, pnl, prevPnl, logAudit, auditLog, setAuditLog, goMonth, applyRevert,
+    pendingReportsCount, refreshPendingReportsCount,
   };
 
   if (!supabase) {
@@ -793,6 +810,7 @@ export default function App() {
           {NAV.map((n) => (
             <button key={n.id} className={`rp-nav-item ${page === n.id ? 'active' : ''}`} onClick={() => { setPage(n.id); setMobileNavOpen(false); }}>
               <n.icon size={17} /> {n.label}
+              {n.id === 'inbox' && pendingReportsCount > 0 && <span className="rp-nav-badge">{pendingReportsCount}</span>}
             </button>
           ))}
         </nav>
@@ -830,6 +848,7 @@ export default function App() {
         <main className="rp-content">
           {page === 'dashboard' && <Dashboard ctx={ctx} setPage={setPage} />}
           {page === 'day' && <DayEntry ctx={ctx} />}
+          {page === 'inbox' && <IncomingReportsPage ctx={ctx} />}
           {page === 'employees' && <EmployeesPage ctx={ctx} />}
           {page === 'payroll' && <PayrollPage ctx={ctx} />}
           {page === 'suppliers' && <SuppliersPage ctx={ctx} />}
@@ -2655,6 +2674,266 @@ function ComparePage({ ctx }) {
   );
 }
 
+/* ============================== INCOMING VK REPORTS ============================== */
+// Reviews drafts produced by the /api/vk-poll.js bot (see vk-bot/SETUP.md). Nothing here
+// is ever applied automatically — every field is editable and the user must press
+// "Применить" before it touches real P&L data.
+
+function IncomingReportsPage({ ctx }) {
+  const { settings, employees, months, setMonths, logAudit, refreshPendingReportsCount } = ctx;
+  const [drafts, setDrafts] = useState(null); // null = loading
+  const [error, setError] = useState('');
+
+  const loadDrafts = useCallback(async () => {
+    if (!supabase) { setError('Supabase не настроен'); setDrafts([]); return; }
+    setError('');
+    try {
+      const { data, error: err } = await supabase
+        .from('vk_report_drafts')
+        .select('*')
+        .eq('restaurant_id', RESTAURANT_ID)
+        .eq('status', 'pending')
+        .order('message_date', { ascending: true })
+        .order('vk_message_id', { ascending: true });
+      if (err) throw err;
+      setDrafts(data || []);
+    } catch (e) {
+      const msg = e?.message || '';
+      if (msg.includes('does not exist') || msg.includes('schema cache')) {
+        setError('Таблица черновиков ещё не создана — выполните SUPABASE_VK_DRAFTS.sql в Supabase (см. vk-bot/SETUP.md).');
+      } else {
+        setError(msg || 'Не удалось загрузить черновики');
+      }
+      setDrafts([]);
+    }
+  }, []);
+
+  useEffect(() => { loadDrafts(); }, [loadDrafts]);
+
+  const resolveAfterAction = async () => {
+    await loadDrafts();
+    refreshPendingReportsCount();
+  };
+
+  const applyDraft = async (draft, edited) => {
+    const dateKey = edited.date || draft.message_date;
+    if (!dateKey) return;
+    const mk = dateKey.slice(0, 7);
+
+    setMonths((prev) => {
+      const existing = prev[mk] || emptyMonth(settings, null);
+      const day = { ...getDay(existing, dateKey) };
+
+      if (Object.keys(edited.revenue).length) {
+        day.revenue = { ...day.revenue };
+        Object.entries(edited.revenue).forEach(([chId, val]) => {
+          if (val !== null && val !== '' && val !== undefined) day.revenue[chId] = Number(val);
+        });
+      }
+
+      const courierPatch = {};
+      ['pay', 'km', 'deliveries'].forEach((f) => {
+        if (edited.courier[f] !== null && edited.courier[f] !== '' && edited.courier[f] !== undefined) courierPatch[f] = Number(edited.courier[f]);
+      });
+      if (Object.keys(courierPatch).length) day.courier = { ...day.courier, ...courierPatch };
+
+      if (edited.promo.pay !== null && edited.promo.pay !== '' && edited.promo.pay !== undefined) {
+        day.promo = { ...day.promo, pay: Number(edited.promo.pay) };
+      }
+
+      const newOther = edited.otherExpenses.filter((e) => e.include).map((e) => ({
+        id: uid(), category: e.category, amount: Number(e.amount), comment: 'Из ВК-отчёта', method: 'cash',
+      }));
+      if (newOther.length) day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+
+      const newMonth = { ...existing, days: { ...existing.days, [dateKey]: day } };
+
+      const half = dayOfMonthFromDateStr(dateKey) <= 15 ? 1 : 2;
+      const newAdjustments = edited.advances.filter((a) => a.include && a.employeeId).map((a) => ({
+        id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из ВК-отчёта', date: dateKey,
+      }));
+      if (newAdjustments.length) newMonth.adjustments = [...(newMonth.adjustments || []), ...newAdjustments];
+
+      const newShifts = { ...(newMonth.shifts || {}) };
+      edited.roster.filter((r) => r.include && r.employeeId).forEach((r) => {
+        const emp = employees.find((e) => e.id === r.employeeId);
+        const standard = emp?.standardShift || settings.standardShiftHours;
+        newShifts[r.employeeId] = { ...(newShifts[r.employeeId] || {}), [dateKey]: standard };
+      });
+      newMonth.shifts = newShifts;
+
+      return { ...prev, [mk]: newMonth };
+    });
+
+    logAudit({ what: `Применён отчёт из ВК (${draft.sender_name || 'без имени'})`, date: dateKey });
+
+    try {
+      await supabase.from('vk_report_drafts').update({ status: 'applied', applied_at: new Date().toISOString() }).eq('id', draft.id);
+    } catch (e) { /* local state already updated; the status flag is best-effort */ }
+
+    resolveAfterAction();
+  };
+
+  const dismissDraft = async (draft) => {
+    try { await supabase.from('vk_report_drafts').update({ status: 'dismissed' }).eq('id', draft.id); } catch (e) { /* ignore */ }
+    resolveAfterAction();
+  };
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1>Входящие отчёты</h1>
+        <div className="rp-page-sub">Сообщения из беседы ВКонтакте, распознанные ботом — проверьте перед применением</div>
+      </div>
+
+      {error && <div className="rp-alert"><AlertTriangle size={16} /> {error}</div>}
+
+      {drafts === null && <Card><EmptyState icon={<Inbox size={26} color={COLORS.inkSoft} />} title="Загрузка…" /></Card>}
+
+      {drafts && drafts.length === 0 && !error && (
+        <Card><EmptyState icon={<Inbox size={26} color={COLORS.inkSoft} />} title="Пока нет новых отчётов" sub="Как только сотрудники напишут в беседу, они появятся здесь" /></Card>
+      )}
+
+      {drafts && drafts.map((d) => (
+        <DraftCard key={d.id} draft={d} settings={settings} employees={employees} months={months}
+          onApply={(edited) => applyDraft(d, edited)} onDismiss={() => dismissDraft(d)} />
+      ))}
+    </div>
+  );
+}
+
+function DraftCard({ draft, settings, employees, months, onApply, onDismiss }) {
+  const p = draft.parsed || {};
+  const [showRaw, setShowRaw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [date, setDate] = useState(p.date || draft.message_date || '');
+  const [revenue, setRevenue] = useState({ ...(p.revenue || {}) });
+  const [courier, setCourier] = useState({ pay: p.courier?.pay ?? null, km: p.courier?.km ?? null, deliveries: p.courier?.deliveries ?? null });
+  const [promo, setPromo] = useState({ pay: p.promo?.pay ?? null });
+  const [otherExpenses, setOtherExpenses] = useState((p.otherExpenses || []).map((e) => ({ ...e, include: true })));
+  const [advances, setAdvances] = useState((p.advances || []).map((a) => ({ ...a, include: !!a.employeeId })));
+  const [roster, setRoster] = useState((p.rosterMatches || []).map((r) => ({ ...r, include: !!r.employeeId })));
+
+  const existingDay = date ? getDay(months[date.slice(0, 7)] || {}, date) : null;
+  const sumRevenue = Object.values(revenue).reduce((s, v) => s + (Number(v) || 0), 0);
+  const totalHint = p.totalHint;
+  const balanced = totalHint != null ? Math.abs(sumRevenue - totalHint) < 1 : null;
+
+  const doApply = async () => {
+    setBusy(true);
+    await onApply({ date, revenue, courier, promo, otherExpenses, advances, roster });
+    setBusy(false);
+  };
+
+  return (
+    <Card>
+      <div className="rp-card-title-row">
+        <div>
+          <div className="rp-card-title">{draft.sender_name || 'Без имени'} <span className="rp-muted">· {draft.message_date}</span></div>
+          {totalHint != null && (
+            balanced
+              ? <div className="rp-draft-balance ok"><Check size={12} /> Сумма выручки сходится с «итого» в сообщении</div>
+              : <div className="rp-draft-balance bad"><AlertTriangle size={12} /> Не сходится: посчитано {fmtRub(sumRevenue)}, в сообщении {fmtRub(totalHint)}</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={onDismiss} disabled={busy}>Отклонить</button>
+          <button className="rp-btn rp-btn-sm" onClick={doApply} disabled={busy}>{busy ? 'Применяю…' : 'Применить'}</button>
+        </div>
+      </div>
+
+      <Field label="Дата отчёта"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+
+      {Object.keys(revenue).length > 0 && (
+        <>
+          <div className="rp-draft-section">Выручка</div>
+          <div className="rp-form-grid">
+            {settings.revenueChannels.filter((c) => c.id in revenue).map((c) => (
+              <Field key={c.id} label={c.name + (existingDay?.revenue?.[c.id] ? ` (было ${fmtRub(existingDay.revenue[c.id])})` : '')}>
+                <input type="number" value={revenue[c.id] ?? ''} onChange={(e) => setRevenue((r) => ({ ...r, [c.id]: e.target.value }))} />
+              </Field>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(courier.pay != null || courier.km != null || courier.deliveries != null) && (
+        <>
+          <div className="rp-draft-section">Курьер</div>
+          <div className="rp-form-grid">
+            <Field label="Ставка"><input type="number" value={courier.pay ?? ''} onChange={(e) => setCourier((c) => ({ ...c, pay: e.target.value }))} /></Field>
+            <Field label="Км"><input type="number" value={courier.km ?? ''} onChange={(e) => setCourier((c) => ({ ...c, km: e.target.value }))} /></Field>
+            <Field label="Доставок"><input type="number" value={courier.deliveries ?? ''} onChange={(e) => setCourier((c) => ({ ...c, deliveries: e.target.value }))} /></Field>
+          </div>
+        </>
+      )}
+
+      {promo.pay != null && (
+        <>
+          <div className="rp-draft-section">Промо</div>
+          <Field label="Сумма"><input type="number" value={promo.pay ?? ''} onChange={(e) => setPromo({ pay: e.target.value })} /></Field>
+        </>
+      )}
+
+      {otherExpenses.length > 0 && (
+        <>
+          <div className="rp-draft-section">Расходы</div>
+          <div className="rp-list">
+            {otherExpenses.map((e, i) => (
+              <div className="rp-list-row" key={i}>
+                <input type="checkbox" checked={e.include} onChange={(ev) => setOtherExpenses((list) => list.map((x, xi) => (xi === i ? { ...x, include: ev.target.checked } : x)))} />
+                <input className="rp-inline-input" value={e.category} onChange={(ev) => setOtherExpenses((list) => list.map((x, xi) => (xi === i ? { ...x, category: ev.target.value } : x)))} />
+                <input className="rp-inline-input rp-num" type="number" style={{ maxWidth: 100 }} value={e.amount} onChange={(ev) => setOtherExpenses((list) => list.map((x, xi) => (xi === i ? { ...x, amount: ev.target.value } : x)))} />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {advances.length > 0 && (
+        <>
+          <div className="rp-draft-section">Авансы</div>
+          <div className="rp-list">
+            {advances.map((a, i) => (
+              <div className="rp-list-row" key={i}>
+                <input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={(ev) => setAdvances((list) => list.map((x, xi) => (xi === i ? { ...x, include: ev.target.checked } : x)))} />
+                <div className="rp-list-main"><div className="rp-list-cat">{a.matchedName || `«${a.name}» — сотрудник не найден`}</div></div>
+                <div className="rp-list-amount">{fmtRub(a.amount)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {roster.length > 0 && (
+        <>
+          <div className="rp-draft-section">Кто работал (полная смена)</div>
+          <div className="rp-checklist">
+            {roster.map((r, i) => (
+              <label key={i}>
+                <input type="checkbox" checked={r.include} disabled={!r.employeeId} onChange={(ev) => setRoster((list) => list.map((x, xi) => (xi === i ? { ...x, include: ev.target.checked } : x)))} />
+                {r.matchedName || `«${r.raw}» — не сотрудник?`}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(p.unmatchedLines || []).length > 0 && (
+        <div className="rp-inline-warn" style={{ marginTop: 10 }}>
+          <AlertTriangle size={13} />
+          <span>Не распознано, проверьте вручную: «{p.unmatchedLines.join('», «')}»</span>
+        </div>
+      )}
+
+      <button className="rp-btn-link" onClick={() => setShowRaw((s) => !s)} style={{ marginTop: 10 }}>
+        {showRaw ? 'Скрыть исходный текст' : 'Показать исходный текст'}
+      </button>
+      {showRaw && <pre className="rp-draft-raw">{draft.raw_text}</pre>}
+    </Card>
+  );
+}
+
 /* ============================== EXPORT ============================== */
 
 /* ---------- Excel two-way sync (raw editable data ⇄ app state) ----------
@@ -3245,6 +3524,7 @@ function GlobalStyle() {
       .rp-nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; background: none; border: none; color: #C7CDC4; font-size: 13px; text-align: left; cursor: pointer; }
       .rp-nav-item:hover { background: #24302A; color: #fff; }
       .rp-nav-item.active { background: ${COLORS.accent}; color: #fff; font-weight: 600; }
+      .rp-nav-badge { margin-left: auto; background: ${COLORS.accent2}; color: #fff; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 20px; }
       .rp-sidebar-foot { font-size: 11px; color: #8B968C; display: flex; align-items: center; gap: 6px; padding: 8px; }
       .rp-save-dot { width: 6px; height: 6px; border-radius: 50%; background: #4C8577; }
       .rp-save-dot.busy { background: ${COLORS.warn}; }
@@ -3317,6 +3597,12 @@ function GlobalStyle() {
       .rp-alert-warn span { flex: 1; }
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
+      .rp-draft-balance { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-top: 3px; }
+      .rp-draft-balance.ok { color: ${COLORS.accent}; }
+      .rp-draft-balance.bad { color: ${COLORS.danger}; }
+      .rp-draft-section { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: ${COLORS.inkSoft}; font-weight: 700; margin: 14px 0 6px; }
+      .rp-draft-raw { background: ${COLORS.bg}; border-radius: 8px; padding: 10px 12px; font-size: 11.5px; white-space: pre-wrap; color: ${COLORS.inkSoft}; margin-top: 6px; }
+      .rp-btn-link { background: none; border: none; color: ${COLORS.accent}; font-size: 11.5px; cursor: pointer; padding: 0; text-decoration: underline; }
       .rp-btn { display: inline-flex; align-items: center; gap: 6px; background: ${COLORS.ink}; color: white; border: none; padding: 8px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
       .rp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
       .rp-btn-sm { padding: 6px 11px; font-size: 12px; }
