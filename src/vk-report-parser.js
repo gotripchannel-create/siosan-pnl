@@ -61,6 +61,7 @@ export function parseVkReport(text, ctx = {}) {
     rosterMatches: [],
     unmatchedLines: [],
     totalHint: null,
+    registerCheck: null, // "ДБ" / «Касса фактически» — сверка кассы, отдельно от выручки и расходов
   };
 
   const now = new Date();
@@ -97,10 +98,10 @@ export function parseVkReport(text, ctx = {}) {
     const nm = line.match(amountRe);
     const amount = nm ? normalizeNumber(nm[1]) : null;
 
-    // Касса фактически / ДБ — сверочное поле, НЕ выручка и НЕ расход. Не даём ему попасть
-    // ни в itemized expenses (перебивает суммы), ни в roster — просто фиксируем как есть.
-    if (/^дб\b|касса\s*факт/i.test(lower)) {
-      result.unmatchedLines.push(`${line} (касса фактически — сверка, не применяется автоматически)`);
+    // Касса фактически / ДБ — сверочное поле, НЕ выручка и НЕ расход. Показываем отдельно,
+    // не смешиваем ни с расходами (испортит суммы), ни с «не распознано» (это не ошибка).
+    if (/^дб(?:\s|$)|касса\s*факт/i.test(lower)) {
+      if (amount != null) result.registerCheck = amount;
       inAdvances = inPurchases = inOther = false;
       continue;
     }
@@ -127,7 +128,7 @@ export function parseVkReport(text, ctx = {}) {
       inAdvances = inPurchases = inOther = false; continue;
     }
     if (/достав/i.test(lower)) { result.courier.deliveries = amount; inAdvances = inPurchases = inOther = false; continue; }
-    if (/(?:^|\s)км\b|км$/i.test(lower) || /километр/i.test(lower)) { result.courier.km = amount; inAdvances = inPurchases = inOther = false; continue; }
+    if (/(?:^|\s)км(?:\s|$)|км$/i.test(lower) || /километр/i.test(lower)) { result.courier.km = amount; inAdvances = inPurchases = inOther = false; continue; }
     if (/курьер/i.test(lower)) { result.courier.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
     if (/промо/i.test(lower)) { result.promo.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
 

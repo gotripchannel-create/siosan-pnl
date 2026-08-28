@@ -12,7 +12,7 @@ const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, 
 // Базовый словарь терминов, собранный из реальных отчётов сотрудников СиоСан.
 // Настройки могут добавить свои термины поверх этого (settings.reportGlossary),
 // они склеиваются вместе и уходят в системный промпт.
-const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» — сумма, которая физически оказалась в кассе на конец смены (сверка кассы). Это НЕ выручка и НЕ расход — никогда не добавляй в revenue/otherExpenses, только в unmatchedLines с пояснением.
+const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» — сумма, которая физически оказалась в кассе на конец смены (сверка кассы). Это НЕ выручка и НЕ расход — клади её в отдельное поле registerCheck, никогда не добавляй в revenue/otherExpenses и не пиши в unmatchedLines (это не ошибка распознавания, а обычное сверочное поле).
 - «Итого выручка» / «выручка итого» — явно указанная итоговая сумма выручки за день, идёт в totalHint.
 - Число может стоять до или после названия поля («22352,2 Наличные» и «Наличные 22352,2» — одно и то же).
 - Строки вида «11доставок» (без пробела) — то же самое, что «11 доставок».
@@ -82,9 +82,13 @@ const REPORT_ITEM_SCHEMA = {
       }
     },
     totalHint: { type: ['number', 'null'] },
+    registerCheck: {
+      type: ['number', 'null'],
+      description: 'Сумма «ДБ» / «Касса фактически» — сколько физически денег оказалось в кассе на конец смены. Это сверочное поле, НЕ выручка и НЕ расход, не входит ни в revenue, ни в otherExpenses.'
+    },
     unmatchedLines: { type: 'array', items: { type: 'string' } }
   },
-  required: ['date', 'revenue', 'courier', 'promo', 'kitchenExpenses', 'otherExpenses', 'advances', 'roster', 'totalHint', 'unmatchedLines']
+  required: ['date', 'revenue', 'courier', 'promo', 'kitchenExpenses', 'otherExpenses', 'advances', 'roster', 'totalHint', 'registerCheck', 'unmatchedLines']
 };
 
 const TOOL_SCHEMA = {
@@ -190,7 +194,8 @@ function postprocess(raw, { revenueChannels, employees }) {
     advances,
     rosterMatches,
     unmatchedLines: raw.unmatchedLines || [],
-    totalHint: typeof raw.totalHint === 'number' ? raw.totalHint : null
+    totalHint: typeof raw.totalHint === 'number' ? raw.totalHint : null,
+    registerCheck: typeof raw.registerCheck === 'number' ? raw.registerCheck : null
   };
 }
 

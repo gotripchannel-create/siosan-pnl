@@ -2889,6 +2889,7 @@ function ManualParsedReport({ parsed, settings, employees, months, onApply, aiPo
     {otherExpenses.length>0 && <ExpenseEditor title="Другие расходы" items={otherExpenses} setItems={setOtherExpenses}/>} 
     {advances.length>0 && <><div className="rp-draft-section">Авансы</div><div className="rp-list">{advances.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setAdvances(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName || `«${a.name}» — сотрудник не найден`}</div></div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}
     {roster.length>0 && <><div className="rp-draft-section">Кто работал</div><div className="rp-checklist">{roster.map((r,i)=><label key={i}><input type="checkbox" checked={r.include} disabled={!r.employeeId} onChange={e=>setRoster(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/>{r.matchedName||`«${r.raw}» — не найден`}</label>)}</div></>}
+    {parsed.registerCheck != null && <div className="rp-cash-check" style={{marginTop:10}}><Info size={13}/> Касса фактически (сверка): <b>{fmtRub(parsed.registerCheck)}</b> — справочно, в P&L не входит.</div>}
     {parsed.unmatchedLines?.length>0 && <div className="rp-inline-warn" style={{marginTop:10}}><AlertTriangle size={13}/> Не распознано: «{parsed.unmatchedLines.join('», «')}»</div>}
   </Card>;
 }
@@ -3573,6 +3574,7 @@ function GlobalStyle() {
       .rp-alert-warn span { flex: 1; }
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
+      .rp-cash-check { display: flex; align-items: center; gap: 6px; background: #EEF3FA; border: 1px solid #CFE0F2; color: #33587A; padding: 9px 13px; border-radius: 10px; font-size: 12.5px; }
       .rp-ai-badge { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; background: linear-gradient(135deg,#7c5cff,#5b8def); color: white; padding: 2px 7px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
       .rp-draft-balance { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-top: 3px; }
       .rp-draft-balance.ok { color: ${COLORS.accent}; }
