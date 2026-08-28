@@ -2686,6 +2686,8 @@ function IncomingReportsPage({ ctx }) {
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
   const [drafts, setDrafts] = useState([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [usedAi, setUsedAi] = useState(false);
 
   const loadDrafts = useCallback(async () => {
     if (!supabase) return;
@@ -2702,7 +2704,40 @@ function IncomingReportsPage({ ctx }) {
     const fallbackDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
     const p = parseVkReport(text, { revenueChannels: settings.revenueChannels || [], employees, expenseCategories: settings.expenseCategories || [], fallbackDate });
     if (!p.date) { setLoadError('Не удалось определить дату отчёта. Укажите дату в сообщении или выберите её вручную.'); }
+    setUsedAi(false);
     setParsed(p);
+  };
+
+  const parseTextAi = async () => {
+    setLoadError('');
+    if (!text.trim()) { setLoadError('Вставьте сообщение из ВК.'); return; }
+    const fallbackDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    setAiLoading(true);
+    try {
+      const resp = await fetch('/api/parse-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          revenueChannels: settings.revenueChannels || [],
+          employees,
+          expenseCategories: settings.expenseCategories || [],
+          fallbackDate
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setLoadError(data?.error || 'Не удалось разобрать отчёт с помощью ИИ. Попробуйте обычный разбор.');
+        return;
+      }
+      if (!data.date) { setLoadError('ИИ не смог определить дату отчёта. Укажите дату вручную ниже.'); }
+      setUsedAi(true);
+      setParsed(data);
+    } catch (e) {
+      setLoadError(e?.message || 'Не удалось связаться с сервером ИИ-разбора.');
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const applyParsed = async (edited) => {
@@ -2750,11 +2785,15 @@ function IncomingReportsPage({ ctx }) {
       <Card>
         <div className="rp-card-title-row"><div><div className="rp-card-title">Вставить из ВК</div><div className="rp-muted">Можно вставлять весь отчёт целиком — с переносами строк.</div></div></div>
         <textarea value={text} onChange={e => setText(e.target.value)} placeholder={'Например:\nОтчёт за 26.08\nНаличные 4498\nКарты 32994,25\nНетМонет 37492,25\nИтого выручка 74984,50\n\nАвансы:\nЛеша 500\n\nПокупки 5129\n11 доставок\n300 курьер\n75 км'} style={{ width:'100%', minHeight:190, resize:'vertical', padding:14, border:'1px solid '+COLORS.line, borderRadius:10, fontFamily:'inherit', fontSize:13, boxSizing:'border-box' }} />
-        <div style={{ display:'flex', gap:8, marginTop:10 }}><button className="rp-btn" onClick={parseText}>Разобрать отчёт</button><button className="rp-btn rp-btn-ghost" onClick={() => { setText(''); setParsed(null); setLoadError(''); }}>Очистить</button></div>
+        <div style={{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap' }}>
+          <button className="rp-btn" onClick={parseTextAi} disabled={aiLoading}>{aiLoading ? 'Разбираю с ИИ…' : '✨ Разобрать с ИИ'}</button>
+          <button className="rp-btn rp-btn-ghost" onClick={parseText} disabled={aiLoading}>Разобрать без ИИ</button>
+          <button className="rp-btn rp-btn-ghost" onClick={() => { setText(''); setParsed(null); setLoadError(''); setUsedAi(false); }} disabled={aiLoading}>Очистить</button>
+        </div>
         {loadError && <div className="rp-alert" style={{marginTop:12}}><AlertTriangle size={16}/>{loadError}</div>}
       </Card>
 
-      {parsed && <ManualParsedReport parsed={parsed} settings={settings} employees={employees} months={months} onApply={applyParsed} />}
+      {parsed && <ManualParsedReport parsed={parsed} settings={settings} employees={employees} months={months} onApply={applyParsed} aiPowered={usedAi} />}
 
       {drafts.length > 0 && <>
         <div className="rp-section-title" style={{marginTop:20}}>Сохранённые черновики</div>
@@ -2764,7 +2803,7 @@ function IncomingReportsPage({ ctx }) {
   );
 }
 
-function ManualParsedReport({ parsed, settings, employees, months, onApply }) {
+function ManualParsedReport({ parsed, settings, employees, months, onApply, aiPowered }) {
   const [date, setDate] = useState(parsed.date || '');
   const [revenue, setRevenue] = useState({ ...(parsed.revenue || {}) });
   const [courier, setCourier] = useState({ ...(parsed.courier || {}) });
@@ -2778,7 +2817,7 @@ function ManualParsedReport({ parsed, settings, employees, months, onApply }) {
   const [busy,setBusy]=useState(false);
   const apply=async()=>{ if (!date) return; setBusy(true); await onApply({date,revenue,courier,promo,kitchenExpenses,otherExpenses,advances,roster}); setBusy(false); };
   return <Card>
-    <div className="rp-card-title-row"><div><div className="rp-card-title">Проверка отчёта</div>{parsed.totalHint != null && (balanced ? <div className="rp-draft-balance ok"><Check size={12}/> Выручка сходится с «Итого»</div> : <div className="rp-draft-balance bad"><AlertTriangle size={12}/> Не сходится: {fmtRub(sumRevenue)} против {fmtRub(parsed.totalHint)}</div>)}</div><button className="rp-btn" onClick={apply} disabled={busy || !date || balanced === false}>{busy?'Применяю…':'Применить в P&L'}</button></div>
+    <div className="rp-card-title-row"><div><div className="rp-card-title">Проверка отчёта {aiPowered && <span className="rp-ai-badge" title="Разобрано с помощью ИИ">✨ ИИ</span>}</div>{parsed.totalHint != null && (balanced ? <div className="rp-draft-balance ok"><Check size={12}/> Выручка сходится с «Итого»</div> : <div className="rp-draft-balance bad"><AlertTriangle size={12}/> Не сходится: {fmtRub(sumRevenue)} против {fmtRub(parsed.totalHint)}</div>)}</div><button className="rp-btn" onClick={apply} disabled={busy || !date || balanced === false}>{busy?'Применяю…':'Применить в P&L'}</button></div>
     <Field label="Дата отчёта"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>
     {Object.keys(revenue).length>0 && <><div className="rp-draft-section">Выручка</div><div className="rp-form-grid">{settings.revenueChannels.filter(c=>c.id in revenue).map(c=><Field key={c.id} label={c.name}><input type="number" step="0.01" value={revenue[c.id] ?? ''} onChange={e=>setRevenue(r=>({...r,[c.id]:e.target.value}))}/></Field>)}</div></>}
     {parsed.totalHint != null && !balanced && <div className="rp-inline-warn" style={{marginTop:10}}><AlertTriangle size={13}/> Исправьте суммы или «Итого» в исходном сообщении и разберите его заново.</div>}
@@ -3471,6 +3510,7 @@ function GlobalStyle() {
       .rp-alert-warn span { flex: 1; }
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
+      .rp-ai-badge { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; background: linear-gradient(135deg,#7c5cff,#5b8def); color: white; padding: 2px 7px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
       .rp-draft-balance { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-top: 3px; }
       .rp-draft-balance.ok { color: ${COLORS.accent}; }
       .rp-draft-balance.bad { color: ${COLORS.danger}; }
