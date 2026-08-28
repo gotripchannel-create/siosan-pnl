@@ -2332,6 +2332,7 @@ function SettingsPage({ ctx }) {
         <button className={tab === 'acq' ? 'active' : ''} onClick={() => setTab('acq')}>Эквайринг</button>
         <button className={tab === 'anomaly' ? 'active' : ''} onClick={() => setTab('anomaly')}>Проверки</button>
         <button className={tab === 'backup' ? 'active' : ''} onClick={() => setTab('backup')}>Резервная копия</button>
+        <button className={tab === 'integrations' ? 'active' : ''} onClick={() => setTab('integrations')}>Интеграции</button>
       </div>
 
       {tab === 'channels' && (
@@ -2431,7 +2432,96 @@ function SettingsPage({ ctx }) {
       )}
 
       {tab === 'backup' && <BackupPanel ctx={ctx} />}
+      {tab === 'integrations' && <IikoIntegrationPanel ctx={ctx} />}
     </div>
+  );
+}
+
+function IikoIntegrationPanel({ ctx }) {
+  const { session } = ctx;
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [menuResult, setMenuResult] = useState(null);
+  const [menuError, setMenuError] = useState('');
+
+  const testConnection = async () => {
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const resp = await fetch('/api/iiko-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ date })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setError(data?.error || 'Не удалось подключиться.'); if (data?.raw) setResult(data); return; }
+      setResult(data);
+    } catch (e) {
+      setError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMenu = async () => {
+    setMenuLoading(true); setMenuError(''); setMenuResult(null);
+    try {
+      const resp = await fetch('/api/iiko-menu', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({})
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setMenuError(data?.error || 'Не удалось прочитать меню.'); if (data?.raw) setMenuResult(data); return; }
+      setMenuResult(data);
+    } catch (e) {
+      setMenuError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setMenuLoading(false);
+    }
+  };
+
+  return (
+    <>
+    <Card>
+      <div className="rp-card-title">Синхронизация с iiko</div>
+      <p className="rp-muted" style={{marginBottom:14}}>
+        Тестовое подключение к вашему серверу iikoRMS/iikoOffice. Сначала нужно настроить переменные окружения
+        на Vercel: <b>IIKO_SERVER_URL</b> (адрес сервера), <b>IIKO_API_LOGIN</b> и <b>IIKO_API_PASSWORD</b> (отдельный
+        технический пользователь iiko с правами только на чтение отчётов — не ваш личный логин).
+        Эта кнопка не применяет ничего в P&L, только проверяет связь и показывает, какие данные вообще доступны.
+      </p>
+      <div style={{display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+        <Field label="Дата для проверки"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>
+        <button className="rp-btn" onClick={testConnection} disabled={loading}>{loading ? 'Подключаюсь…' : 'Проверить подключение'}</button>
+      </div>
+      {error && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {error}</div>}
+      {result && (
+        <div style={{marginTop:14}}>
+          <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> Подключение к iiko работает. Ниже — сырой ответ сервера, пришлите его мне, чтобы настроить точный маппинг на каналы выручки.</div>
+          <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(result, null, 2)}</pre>
+        </div>
+      )}
+    </Card>
+    <Card style={{marginTop:16}}>
+      <div className="rp-card-title">Меню из iiko (только чтение)</div>
+      <p className="rp-muted" style={{marginBottom:14}}>
+        Первый шаг к управлению меню из приложения — показать текущие позиции. Пока ничего не редактирует,
+        только читает. Как увидим реальную структуру ваших блюд/категорий — добавим редактирование цен,
+        добавление и удаление позиций отдельным шагом.
+      </p>
+      <button className="rp-btn" onClick={loadMenu} disabled={menuLoading}>{menuLoading ? 'Загружаю…' : 'Показать меню'}</button>
+      {menuError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {menuError}</div>}
+      {menuResult && (
+        <div style={{marginTop:14}}>
+          <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> {menuResult.totalCount != null ? `Всего позиций: ${menuResult.totalCount}. ` : ''}Показаны первые записи — пришлите этот ответ, чтобы настроить редактирование.</div>
+          <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(menuResult, null, 2)}</pre>
+        </div>
+      )}
+    </Card>
+    </>
   );
 }
 
