@@ -139,13 +139,20 @@ export function parseVkReport(text, ctx = {}) {
         result.advances.push({ name, amount, employeeId: emp.id, matchedName: emp.name });
         continue;
       }
-      result.advances.push({ name, amount, employeeId: null, matchedName: null });
-      continue;
+      // Строка формально внутри секции «Авансы:», но имя не похоже ни на одного сотрудника —
+      // считаем, что секция авансов закончилась, и разбираем строку дальше как обычно
+      // (расход, покупка и т.п.), а не молча пишем её в авансы «на всякий случай».
+      inAdvances = false;
     }
 
     if (amount == null) {
-      const tokens = line.split(/\s+/).filter(Boolean);
-      const roster = tokens.length > 0 && tokens.length <= 8 && tokens.every(t => empByFirstName.has(t.toLowerCase().replace(/[.,]$/,'')));
+      const honorificRe = /^(?:тёт[яь]|теть|дяд[яь])\.?$/i;
+      const tokens = line.split(/\s+/).filter(Boolean).filter(t => !honorificRe.test(t));
+      const matchCount = tokens.filter(t => empByFirstName.has(t.toLowerCase().replace(/[.,]$/,''))).length;
+      // Строку считаем списком «кто работал», если хотя бы половина слов — известные имена
+      // сотрудников (не требуем 100% совпадения: прозвища вроде «тёть Оля» не должны ломать
+      // распознавание всей строки — непонятые слова просто покажутся как «не найден»).
+      const roster = tokens.length > 0 && tokens.length <= 10 && matchCount >= Math.max(1, Math.ceil(tokens.length / 2));
       if (roster) result.rosterNames.push(...tokens);
       else result.unmatchedLines.push(line);
       continue;
