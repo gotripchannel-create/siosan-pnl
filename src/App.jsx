@@ -5,7 +5,7 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer, Legend, AreaChart, Area
 } from 'recharts';
 import * as XLSX from 'xlsx';
-import { parseVkReport } from './vk-report-parser.js';
+import { parseVkReport, parseVkReportMulti } from './vk-report-parser.js';
 import {
   LayoutDashboard, CalendarDays, Users, Wallet, Truck, FileBarChart2,
   Settings as SettingsIcon, ChevronLeft, ChevronRight, Plus, Trash2, X,
@@ -780,7 +780,7 @@ export default function App() {
     settings, setSettings, employees, setEmployees, suppliers, setSuppliers,
     months, setMonths, month, updateMonth, monthKey, year, monthIdx, setYear, setMonthIdx,
     selectedDate, setSelectedDate, pnl, prevPnl, logAudit, auditLog, setAuditLog, goMonth, applyRevert,
-    pendingReportsCount, refreshPendingReportsCount,
+    pendingReportsCount, refreshPendingReportsCount, session,
   };
 
   if (!supabase) {
@@ -2680,14 +2680,15 @@ function ComparePage({ ctx }) {
 // pastes it here, reviews the parsed fields, then explicitly applies it to P&L.
 
 function IncomingReportsPage({ ctx }) {
-  const { settings, employees, months, setMonths, logAudit, refreshPendingReportsCount } = ctx;
+  const { settings, employees, months, setMonths, logAudit, refreshPendingReportsCount, session } = ctx;
   const [text, setText] = useState('');
-  const [parsed, setParsed] = useState(null);
+  const [parsedList, setParsedList] = useState([]); // [{ parsed, key }]
   const [loadError, setLoadError] = useState('');
+  const [loadWarning, setLoadWarning] = useState('');
   const [saving, setSaving] = useState(false);
   const [drafts, setDrafts] = useState([]);
   const [aiLoading, setAiLoading] = useState(false);
-  const [usedAi, setUsedAi] = useState(false);
+  const [resultMeta, setResultMeta] = useState({ usedAi: false, usedFallback: false });
 
   const loadDrafts = useCallback(async () => {
     if (!supabase) return;
@@ -2698,49 +2699,100 @@ function IncomingReportsPage({ ctx }) {
   }, []);
   useEffect(() => { loadDrafts(); refreshPendingReportsCount?.(); }, [loadDrafts, refreshPendingReportsCount]);
 
+  const currentFallbackDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+  const runRegexParse = () => {
+    const fallbackDate = currentFallbackDate();
+    const results = parseVkReportMulti(text, { revenueChannels: settings.revenueChannels || [], employees, expenseCategories: settings.expenseCategories || [], fallbackDate });
+    return results;
+  };
+
   const parseText = () => {
-    setLoadError('');
+    setLoadError(''); setLoadWarning('');
     if (!text.trim()) { setLoadError('Вставьте сообщение из ВК.'); return; }
-    const fallbackDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    const p = parseVkReport(text, { revenueChannels: settings.revenueChannels || [], employees, expenseCategories: settings.expenseCategories || [], fallbackDate });
-    if (!p.date) { setLoadError('Не удалось определить дату отчёта. Укажите дату в сообщении или выберите её вручную.'); }
-    setUsedAi(false);
-    setParsed(p);
+    const results = runRegexParse();
+    if (results.length === 0) { setLoadError('Не удалось найти отчёт в тексте.'); setParsedList([]); return; }
+    setResultMeta({ usedAi: false, usedFallback: false });
+    setParsedList(results.map((p, i) => ({ parsed: p, key: `regex-${i}-${Date.now()}` })));
+  };
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  const callAiOnce = async (fallbackDate) => {
+    const resp = await fetch('/api/parse-report', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+      },
+      body: JSON.stringify({
+        text,
+        revenueChannels: settings.revenueChannels || [],
+        employees,
+        expenseCategories: settings.expenseCategories || [],
+        fallbackDate,
+        glossary: settings.reportGlossary || ''
+      })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const err = new Error(data?.error || `Ошибка сервера (${resp.status})`);
+      err.status = resp.status;
+      throw err;
+    }
+    return data;
   };
 
   const parseTextAi = async () => {
-    setLoadError('');
+    setLoadError(''); setLoadWarning('');
     if (!text.trim()) { setLoadError('Вставьте сообщение из ВК.'); return; }
-    const fallbackDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    if (text.length > 20000) { setLoadError('Текст слишком длинный (максимум 20000 символов). Разбейте на несколько вставок.'); return; }
+    const fallbackDate = currentFallbackDate();
     setAiLoading(true);
     try {
-      const resp = await fetch('/api/parse-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          revenueChannels: settings.revenueChannels || [],
-          employees,
-          expenseCategories: settings.expenseCategories || [],
-          fallbackDate
-        })
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setLoadError(data?.error || 'Не удалось разобрать отчёт с помощью ИИ. Попробуйте обычный разбор.');
+      let data;
+      let lastErr = null;
+      // Пробуем ИИ, при временной ошибке (сеть/5xx) — один повтор через паузу.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          data = await callAiOnce(fallbackDate);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          const retryable = !e.status || e.status >= 500;
+          if (attempt === 0 && retryable) { await sleep(1200); continue; }
+          break;
+        }
+      }
+
+      if (lastErr) {
+        // ИИ недоступен (сеть, перегрузка, кончился баланс, невалидный ключ и т.п.) —
+        // честно откатываемся на проверенный локальный разбор, а не молчим и не виснем.
+        const results = runRegexParse();
+        setResultMeta({ usedAi: false, usedFallback: true });
+        setParsedList(results.map((p, i) => ({ parsed: p, key: `fallback-${i}-${Date.now()}` })));
+        setLoadWarning(`⚠️ ИИ-разбор недоступен (${lastErr.message}). Использован обычный разбор — внимательно проверьте цифры перед применением.`);
+        if (results.length === 0) setLoadError('Автоматический разбор тоже не смог найти отчёт в тексте. Проверьте формат или попробуйте позже.');
         return;
       }
-      if (!data.date) { setLoadError('ИИ не смог определить дату отчёта. Укажите дату вручную ниже.'); }
-      setUsedAi(true);
-      setParsed(data);
-    } catch (e) {
-      setLoadError(e?.message || 'Не удалось связаться с сервером ИИ-разбора.');
+
+      const reports = data.reports || [];
+      if (reports.length === 0) {
+        setLoadError('ИИ не нашёл ни одного отчёта в этом тексте.');
+        setParsedList([]);
+        return;
+      }
+      setResultMeta({ usedAi: true, usedFallback: false });
+      setParsedList(reports.map((p, i) => ({ parsed: p, key: `ai-${i}-${Date.now()}` })));
+      const noDate = reports.filter(r => !r.date).length;
+      if (noDate > 0) setLoadWarning(`ИИ не смог определить дату для ${noDate} из ${reports.length} отчётов — укажите вручную ниже.`);
     } finally {
       setAiLoading(false);
     }
   };
 
-  const applyParsed = async (edited) => {
+  const applyParsed = async (key, edited) => {
     if (!edited?.date) { setLoadError('Укажите дату отчёта.'); return; }
     setSaving(true); setLoadError('');
     try {
@@ -2767,9 +2819,13 @@ function IncomingReportsPage({ ctx }) {
         nextMonth.shifts = shifts;
         return { ...prev, [mk]: nextMonth };
       });
-      logAudit({ what: 'Импорт отчёта из ВК вручную', date: dateKey });
-      setParsed(null); setText('');
-      setLoadError('Отчёт применён в P&L.');
+      logAudit({ what: 'Импорт отчёта из ВК', date: dateKey });
+      setParsedList(list => {
+        const next = list.filter(item => item.key !== key);
+        if (next.length === 0) setText('');
+        return next;
+      });
+      setLoadError(`Отчёт за ${dateKey} применён в P&L.`);
     } catch (e) {
       setLoadError(e?.message || 'Не удалось применить отчёт');
     } finally { setSaving(false); }
@@ -2779,25 +2835,32 @@ function IncomingReportsPage({ ctx }) {
     <div className="rp-page">
       <div className="rp-page-head">
         <h1>Входящие отчёты</h1>
-        <div className="rp-page-sub">Скопируйте сообщение из чата «СиоСан отчеты», вставьте сюда, проверьте распознавание и примените его в P&L.</div>
+        <div className="rp-page-sub">Вставьте одно сообщение или целиком кусок чата «СиоСан отчеты» за несколько дней — ИИ сам найдёт отчёты и разложит по датам.</div>
       </div>
 
       <Card>
-        <div className="rp-card-title-row"><div><div className="rp-card-title">Вставить из ВК</div><div className="rp-muted">Можно вставлять весь отчёт целиком — с переносами строк.</div></div></div>
+        <div className="rp-card-title-row"><div><div className="rp-card-title">Вставить из ВК</div><div className="rp-muted">Можно вставлять весь отчёт целиком — с переносами строк, можно сразу за несколько дней.</div></div></div>
         <textarea value={text} onChange={e => setText(e.target.value)} placeholder={'Например:\nОтчёт за 26.08\nНаличные 4498\nКарты 32994,25\nНетМонет 37492,25\nИтого выручка 74984,50\n\nАвансы:\nЛеша 500\n\nПокупки 5129\n11 доставок\n300 курьер\n75 км'} style={{ width:'100%', minHeight:190, resize:'vertical', padding:14, border:'1px solid '+COLORS.line, borderRadius:10, fontFamily:'inherit', fontSize:13, boxSizing:'border-box' }} />
         <div style={{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap' }}>
           <button className="rp-btn" onClick={parseTextAi} disabled={aiLoading}>{aiLoading ? 'Разбираю с ИИ…' : '✨ Разобрать с ИИ'}</button>
           <button className="rp-btn rp-btn-ghost" onClick={parseText} disabled={aiLoading}>Разобрать без ИИ</button>
-          <button className="rp-btn rp-btn-ghost" onClick={() => { setText(''); setParsed(null); setLoadError(''); setUsedAi(false); }} disabled={aiLoading}>Очистить</button>
+          <button className="rp-btn rp-btn-ghost" onClick={() => { setText(''); setParsedList([]); setLoadError(''); setLoadWarning(''); setResultMeta({usedAi:false,usedFallback:false}); }} disabled={aiLoading}>Очистить</button>
         </div>
+        {loadWarning && <div className="rp-alert rp-alert-warn" style={{marginTop:12}}><AlertTriangle size={16}/>{loadWarning}</div>}
         {loadError && <div className="rp-alert" style={{marginTop:12}}><AlertTriangle size={16}/>{loadError}</div>}
       </Card>
 
-      {parsed && <ManualParsedReport parsed={parsed} settings={settings} employees={employees} months={months} onApply={applyParsed} aiPowered={usedAi} />}
+      {parsedList.length > 1 && <div className="rp-muted" style={{marginTop:14}}>Найдено отчётов: {parsedList.length}. Проверьте каждый и примените по отдельности.</div>}
+
+      {parsedList.map(({ parsed, key }) => (
+        <div key={key} style={{marginTop:14}}>
+          <ManualParsedReport parsed={parsed} settings={settings} employees={employees} months={months} onApply={(edited) => applyParsed(key, edited)} aiPowered={resultMeta.usedAi} />
+        </div>
+      ))}
 
       {drafts.length > 0 && <>
         <div className="rp-section-title" style={{marginTop:20}}>Сохранённые черновики</div>
-        {drafts.map(d => <DraftCard key={d.id} draft={d} settings={settings} employees={employees} months={months} onApply={async edited => { await applyParsed(edited); await supabase.from('vk_report_drafts').update({status:'applied', applied_at:new Date().toISOString()}).eq('id',d.id); await loadDrafts(); refreshPendingReportsCount?.(); }} onDismiss={async () => { await supabase.from('vk_report_drafts').update({status:'dismissed'}).eq('id',d.id); await loadDrafts(); refreshPendingReportsCount?.(); }} />)}
+        {drafts.map(d => <DraftCard key={d.id} draft={d} settings={settings} employees={employees} months={months} onApply={async edited => { await applyParsed(null, edited); await supabase.from('vk_report_drafts').update({status:'applied', applied_at:new Date().toISOString()}).eq('id',d.id); await loadDrafts(); refreshPendingReportsCount?.(); }} onDismiss={async () => { await supabase.from('vk_report_drafts').update({status:'dismissed'}).eq('id',d.id); await loadDrafts(); refreshPendingReportsCount?.(); }} />)}
       </>}
     </div>
   );
