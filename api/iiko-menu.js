@@ -8,6 +8,7 @@
 // отчётов, поэтому CRUD добавляется отдельным шагом после того, как увидим ответ.
 
 export const config = { runtime: 'nodejs' };
+export const maxDuration = 60; // список меню может быть большим — стандартных 10 сек может не хватить
 
 import { createHash } from 'crypto';
 
@@ -87,7 +88,12 @@ export default async function handler(req, res) {
       note: 'Показаны первые 30 позиций (или полный ответ, если это не список). Это только чтение — ничего не изменено. Пришлите этот ответ, чтобы настроить редактирование.'
     });
   } catch (err) {
-    res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
+    const msg = err?.message || '';
+    if (/terminated|aborted|timeout/i.test(msg)) {
+      res.status(502).json({ error: 'Сервер iiko не успел ответить вовремя — список меню, похоже, очень большой. Пробуем увеличенный лимит времени; если повторится — уменьшим объём запрашиваемых данных.' });
+    } else {
+      res.status(502).json({ error: msg || 'Не удалось подключиться к серверу iiko.' });
+    }
   } finally {
     if (token) await iikoLogout(serverUrl, token);
   }
