@@ -866,8 +866,12 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, settings, year, monthIdx, selectedDate, setSelectedDate } = ctx;
+  const { pnl, prevPnl, month, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey } = ctx;
   const [drill, setDrill] = useState(null);
+  const [insights, setInsights] = useState(null); // { insights: [...], generatedAt }
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState('');
+  const [insightsLoaded, setInsightsLoaded] = useState(false);
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
@@ -898,6 +902,87 @@ function Dashboard({ ctx, setPage }) {
   ].filter((d) => d.value > 0);
 
   const delta = (a, b) => (b ? ((a - b) / b) * 100 : 0);
+
+  // --- Прогноз на конец месяца: чистая математика, без ИИ, считается мгновенно и бесплатно.
+  // Постоянные расходы и налоги ФОТ обычно вносятся как сумма за весь месяц сразу, поэтому
+  // их не масштабируем по дням — линейно растягиваем только то, что реально накапливается
+  // день за днём (выручка, закупки, курьер, промо и т.п.).
+  const daysWithData = dailySeries.filter(d => d['Выручка'] > 0 || d['Расходы'] > 0).length;
+  const forecast = useMemo(() => {
+    if (daysWithData === 0 || daysWithData >= pnl.nd) return null;
+    const scalableExpenses = pnl.totalExpenses - pnl.fixedTotal - pnl.fotTaxTotal;
+    const projectedRevenue = (pnl.revenue / daysWithData) * pnl.nd;
+    const projectedScalable = (scalableExpenses / daysWithData) * pnl.nd;
+    const projectedExpenses = projectedScalable + pnl.fixedTotal + pnl.fotTaxTotal;
+    return {
+      daysWithData, daysRemaining: pnl.nd - daysWithData,
+      projectedRevenue, projectedExpenses,
+      projectedProfit: projectedRevenue - projectedExpenses,
+      projectedMargin: projectedRevenue ? ((projectedRevenue - projectedExpenses) / projectedRevenue) * 100 : 0,
+    };
+  }, [pnl, daysWithData]);
+
+  // --- Наблюдения ИИ: подгружаем последний сохранённый кеш за этот месяц при открытии,
+  // пересчитываем только по явному нажатию кнопки (чтобы не тратить деньги при каждом заходе).
+  useEffect(() => {
+    let cancelled = false;
+    setInsights(null); setInsightsLoaded(false); setInsightsError('');
+    if (!supabase) return;
+    (async () => {
+      try {
+        const { data } = await supabase.from('ai_insights_cache').select('*').eq('month_key', monthKey).order('generated_at', { ascending: false }).limit(1).maybeSingle();
+        if (!cancelled && data) setInsights({ insights: data.insights, generatedAt: data.generated_at });
+      } catch (_) {}
+      if (!cancelled) setInsightsLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [monthKey]);
+
+  const aggregateByCategory = (items) => {
+    const map = new Map();
+    (items || []).forEach(it => { const k = it.category || 'Без категории'; map.set(k, (map.get(k) || 0) + (Number(it.amount) || 0)); });
+    return Array.from(map.entries()).map(([category, amount]) => ({ category, amount })).sort((a,b) => b.amount - a.amount).slice(0, 10);
+  };
+
+  const buildPnlSummary = (p) => p ? {
+    выручка: Math.round(p.revenue), расходы_всего: Math.round(p.totalExpenses), прибыль: Math.round(p.profit),
+    рентабельность_pct: Math.round(p.margin * 10) / 10,
+    закупки_кухня: Math.round(p.kitchen.total), закупки_поставщики: Math.round(p.supplierPay.total),
+    food_cost_pct: Math.round(p.foodCostPct * 10) / 10,
+    фот: Math.round(p.payroll.totalFot), labor_cost_pct: Math.round(p.laborCostPct * 10) / 10,
+    курьер_ставка: Math.round(p.courier.pay), курьер_бензин: Math.round(p.courier.fuelTotal), курьер_доставок: p.courier.deliveries, курьер_средний_чек_доставки: Math.round(p.courier.avgPerDelivery),
+    промо: Math.round(p.promo.total), прочие_переменные: Math.round(p.otherVar.total),
+    постоянные: Math.round(p.fixedTotal), налоги_фот: Math.round(p.fotTaxTotal),
+    выручка_по_каналам: p.revByChannel,
+  } : null;
+
+  const refreshInsights = async () => {
+    setInsightsLoading(true); setInsightsError('');
+    try {
+      const resp = await fetch('/api/insights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({
+          month: `${MONTHS_RU[monthIdx]} ${year}`,
+          current: buildPnlSummary(pnl),
+          previous: buildPnlSummary(prevPnl),
+          dailySeries: dailySeries.filter(d => d['Выручка'] > 0 || d['Расходы'] > 0),
+          otherExpenseCategories: aggregateByCategory(pnl.otherVar.items),
+          kitchenCategories: aggregateByCategory(pnl.kitchen.items),
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setInsightsError(data?.error || 'Не удалось получить наблюдения.'); return; }
+      setInsights(data);
+      if (supabase) {
+        await supabase.from('ai_insights_cache').insert({ month_key: monthKey, insights: data.insights, generated_at: data.generatedAt });
+      }
+    } catch (e) {
+      setInsightsError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setInsightsLoading(false);
+    }
+  };
 
   return (
     <div className="rp-page">
@@ -954,6 +1039,42 @@ function Dashboard({ ctx, setPage }) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+        </Card>
+      </div>
+
+      <div className="rp-grid-2">
+        {forecast && (
+          <Card>
+            <div className="rp-card-title">Прогноз на конец месяца</div>
+            <div className="rp-muted" style={{marginBottom:12}}>Линейная экстраполяция по {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
+            <div className="rp-forecast-grid">
+              <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
+              <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
+              <div><div className="rp-forecast-label">Прибыль</div><div className="rp-forecast-value" style={{color: forecast.projectedProfit>=0?COLORS.accent:COLORS.danger}}>{fmtRub(forecast.projectedProfit)}</div></div>
+              <div><div className="rp-forecast-label">Рентабельность</div><div className="rp-forecast-value">{fmtPct(forecast.projectedMargin)}</div></div>
+            </div>
+            <div className="rp-muted" style={{marginTop:10,fontSize:11}}>Прогноз предполагает, что темп выручки и переменных расходов сохранится до конца месяца. Постоянные расходы и налоги ФОТ не масштабируются.</div>
+          </Card>
+        )}
+        <Card>
+          <div className="rp-card-title-row">
+            <div className="rp-card-title">✨ Наблюдения ИИ</div>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={refreshInsights} disabled={insightsLoading}>{insightsLoading?'Анализирую…':'Обновить'}</button>
+          </div>
+          {insights?.generatedAt && <div className="rp-muted" style={{marginBottom:10}}>Обновлено {new Date(insights.generatedAt).toLocaleString('ru-RU', {day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>}
+          {insightsError && <div className="rp-inline-warn"><AlertTriangle size={13}/> {insightsError}</div>}
+          {!insightsError && insightsLoaded && !insights && <div className="rp-muted">Ещё не анализировали этот месяц. Нажмите «Обновить», чтобы ИИ посмотрел на цифры и нашёл отклонения.</div>}
+          {insights?.insights?.length === 0 && <div className="rp-muted">Ничего примечательного не найдено — показатели в пределах обычных колебаний.</div>}
+          {insights?.insights?.length > 0 && (
+            <div className="rp-insights-list">
+              {insights.insights.map((ins, i) => (
+                <div key={i} className={`rp-insight rp-insight-${ins.severity}`}>
+                  <div className="rp-insight-title">{ins.title}</div>
+                  <div className="rp-insight-detail">{ins.detail}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </Card>
       </div>
 
@@ -3544,6 +3665,7 @@ function GlobalStyle() {
         .rp-toolbar { flex-wrap: wrap; }
         .rp-list-row { flex-wrap: wrap; }
         .rp-list-amount { margin-left: auto; }
+        .rp-forecast-grid { grid-template-columns: 1fr 1fr; }
       }
       @media (max-width: 520px) {
         .rp-grid-4 { grid-template-columns: 1fr; }
@@ -3574,6 +3696,16 @@ function GlobalStyle() {
       .rp-alert-warn span { flex: 1; }
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
+      .rp-forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+      .rp-forecast-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
+      .rp-forecast-value { font-size: 17px; font-weight: 700; color: ${COLORS.ink}; }
+      .rp-insights-list { display: flex; flex-direction: column; gap: 10px; }
+      .rp-insight { border-radius: 10px; padding: 10px 12px; border: 1px solid; }
+      .rp-insight-title { font-weight: 700; font-size: 12.5px; margin-bottom: 3px; }
+      .rp-insight-detail { font-size: 12px; line-height: 1.4; opacity: 0.9; }
+      .rp-insight-warning { background: #FBF3E3; border-color: #EAD9A8; color: #7A5A17; }
+      .rp-insight-info { background: #EEF1EE; border-color: ${COLORS.line}; color: ${COLORS.inkSoft}; }
+      .rp-insight-positive { background: #E9F5EF; border-color: #BFE0CF; color: #1F6F54; }
       .rp-cash-check { display: flex; align-items: center; gap: 6px; background: #EEF3FA; border: 1px solid #CFE0F2; color: #33587A; padding: 9px 13px; border-radius: 10px; font-size: 12.5px; }
       .rp-ai-badge { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; background: linear-gradient(135deg,#7c5cff,#5b8def); color: white; padding: 2px 7px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
       .rp-draft-balance { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-top: 3px; }
