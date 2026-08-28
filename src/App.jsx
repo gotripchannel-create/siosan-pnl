@@ -2820,6 +2820,8 @@ function IikoDashboardPage({ ctx }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [cashData, setCashData] = useState(null);
+  const [cashError, setCashError] = useState('');
 
   const monthFrom = dateStr(year, monthIdx, 1);
   const monthTo = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
@@ -2843,6 +2845,24 @@ function IikoDashboardPage({ ctx }) {
   }, [monthFrom, monthTo, session]);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadCash = useCallback(async () => {
+    setCashError('');
+    try {
+      const resp = await fetch('/api/iiko-cashshifts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from: monthFrom, to: monthTo })
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setCashError(json?.error || 'Не удалось получить данные по кассовым сменам.'); setCashData(null); return; }
+      setCashData(json);
+    } catch (e) {
+      setCashError(e?.message || 'Не удалось связаться с сервером.');
+    }
+  }, [monthFrom, monthTo, session]);
+
+  useEffect(() => { loadCash(); }, [loadCash]);
 
   const dailySeries = (data?.days || []).map(d => ({ day: Number(d.date.slice(8, 10)), Выручка: d.total }));
   const payTypeData = Object.entries(data?.totalsByPayType || {}).map(([name, value]) => ({ name, value }));
@@ -2908,6 +2928,43 @@ function IikoDashboardPage({ ctx }) {
               </div>
             )}
             {!data.deletions && !data.deletionsError && <div className="rp-muted">Нет данных за период.</div>}
+          </Card>
+
+          <Card>
+            <div className="rp-card-title">Внесения и изъятия</div>
+            {cashError && <div className="rp-muted">Не удалось получить: {cashError}</div>}
+            {cashData && (
+              <>
+                <div className="rp-grid-4">
+                  <Stat label="Внесено за месяц" value={fmtRub(cashData.totalPayIn)} />
+                  <Stat label="Изъято за месяц" value={fmtRub(cashData.totalPayOut)} />
+                  <Stat label="Чистое движение" value={fmtRub(cashData.totalPayIn - cashData.totalPayOut)} />
+                  <Stat label="Смен за месяц" value={fmt0((cashData.shifts||[]).length)} />
+                </div>
+                <p className="rp-muted" style={{marginTop:10, fontSize:11}}>Отдельного поля «инкассация» в API нет — она входит в изъятия как один из их видов.</p>
+                {cashData.shifts?.length > 0 && (
+                  <div className="rp-table-wrap" style={{marginTop:12}}>
+                    <table className="rp-table">
+                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
+                      <tbody>
+                        {cashData.shifts.map((s,i) => (
+                          <tr key={i}>
+                            <td>{s.date?.split('-').reverse().join('.')}</td>
+                            <td>№{s.sessionNumber}</td>
+                            <td>{s.status === 'OPEN' ? 'Открыта' : s.status === 'CLOSED' ? 'Закрыта' : s.status}</td>
+                            <td className="rp-num">{fmtRub(s.payIn)}</td>
+                            <td className="rp-num">{fmtRub(s.payOut)}</td>
+                            <td className="rp-num">{fmtRub(s.salesCash)}</td>
+                            <td className="rp-num">{fmtRub(s.salesCard)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+            {!cashData && !cashError && <div className="rp-muted">Загружаю…</div>}
           </Card>
 
           {(data.days || []).length === 0 && (
