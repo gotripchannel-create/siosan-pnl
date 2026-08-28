@@ -5,6 +5,42 @@ export function normalizeNumber(str) {
 }
 
 const amountRe = /(\d[\d\s]*(?:[.,]\d+)?)/;
+const MONTHS = ['январ','феврал','март','апрел','ма[йя]','июн','июл','август','сентябр','октябр','ноябр','декабр'];
+const MONTH_INDEX = { 'январ':1,'феврал':2,'март':3,'апрел':4,'ма':5,'июн':6,'июл':7,'август':8,'сентябр':9,'октябр':10,'ноябр':11,'декабр':12 };
+const monthNameRe = new RegExp(`^(\\d{1,2})\\s+(${MONTHS.join('|')})[а-я]*\\s*$`, 'i');
+const dateLineRe = /^(?:отч[её]т\s*)?(?:за\s*)?(\d{1,2})[.\/]\s*(\d{1,2})(?:[.\/]\s*(\d{2,4}))?\.?\s*$/i;
+
+// Строки-разделители дней в экспорте чата ВК ("21 марта", "вчера", "26.08.26" отдельной строкой).
+function matchDayMarker(line, fallbackDate) {
+  const trimmed = line.trim();
+  const now = fallbackDate ? new Date(fallbackDate + 'T00:00:00') : new Date();
+
+  const mn = trimmed.match(monthNameRe);
+  if (mn) {
+    const day = Number(mn[1]);
+    const monKey = Object.keys(MONTH_INDEX).find(k => mn[2].toLowerCase().startsWith(k));
+    const month = monKey ? MONTH_INDEX[monKey] : null;
+    if (month) return `${now.getFullYear()}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+  const dm = trimmed.match(dateLineRe);
+  if (dm) {
+    let [, dd, mm, yy] = dm;
+    yy = yy ? (yy.length === 2 ? '20' + yy : yy) : String(now.getFullYear());
+    return `${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+  }
+  if (/^вчера$/i.test(trimmed)) { const d = new Date(now); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); }
+  if (/^позавчера$/i.test(trimmed)) { const d = new Date(now); d.setDate(d.getDate() - 2); return d.toISOString().slice(0,10); }
+  if (/^сегодня$/i.test(trimmed)) { return now.toISOString().slice(0,10); }
+  return null;
+}
+
+// Похоже ли, что этот кусок текста — реальный финансовый отчёт, а не переписка/приветствие.
+function looksLikeReport(text) {
+  const lower = text.toLowerCase();
+  const hasTotal = /итог.*выруч|выруч.*итог/.test(lower);
+  const hasTwoRevenueWords = (lower.match(/налич|карт|выруч/g) || []).length >= 2;
+  return hasTotal || hasTwoRevenueWords;
+}
 
 export function parseVkReport(text, ctx = {}) {
   const {
@@ -29,7 +65,6 @@ export function parseVkReport(text, ctx = {}) {
 
   const now = new Date();
   const localYear = now.getFullYear();
-  const dateRe = /(?:^|\s)(\d{1,2})[.\/]\s*(\d{1,2})(?:[.\/]\s*(\d{2,4}))?(?:\s|$)/;
   const empByFirstName = new Map();
   employees.forEach(e => {
     const first = String(e.name || '').trim().split(/\s+/)[0].toLowerCase();
@@ -47,12 +82,12 @@ export function parseVkReport(text, ctx = {}) {
   for (const line of lines) {
     const lower = line.toLowerCase();
 
-    const dm = line.match(dateRe);
+    const dm = line.match(dateLineRe);
     if (dm) {
       let [, dd, mm, yy] = dm;
       yy = yy ? (yy.length === 2 ? '20' + yy : yy) : String(localYear);
       result.date = `${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
-      if (/^\s*(?:отч[её]т\s*)?(?:за\s*)?\d{1,2}[.\/]\s*\d{1,2}(?:[.\/]\s*\d{2,4})?\s*$/i.test(line)) continue;
+      continue;
     }
 
     if (/^(?:авансы?|авансы сотрудников?)\s*:?(?:\s*)$/i.test(line)) { inAdvances = true; inPurchases = inOther = false; continue; }
@@ -62,10 +97,39 @@ export function parseVkReport(text, ctx = {}) {
     const nm = line.match(amountRe);
     const amount = nm ? normalizeNumber(nm[1]) : null;
 
+    // Касса фактически / ДБ — сверочное поле, НЕ выручка и НЕ расход. Не даём ему попасть
+    // ни в itemized expenses (перебивает суммы), ни в roster — просто фиксируем как есть.
+    if (/^дб\b|касса\s*факт/i.test(lower)) {
+      result.unmatchedLines.push(`${line} (касса фактически — сверка, не применяется автоматически)`);
+      inAdvances = inPurchases = inOther = false;
+      continue;
+    }
+
     if (/итог.*выруч|выруч.*итог/i.test(lower)) {
       if (amount != null) result.totalHint = amount;
       continue;
     }
+
+    // Конкретные поля имеют приоритет НАД «мы всё ещё внутри секции авансов/покупок» —
+    // иначе одна открытая секция «Авансы:» проглатывает все последующие строки с числами
+    // (доставки, км, зарплату курьера) до конца сообщения.
+    if (/налич/i.test(lower)) {
+      if (cashChannel) result.revenue[cashChannel.id] = amount; else result.unmatchedLines.push(line);
+      inAdvances = inPurchases = inOther = false; continue;
+    }
+    if (/карт/i.test(lower) || /безнал/i.test(lower)) {
+      if (cardChannel) result.revenue[cardChannel.id] = amount; else result.unmatchedLines.push(line);
+      inAdvances = inPurchases = inOther = false; continue;
+    }
+    const matchedChannelEarly = revenueChannels.find(c => lower.includes(String(c.name || '').toLowerCase()));
+    if (matchedChannelEarly) {
+      result.revenue[matchedChannelEarly.id] = amount;
+      inAdvances = inPurchases = inOther = false; continue;
+    }
+    if (/достав/i.test(lower)) { result.courier.deliveries = amount; inAdvances = inPurchases = inOther = false; continue; }
+    if (/(?:^|\s)км\b|км$/i.test(lower) || /километр/i.test(lower)) { result.courier.km = amount; inAdvances = inPurchases = inOther = false; continue; }
+    if (/курьер/i.test(lower)) { result.courier.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
+    if (/промо/i.test(lower)) { result.promo.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
 
     if (inAdvances && amount != null) {
       const name = line.replace(nm[0], '').replace(/[\-:]+/g, ' ').trim();
@@ -86,26 +150,6 @@ export function parseVkReport(text, ctx = {}) {
       else result.unmatchedLines.push(line);
       continue;
     }
-
-    // Explicit revenue fields first.
-    if (/выруч.*нал|нал.*выруч|^нал(?:ичные|ичка)?\b/i.test(lower)) {
-      if (cashChannel) result.revenue[cashChannel.id] = amount; else result.unmatchedLines.push(line);
-      inAdvances = inPurchases = inOther = false; continue;
-    }
-    if (/выруч.*карт|карт.*выруч|^карт(?:а|ы)?\b|^безнал/i.test(lower)) {
-      if (cardChannel) result.revenue[cardChannel.id] = amount; else result.unmatchedLines.push(line);
-      inAdvances = inPurchases = inOther = false; continue;
-    }
-    const matchedChannel = revenueChannels.find(c => lower.includes(String(c.name || '').toLowerCase()));
-    if (matchedChannel && /выруч|оплата|карта|налич|яндекс|нетмонет|еда/i.test(lower)) {
-      result.revenue[matchedChannel.id] = amount;
-      inAdvances = inPurchases = inOther = false; continue;
-    }
-
-    if (/достав/i.test(lower)) { result.courier.deliveries = amount; inAdvances = inPurchases = inOther = false; continue; }
-    if (/(?:^|\s)км\b|км$/i.test(lower) || /километр/i.test(lower)) { result.courier.km = amount; inAdvances = inPurchases = inOther = false; continue; }
-    if (/курьер/i.test(lower)) { result.courier.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
-    if (/промо/i.test(lower)) { result.promo.pay = amount; inAdvances = inPurchases = inOther = false; continue; }
 
     const category = line.replace(nm[0], '').replace(/^[\s:–—-]+|[\s:–—-]+$/g, '').trim();
     const isPurchase = inPurchases || /покупк|закупк/i.test(lower);
@@ -131,4 +175,46 @@ export function parseVkReport(text, ctx = {}) {
     return { raw: n, employeeId: m ? m.id : null, matchedName: m ? m.name : null };
   });
   return result;
+}
+
+// Разбивает большой кусок текста (например, целиком скопированный чат за несколько дней)
+// на отдельные отчёты. Ищет строки-маркеры дня ("26 августа", "вчера", "26.08.26") и куски,
+// которые похожи на реальный отчёт (упоминают выручку/итого), остальное отбрасывает как шум переписки.
+export function parseVkReportMulti(text, ctx = {}) {
+  const lines = String(text || '').split(/\r?\n/);
+  const blocks = [];
+  let currentMarkerDate = null;
+  let buffer = [];
+
+  const flush = () => {
+    const chunk = buffer.join('\n').trim();
+    buffer = [];
+    if (chunk && looksLikeReport(chunk)) blocks.push({ markerDate: currentMarkerDate, text: chunk });
+  };
+
+  for (const rawLine of lines) {
+    const marker = matchDayMarker(rawLine, ctx.fallbackDate);
+    if (marker) {
+      flush();
+      currentMarkerDate = marker;
+      continue;
+    }
+    buffer.push(rawLine);
+  }
+  flush();
+
+  // Если маркеров дней не было вообще и весь текст — один отчёт (обычный случай: вставили одно сообщение).
+  if (blocks.length === 0) {
+    const whole = String(text || '').trim();
+    if (!whole) return [];
+    return [parseVkReport(whole, ctx)];
+  }
+
+  return blocks.map(b => {
+    const parsed = parseVkReport(b.text, { ...ctx, fallbackDate: b.markerDate || ctx.fallbackDate });
+    if (!parsed.date || parsed.date === ctx.fallbackDate) {
+      if (b.markerDate) parsed.date = b.markerDate;
+    }
+    return parsed;
+  });
 }
