@@ -13,7 +13,7 @@ import {
   Copy as CopyIcon, Check, Minus, Printer, ChevronDown, ChevronUp, Info,
   UserPlus, Truck as TruckIcon, Megaphone, ClipboardList, Banknote,
   History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw,
-  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox
+  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio
 } from 'lucide-react';
 
 
@@ -532,6 +532,7 @@ const NAV = [
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
   { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
   { id: 'history', label: 'История', icon: History },
+  { id: 'iiko', label: 'iiko', icon: Radio },
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
@@ -857,6 +858,7 @@ export default function App() {
           {page === 'settings' && <SettingsPage ctx={ctx} />}
           {page === 'compare' && <ComparePage ctx={ctx} />}
           {page === 'history' && <HistoryPage ctx={ctx} />}
+          {page === 'iiko' && <IikoDashboardPage ctx={ctx} />}
         </main>
       </div>
     </div>
@@ -2774,6 +2776,100 @@ const historyFieldLabel = {
   month: 'месяц', date: 'дата', amount: 'сумма', employee: 'сотрудник', supplier: 'поставщик',
   category: 'категория', from: 'было', to: 'стало',
 };
+
+/* ============================== IIKO DASHBOARD (отдельный, независимый от ручного P&L) ============================== */
+
+function IikoDashboardPage({ ctx }) {
+  const { settings, session, year, monthIdx } = ctx;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const monthFrom = dateStr(year, monthIdx, 1);
+  const monthTo = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const resp = await fetch('/api/iiko-dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from: monthFrom, to: monthTo })
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json?.error || 'Не удалось получить данные из iiko.'); setData(null); return; }
+      setData(json);
+    } catch (e) {
+      setError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setLoading(false);
+    }
+  }, [monthFrom, monthTo, session]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dailySeries = (data?.days || []).map(d => ({ day: Number(d.date.slice(8, 10)), Выручка: d.total }));
+  const payTypeData = Object.entries(data?.totalsByPayType || {}).map(([name, value]) => ({ name, value }));
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1><Radio size={20} style={{verticalAlign:'-3px', marginRight:8}}/>iiko</h1>
+        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · данные напрямую с кассы, для сверки — в P&L не входят</div>
+      </div>
+
+      <div className="rp-alert rp-alert-info" style={{marginBottom:16}}>
+        <Info size={16}/> Это отдельная витрина данных из iiko. Она никак не связана с тем, что вы вносите вручную в «День» —
+        цифры здесь никогда не попадают в P&L автоматически. Если хотите перенести что-то отсюда в отчёт — сделайте это вручную на странице «День».
+      </div>
+
+      {loading && <Card><div className="rp-muted">Загружаю данные из iiko…</div></Card>}
+      {error && <div className="rp-alert" style={{marginBottom:16}}><AlertTriangle size={16}/> {error} <button className="rp-btn-link" onClick={load} style={{marginLeft:8}}>Повторить</button></div>}
+
+      {!loading && !error && data && (
+        <>
+          <div className="rp-grid-4">
+            <Stat label="Выручка за месяц (iiko)" value={fmtRub(data.grandTotal)} />
+            <Stat label="Чеков" value={fmt0(data.totalChecks)} />
+            <Stat label="Средний чек" value={fmtRub(data.avgCheck)} />
+            <Stat label="Дней с продажами" value={fmt0((data.days || []).length)} />
+          </div>
+
+          <div className="rp-grid-2">
+            <Card>
+              <div className="rp-card-title">Выручка по дням (iiko)</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <AreaChart data={dailySeries}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.15} strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Card>
+            <Card>
+              <div className="rp-card-title">По способам оплаты</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <PieChart>
+                  <Pie data={payTypeData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} innerRadius={55}>
+                    {payTypeData.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Card>
+          </div>
+
+          {(data.days || []).length === 0 && (
+            <Card><EmptyState icon={<Radio size={24} color={COLORS.inkSoft} />} title="Нет данных за этот месяц" description="Либо продаж ещё не было, либо период не совпадает с текущей датой на сервере iiko." /></Card>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ============================== COMPARE ============================== */
 
