@@ -61,36 +61,37 @@ export default async function handler(req, res) {
   try {
     token = await iikoAuth(serverUrl, login, password);
 
-    // /resto/api/v2/entities/products/list — классический эндпоинт номенклатуры iikoServer.
-    // Возвращает JSON-список товаров/блюд с ценами, категориями и т.п.
-    const productsResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/entities/products/list?key=${encodeURIComponent(token)}`, {
-      headers: { 'Accept': 'application/json' }
+    // Пробуем классический эндпоинт /resto/api/products (XML) — он проще и легче,
+    // чем /resto/api/v2/entities/products/list, который у вас на сервере обрывался
+    // ещё до истечения тайм-аута (значит дело не в нашем лимите времени, а в самом
+    // сервере/прокси iiko на этом конкретном пути).
+    const productsResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/products?key=${encodeURIComponent(token)}&includeDeleted=false`, {
+      headers: { 'Accept': 'application/xml, text/xml, */*' }
     });
     const productsText = await productsResp.text();
-    let productsJson = null;
-    try { productsJson = JSON.parse(productsText); } catch (_) {}
 
     if (!productsResp.ok) {
       res.status(502).json({
-        error: `Сервер iiko ответил ошибкой на запрос меню (${productsResp.status}). Пришлите этот текст — по нему уточним правильный эндпоинт для вашей версии iiko.`,
-        raw: productsJson || productsText
+        error: `Сервер iiko ответил ошибкой на запрос меню (${productsResp.status}).`,
+        raw: productsText.slice(0, 3000)
       });
       return;
     }
 
-    const items = Array.isArray(productsJson) ? productsJson : (productsJson?.items || productsJson || []);
-    const preview = Array.isArray(items) ? items.slice(0, 30) : items;
+    const totalCount = (productsText.match(/<productDto>/g) || []).length || null;
 
     res.status(200).json({
       connected: true,
-      totalCount: Array.isArray(items) ? items.length : null,
-      preview,
-      note: 'Показаны первые 30 позиций (или полный ответ, если это не список). Это только чтение — ничего не изменено. Пришлите этот ответ, чтобы настроить редактирование.'
+      format: 'xml',
+      totalCount,
+      totalLength: productsText.length,
+      preview: productsText.slice(0, 8000),
+      note: 'Это XML-ответ (первые 8000 символов). Пришлите этот текст — по нему настроим редактирование меню.'
     });
   } catch (err) {
     const msg = err?.message || '';
     if (/terminated|aborted|timeout/i.test(msg)) {
-      res.status(502).json({ error: 'Сервер iiko не успел ответить вовремя — список меню, похоже, очень большой. Пробуем увеличенный лимит времени; если повторится — уменьшим объём запрашиваемых данных.' });
+      res.status(502).json({ error: 'Соединение оборвалось (не наш тайм-аут — это либо сам сервер iiko, либо прокси/защита перед ним обрывает запрос на этом пути). Нужно уточнить у поддержки iiko, есть ли ограничения на объём ответа для API-пользователей.' });
     } else {
       res.status(502).json({ error: msg || 'Не удалось подключиться к серверу iiko.' });
     }
