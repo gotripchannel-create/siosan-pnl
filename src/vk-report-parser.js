@@ -10,7 +10,14 @@ const MONTH_INDEX = { 'январ':1,'феврал':2,'март':3,'апрел':
 const monthNameRe = new RegExp(`^(\\d{1,2})\\s+(${MONTHS.join('|')})[а-я]*\\s*$`, 'i');
 const dateLineRe = /^(?:отч[её]т\s*)?(?:за\s*)?(\d{1,2})[.\/]\s*(\d{1,2})(?:[.\/]\s*(\d{2,4}))?\.?\s*$/i;
 
-// Строки-разделители дней в экспорте чата ВК ("21 марта", "вчера", "26.08.26" отдельной строкой).
+// Строки-разделители ДНЕЙ В ЭКСПОРТЕ ЧАТА ("21 марта", "вчера", "сегодня") — то есть
+// настоящие заголовки календарных дней, которые ВК показывает между сообщениями разных дней.
+// Числовая дата вида "26.08.26" сюда намеренно НЕ включена: это самостоятельная дата,
+// которую автор указал ВНУТРИ своего отчёта (в начале или в конце — не важно), а не
+// разделитель между разными сообщениями. Если считать её разделителем, отчёт, где дата
+// стоит подписью в конце, будет резаться неправильно — реальные данные уедут под старую
+// дату, а верная дата достанется пустому хвосту. Числовые даты по-прежнему подхватываются
+// внутри parseVkReport() построчно, откуда бы они ни стояли.
 function matchDayMarker(line, fallbackDate) {
   const trimmed = line.trim();
   const now = fallbackDate ? new Date(fallbackDate + 'T00:00:00') : new Date();
@@ -21,12 +28,6 @@ function matchDayMarker(line, fallbackDate) {
     const monKey = Object.keys(MONTH_INDEX).find(k => mn[2].toLowerCase().startsWith(k));
     const month = monKey ? MONTH_INDEX[monKey] : null;
     if (month) return `${now.getFullYear()}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-  }
-  const dm = trimmed.match(dateLineRe);
-  if (dm) {
-    let [, dd, mm, yy] = dm;
-    yy = yy ? (yy.length === 2 ? '20' + yy : yy) : String(now.getFullYear());
-    return `${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
   }
   if (/^вчера$/i.test(trimmed)) { const d = new Date(now); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); }
   if (/^позавчера$/i.test(trimmed)) { const d = new Date(now); d.setDate(d.getDate() - 2); return d.toISOString().slice(0,10); }
@@ -85,9 +86,11 @@ export function parseVkReport(text, ctx = {}) {
 
     const dm = line.match(dateLineRe);
     if (dm) {
-      let [, dd, mm, yy] = dm;
-      yy = yy ? (yy.length === 2 ? '20' + yy : yy) : String(localYear);
-      result.date = `${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+      if (!result.date) {
+        let [, dd, mm, yy] = dm;
+        yy = yy ? (yy.length === 2 ? '20' + yy : yy) : String(localYear);
+        result.date = `${yy}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+      }
       continue;
     }
 
