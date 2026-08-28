@@ -74,9 +74,28 @@ export default async function handler(req, res) {
     }
 
     const list = Array.isArray(shifts) ? shifts : [];
+
+    // Отсеиваем «фантомные» смены — техническое открытие и мгновенное закрытие без
+    // реальной работы (перезапуск кассы, сбой и т.п.). Признаки: либо вообще нет
+    // никакой финансовой активности (все суммы нулевые), либо смена закрылась
+    // практически сразу после открытия (меньше 2 минут) — за это время реальная
+    // смена отработать не могла.
+    const isPhantomShift = (s) => {
+      const noActivity = !(Number(s.payIn) || Number(s.payOut) || Number(s.salesCash) || Number(s.salesCard) || Number(s.sessionStartCash));
+      let tooShort = false;
+      if (s.openDate && s.closeDate) {
+        const durationMs = new Date(s.closeDate) - new Date(s.openDate);
+        tooShort = durationMs >= 0 && durationMs < 2 * 60 * 1000;
+      }
+      return noActivity || tooShort;
+    };
+
+    const realShifts = list.filter(s => !isPhantomShift(s));
+    const skippedCount = list.length - realShifts.length;
+
     let totalPayIn = 0, totalPayOut = 0, totalStartCash = 0;
 
-    const items = list.map(s => {
+    const items = realShifts.map(s => {
       totalPayIn += Number(s.payIn) || 0;
       totalPayOut += Number(s.payOut) || 0;
       totalStartCash += Number(s.sessionStartCash) || 0;
@@ -102,6 +121,7 @@ export default async function handler(req, res) {
       totalPayIn: Math.round(totalPayIn * 100) / 100,
       totalPayOut: Math.round(totalPayOut * 100) / 100,
       totalStartCash: Math.round(totalStartCash * 100) / 100,
+      skippedPhantomShifts: skippedCount,
       note: 'Отдельного поля «инкассация» в API нет — она входит в изъятия (payOut) как один из видов изъятия.'
     });
   } catch (err) {
