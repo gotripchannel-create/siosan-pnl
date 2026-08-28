@@ -186,39 +186,51 @@ export function parseVkReport(text, ctx = {}) {
 }
 
 // Разбивает большой кусок текста (например, целиком скопированный чат за несколько дней)
-// на отдельные отчёты. Ищет строки-маркеры дня ("26 августа", "вчера", "26.08.26") и куски,
-// которые похожи на реальный отчёт (упоминают выручку/итого), остальное отбрасывает как шум переписки.
+// на отдельные отчёты. Ищет строки-маркеры дня ("26 августа", "вчера", "26.08.26").
+// Важно: маркер обрывает текущий блок ТОЛЬКО если то, что уже накоплено, само по себе
+// похоже на отчёт (есть выручка/итого). Если накопленного ещё недостаточно (например
+// маркер идёт раньше самого списка «кто работал», или это просто повторная/уточняющая
+// дата в конце сообщения) — блок не обрывается, а маркер просто обновляет дату текущего
+// блока. Хвост в конце текста, который сам по себе не похож на отчёт (например список
+// имён без сумм), не отбрасывается как шум, а приклеивается к последнему найденному
+// отчёту — так роспись «кто работал» подхватывается независимо от того, стоит она
+// в начале сообщения или в конце.
 export function parseVkReportMulti(text, ctx = {}) {
-  const lines = String(text || '').split(/\r?\n/);
+  const rawText = String(text || '').trim();
+  if (!rawText) return [];
+  const lines = rawText.split(/\r?\n/);
+
   const blocks = [];
   let currentMarkerDate = null;
   let buffer = [];
-
-  const flush = () => {
-    const chunk = buffer.join('\n').trim();
-    buffer = [];
-    if (chunk && looksLikeReport(chunk)) blocks.push({ markerDate: currentMarkerDate, text: chunk });
-  };
+  const bufferText = () => buffer.join('\n');
 
   for (const rawLine of lines) {
     const marker = matchDayMarker(rawLine, ctx.fallbackDate);
     if (marker) {
-      flush();
+      if (buffer.length > 0 && looksLikeReport(bufferText())) {
+        blocks.push({ markerDate: currentMarkerDate, text: bufferText() });
+        buffer = [];
+      }
       currentMarkerDate = marker;
       continue;
     }
     buffer.push(rawLine);
   }
-  flush();
 
-  // Если маркеров дней не было вообще и весь текст — один отчёт (обычный случай: вставили одно сообщение).
-  if (blocks.length === 0) {
-    const whole = String(text || '').trim();
-    if (!whole) return [];
-    return [parseVkReport(whole, ctx)];
+  if (buffer.length > 0) {
+    if (looksLikeReport(bufferText()) || blocks.length === 0) {
+      blocks.push({ markerDate: currentMarkerDate, text: bufferText() });
+    } else {
+      blocks[blocks.length - 1].text += '\n' + bufferText();
+    }
   }
 
-  return blocks.map(b => {
+  // Один блок — доверяем parseVkReport целиком, без фильтрации (обычный случай: одно сообщение).
+  const usableBlocks = blocks.length <= 1 ? blocks : blocks.filter(b => looksLikeReport(b.text));
+  if (usableBlocks.length === 0) return [];
+
+  return usableBlocks.map(b => {
     const parsed = parseVkReport(b.text, { ...ctx, fallbackDate: b.markerDate || ctx.fallbackDate });
     if (!parsed.date || parsed.date === ctx.fallbackDate) {
       if (b.markerDate) parsed.date = b.markerDate;
