@@ -67,7 +67,7 @@ export default async function handler(req, res) {
         buildSummary: false,
         groupByRowFields: ['OpenDate.Typed', 'PayTypes'],
         groupByColFields: [],
-        aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
+        aggregateFields: ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt'],
         filters: {
           'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true }
         }
@@ -87,34 +87,77 @@ export default async function handler(req, res) {
     const byDay = new Map(); // date -> { total, byPayType: {} }
     const totalsByPayType = {};
     let grandTotal = 0;
+    let grandTotalBeforeDiscount = 0;
     let totalChecks = 0;
 
     for (const row of rows) {
       const date = row['OpenDate.Typed'];
       const payType = row['PayTypes'] || 'Не указано';
       const amount = Number(row['DishDiscountSumInt']) || 0;
+      const amountBeforeDiscount = Number(row['DishSumInt']) || amount;
       const checks = Number(row['DishAmountInt']) || 0;
       if (/без оплаты/i.test(payType)) continue; // не считаем неоплаченные/открытые заказы выручкой
 
-      if (!byDay.has(date)) byDay.set(date, { date, total: 0, byPayType: {} });
+      if (!byDay.has(date)) byDay.set(date, { date, total: 0, discount: 0, byPayType: {} });
       const dayEntry = byDay.get(date);
       dayEntry.total += amount;
+      dayEntry.discount += Math.max(0, amountBeforeDiscount - amount);
       dayEntry.byPayType[payType] = (dayEntry.byPayType[payType] || 0) + amount;
 
       totalsByPayType[payType] = (totalsByPayType[payType] || 0) + amount;
       grandTotal += amount;
+      grandTotalBeforeDiscount += amountBeforeDiscount;
       totalChecks += checks;
     }
 
     const days = Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    // Отдельный запрос по удалённым блюдам (та же схема отчёта, документированный фильтр
+    // DeletedWithWriteoff). Если он не сработает — не роняем весь дашборд, просто не покажем блок удалений.
+    let deletions = null;
+    let deletionsError = null;
+    try {
+      const delResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'SALES',
+          buildSummary: false,
+          groupByRowFields: ['OpenDate.Typed'],
+          groupByColFields: [],
+          aggregateFields: ['DishSumInt', 'DishAmountInt'],
+          filters: {
+            'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
+            'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] }
+          }
+        })
+      });
+      const delText = await delResp.text();
+      const delJson = JSON.parse(delText);
+      if (delResp.ok) {
+        const delRows = delJson?.data || [];
+        deletions = {
+          total: Math.round(delRows.reduce((s, r) => s + (Number(r['DishSumInt']) || 0), 0) * 100) / 100,
+          count: delRows.reduce((s, r) => s + (Number(r['DishAmountInt']) || 0), 0),
+          byDay: delRows.map(r => ({ date: r['OpenDate.Typed'], amount: Number(r['DishSumInt']) || 0, count: Number(r['DishAmountInt']) || 0 }))
+        };
+      } else {
+        deletionsError = `Отчёт по удалениям вернул ошибку (${delResp.status}).`;
+      }
+    } catch (e) {
+      deletionsError = 'Не удалось получить отчёт по удалениям: ' + (e?.message || 'неизвестная ошибка');
+    }
 
     res.status(200).json({
       from, to,
       days,
       totalsByPayType,
       grandTotal: Math.round(grandTotal * 100) / 100,
+      totalDiscount: Math.round(Math.max(0, grandTotalBeforeDiscount - grandTotal) * 100) / 100,
       totalChecks,
-      avgCheck: totalChecks ? Math.round((grandTotal / totalChecks) * 100) / 100 : 0
+      avgCheck: totalChecks ? Math.round((grandTotal / totalChecks) * 100) / 100 : 0,
+      deletions,
+      deletionsError
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

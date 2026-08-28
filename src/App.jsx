@@ -2448,6 +2448,9 @@ function IikoIntegrationPanel({ ctx }) {
   const [menuLoading, setMenuLoading] = useState(false);
   const [menuResult, setMenuResult] = useState(null);
   const [menuError, setMenuError] = useState('');
+  const [cashLoading, setCashLoading] = useState(false);
+  const [cashResult, setCashResult] = useState(null);
+  const [cashError, setCashError] = useState('');
 
   const testConnection = async () => {
     setLoading(true); setError(''); setResult(null);
@@ -2482,6 +2485,24 @@ function IikoIntegrationPanel({ ctx }) {
       setMenuError(e?.message || 'Не удалось связаться с сервером.');
     } finally {
       setMenuLoading(false);
+    }
+  };
+
+  const testCashShifts = async () => {
+    setCashLoading(true); setCashError(''); setCashResult(null);
+    try {
+      const resp = await fetch('/api/iiko-cashshifts-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ date })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setCashError(data?.error || 'Не удалось получить кассовые смены.'); if (data?.raw) setCashResult(data); return; }
+      setCashResult(data);
+    } catch (e) {
+      setCashError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setCashLoading(false);
     }
   };
 
@@ -2520,6 +2541,21 @@ function IikoIntegrationPanel({ ctx }) {
         <div style={{marginTop:14}}>
           <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> {menuResult.totalCount != null ? `Всего позиций: ${menuResult.totalCount}. ` : ''}Показаны первые записи — пришлите этот ответ, чтобы настроить редактирование.</div>
           <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(menuResult, null, 2)}</pre>
+        </div>
+      )}
+    </Card>
+    <Card style={{marginTop:16}}>
+      <div className="rp-card-title">Кассовые смены (эксперимент)</div>
+      <p className="rp-muted" style={{marginBottom:14}}>
+        Пробуем получить внесения/изъятия/инкассацию — это отдельная область API от отчётов по продажам,
+        может не сработать. Если не получится — это не сломает остальную синхронизацию, просто увидим ошибку.
+      </p>
+      <button className="rp-btn" onClick={testCashShifts} disabled={cashLoading}>{cashLoading ? 'Пробую…' : 'Проверить кассовые смены'}</button>
+      {cashError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {cashError}</div>}
+      {cashResult && (
+        <div style={{marginTop:14}}>
+          <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> Сработало! Пришлите этот ответ, чтобы настроить внесения/изъятия/инкассацию.</div>
+          <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(cashResult, null, 2)}</pre>
         </div>
       )}
     </Card>
@@ -2832,7 +2868,7 @@ function IikoDashboardPage({ ctx }) {
             <Stat label="Выручка за месяц (iiko)" value={fmtRub(data.grandTotal)} />
             <Stat label="Чеков" value={fmt0(data.totalChecks)} />
             <Stat label="Средний чек" value={fmtRub(data.avgCheck)} />
-            <Stat label="Дней с продажами" value={fmt0((data.days || []).length)} />
+            <Stat label="Скидки за месяц" value={fmtRub(data.totalDiscount)} accent={COLORS.accent2} />
           </div>
 
           <div className="rp-grid-2">
@@ -2861,6 +2897,18 @@ function IikoDashboardPage({ ctx }) {
               </ResponsiveContainer>
             </Card>
           </div>
+
+          <Card>
+            <div className="rp-card-title">Удаления</div>
+            {data.deletionsError && <div className="rp-muted">Не удалось получить: {data.deletionsError}</div>}
+            {data.deletions && (
+              <div className="rp-grid-4">
+                <Stat label="Сумма удалённых позиций" value={fmtRub(data.deletions.total)} accent={COLORS.danger} />
+                <Stat label="Количество" value={fmt0(data.deletions.count)} />
+              </div>
+            )}
+            {!data.deletions && !data.deletionsError && <div className="rp-muted">Нет данных за период.</div>}
+          </Card>
 
           {(data.days || []).length === 0 && (
             <Card><EmptyState icon={<Radio size={24} color={COLORS.inkSoft} />} title="Нет данных за этот месяц" description="Либо продаж ещё не было, либо период не совпадает с текущей датой на сервере iiko." /></Card>
