@@ -46,6 +46,37 @@ async function olapQuery(serverUrl, token, body) {
   return json?.data || [];
 }
 
+// Поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов, закрытых
+// поздно вечером (например, заказ реально открыт в 23:07, но iiko относит его к
+// следующему дню). Эта функция запрашивает окно на день шире с каждой стороны и сама
+// вычисляет настоящую дату заказа по полю "OpenTime", оставляя только строки, которые
+// РЕАЛЬНО относятся к запрошенному дню — используется для ЛЮБОГО отчёта по дню, не
+// только для Белой Калитвы, потому что эта путаница касается всех заказов, а не только
+// пробитых как «Блюдо от Шефа».
+async function queryDayWithRealDate(serverUrl, token, date, groupByRowFields, aggregateFields, extraFilters = {}) {
+  const prevDateObj = new Date(date + 'T00:00:00'); prevDateObj.setDate(prevDateObj.getDate() - 1);
+  const nextDateObj = new Date(date + 'T00:00:00'); nextDateObj.setDate(nextDateObj.getDate() + 1);
+  const wideFrom = prevDateObj.toISOString().slice(0, 10);
+  const wideTo = nextDateObj.toISOString().slice(0, 10);
+  const wideFilter = { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true };
+
+  const rows = await olapQuery(serverUrl, token, {
+    reportType: 'SALES', buildSummary: false,
+    groupByRowFields: [...new Set(['OpenDate.Typed', 'OpenTime', ...groupByRowFields])],
+    groupByColFields: [],
+    aggregateFields,
+    filters: { ...extraFilters, 'OpenDate.Typed': wideFilter }
+  });
+
+  return rows
+    .map(r => {
+      const timeStr = r['OpenTime'] || '';
+      const realDate = timeStr.slice(0, 10) || r['OpenDate.Typed'];
+      return { ...r, __realDate: realDate, __iikoDate: r['OpenDate.Typed'], __reclassified: r['OpenDate.Typed'] && realDate !== r['OpenDate.Typed'] };
+    })
+    .filter(r => r.__realDate === date);
+}
+
 // Настоящий признак технической/фантомной смены — ПОЛНОЕ отсутствие любой финансовой
 // активности (открыли и тут же закрыли без единой операции). Проверку по длительности
 // намеренно не делаем: короткая смена — не то же самое, что пустая. Например, смену
@@ -105,12 +136,7 @@ export default async function handler(req, res) {
 
     // 1. Выручка по способам оплаты (+ сумма до скидки, для расчёта скидки)
     try {
-      const rows = await olapQuery(serverUrl, token, {
-        reportType: 'SALES', buildSummary: false,
-        groupByRowFields: ['PayTypes'], groupByColFields: [],
-        aggregateFields: ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt'],
-        filters: { 'OpenDate.Typed': dateFilter }
-      });
+      const rows = await queryDayWithRealDate(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt']);
       const byPayType = {};
       let total = 0, totalBeforeDiscount = 0, checks = 0;
       for (const r of rows) {
@@ -124,18 +150,14 @@ export default async function handler(req, res) {
       }
       result.revenue = { byPayType, total: Math.round(total * 100) / 100, checks };
       result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
+      result.revenueReclassifiedCount = rows.filter(r => r.__reclassified).length;
     } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
 
     // 2. Топ проданных блюд — "Блюдо от Шефа" сюда никогда не попадает, это не блюдо,
     // а способ пробить нестандартную сумму (либо разовый заказ первого заведения,
     // либо выручка второго филиала — см. отдельный запрос ниже).
     try {
-      const rows = await olapQuery(serverUrl, token, {
-        reportType: 'SALES', buildSummary: false,
-        groupByRowFields: ['DishName'], groupByColFields: [],
-        aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
-        filters: { 'OpenDate.Typed': dateFilter }
-      });
+      const rows = await queryDayWithRealDate(serverUrl, token, date, ['DishName'], ['DishAmountInt', 'DishDiscountSumInt']);
       result.topDishes = rows
         .filter(r => !isSecondBranchDishName(r['DishName']))
         .map(r => ({ name: r['DishName'] || 'Без названия', qty: Number(r['DishAmountInt']) || 0, amount: Number(r['DishDiscountSumInt']) || 0 }))
@@ -205,14 +227,8 @@ export default async function handler(req, res) {
 
     // 3. Удаления
     try {
-      const rows = await olapQuery(serverUrl, token, {
-        reportType: 'SALES', buildSummary: false,
-        groupByRowFields: ['DishName'], groupByColFields: [],
-        aggregateFields: ['DishSumInt', 'DishAmountInt'],
-        filters: {
-          'OpenDate.Typed': dateFilter,
-          'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] }
-        }
+      const rows = await queryDayWithRealDate(serverUrl, token, date, ['DishName'], ['DishSumInt', 'DishAmountInt'], {
+        'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] }
       });
       result.deletions = {
         total: Math.round(rows.reduce((s, r) => s + (Number(r['DishSumInt']) || 0), 0) * 100) / 100,

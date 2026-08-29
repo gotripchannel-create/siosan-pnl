@@ -68,17 +68,26 @@ export default async function handler(req, res) {
   try {
     token = await iikoAuth(serverUrl, login, password);
 
+    // Поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов,
+    // закрытых поздно вечером — запрашиваем на день шире с каждой стороны диапазона
+    // и сами определяем настоящую дату каждой строки по полю "OpenTime", а не по
+    // ярлыку iiko. Это касается ЛЮБЫХ заказов, не только выручки второго филиала.
+    const wideFromObj = new Date(from + 'T00:00:00'); wideFromObj.setDate(wideFromObj.getDate() - 1);
+    const wideToObj = new Date(to + 'T00:00:00'); wideToObj.setDate(wideToObj.getDate() + 1);
+    const wideFrom = wideFromObj.toISOString().slice(0, 10);
+    const wideTo = wideToObj.toISOString().slice(0, 10);
+
     const olapResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         reportType: 'SALES',
         buildSummary: false,
-        groupByRowFields: ['OpenDate.Typed', 'PayTypes'],
+        groupByRowFields: ['OpenDate.Typed', 'OpenTime', 'PayTypes'],
         groupByColFields: [],
         aggregateFields: ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt'],
         filters: {
-          'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true }
+          'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true }
         }
       })
     });
@@ -98,9 +107,13 @@ export default async function handler(req, res) {
     let grandTotal = 0;
     let grandTotalBeforeDiscount = 0;
     let totalChecks = 0;
+    let reclassifiedCount = 0;
 
     for (const row of rows) {
-      const date = row['OpenDate.Typed'];
+      const timeStr = row['OpenTime'] || '';
+      const date = timeStr.slice(0, 10) || row['OpenDate.Typed']; // настоящая дата по времени, не ярлык iiko
+      if (date < from || date > to) continue; // относится к дню за пределами запрошенного периода
+      if (row['OpenDate.Typed'] && date !== row['OpenDate.Typed']) reclassifiedCount++;
       const payType = row['PayTypes'] || 'Не указано';
       const amount = Number(row['DishDiscountSumInt']) || 0;
       const amountBeforeDiscount = Number(row['DishSumInt']) || amount;
@@ -237,7 +250,8 @@ export default async function handler(req, res) {
         avgCheck: secondBranchChecks ? Math.round((secondBranchTotal / secondBranchChecks) * 100) / 100 : 0,
         days: Object.entries(secondBranchByDay).map(([date, total]) => ({ date, total: Math.round(total * 100) / 100 })).sort((a, b) => a.date.localeCompare(b.date))
       } : null,
-      secondBranchError
+      secondBranchError,
+      reclassifiedCount
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

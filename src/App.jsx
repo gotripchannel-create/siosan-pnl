@@ -3098,6 +3098,9 @@ function IikoDashboardPage({ ctx }) {
               <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
               <Stat label="Удаления" value={fmtRub(dayReport.deletions?.total)} accent={COLORS.danger} />
             </div>
+            {dayReport.revenueReclassifiedCount > 0 && (
+              <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Дата исправлена для {dayReport.revenueReclassifiedCount} заказ(ов) во всей выручке дня — iiko относил их к другому дню, чем реальное время заказа.</p>
+            )}
 
             {dayReport.secondBranch && (
               <div className="rp-cash-check" style={{marginTop:12}}>
@@ -3274,11 +3277,14 @@ function IikoDashboardPage({ ctx }) {
                   <Stat label="Чистое движение" value={fmtRub(cashData.totalPayIn - cashData.totalPayOut)} />
                   <Stat label="Смен за месяц" value={fmt0((cashData.shifts||[]).length)} />
                 </div>
+                <div className="rp-cash-check" style={{marginTop:12}}>
+                  <Info size={13}/> Отдельно поле «payIncome» (возможно, это и есть «внесение по заказу», которое вы видите в iikoWeb): <b>{fmtRub(cashData.totalPayIncome)}</b> за месяц. Сверьте с тем, что показывает сам iikoWeb — если совпадёт, добавим эту сумму в расчёт наличной выручки.
+                </div>
                 <p className="rp-muted" style={{marginTop:10, fontSize:11}}>Отдельного поля «инкассация» в API нет — она входит в изъятия как один из их видов.</p>
                 {cashData.shifts?.length > 0 && (
                   <div className="rp-table-wrap" style={{marginTop:12}}>
                     <table className="rp-table">
-                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
+                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Внесение по заказу</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
                       <tbody>
                         {cashData.shifts.map((s,i) => (
                           <tr key={i}>
@@ -3287,6 +3293,7 @@ function IikoDashboardPage({ ctx }) {
                             <td>{s.status === 'OPEN' ? 'Открыта' : s.status === 'CLOSED' ? 'Закрыта' : s.status}</td>
                             <td className="rp-num">{fmtRub(s.payIn)}</td>
                             <td className="rp-num">{fmtRub(s.payOut)}</td>
+                            <td className="rp-num">{fmtRub(s.payIncome)}</td>
                             <td className="rp-num">{fmtRub(s.salesCash)}</td>
                             <td className="rp-num">{fmtRub(s.salesCard)}</td>
                           </tr>
