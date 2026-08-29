@@ -2822,6 +2822,10 @@ function IikoDashboardPage({ ctx }) {
   const [error, setError] = useState('');
   const [cashData, setCashData] = useState(null);
   const [cashError, setCashError] = useState('');
+  const [dayDate, setDayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dayReport, setDayReport] = useState(null);
+  const [dayLoading, setDayLoading] = useState(false);
+  const [dayError, setDayError] = useState('');
 
   const monthFrom = dateStr(year, monthIdx, 1);
   const monthTo = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
@@ -2864,6 +2868,24 @@ function IikoDashboardPage({ ctx }) {
 
   useEffect(() => { loadCash(); }, [loadCash]);
 
+  const loadDayReport = async () => {
+    setDayLoading(true); setDayError(''); setDayReport(null);
+    try {
+      const resp = await fetch('/api/iiko-day-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ date: dayDate })
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setDayError(json?.error || 'Не удалось получить отчёт за день.'); return; }
+      setDayReport(json);
+    } catch (e) {
+      setDayError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setDayLoading(false);
+    }
+  };
+
   const dailySeries = (data?.days || []).map(d => ({ day: Number(d.date.slice(8, 10)), Выручка: d.total }));
   const payTypeData = Object.entries(data?.totalsByPayType || {}).map(([name, value]) => ({ name, value }));
 
@@ -2878,6 +2900,91 @@ function IikoDashboardPage({ ctx }) {
         <Info size={16}/> Это отдельная витрина данных из iiko. Она никак не связана с тем, что вы вносите вручную в «День» —
         цифры здесь никогда не попадают в P&L автоматически. Если хотите перенести что-то отсюда в отчёт — сделайте это вручную на странице «День».
       </div>
+
+      <Card style={{marginBottom:16}}>
+        <div className="rp-card-title">Полный отчёт за день</div>
+        <div className="rp-muted" style={{marginBottom:12}}>Как при закрытии смены: выручка по оплатам, скидки, удаления, топ проданных блюд, внесения/изъятия.</div>
+        <div style={{display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+          <Field label="Дата"><input type="date" value={dayDate} onChange={e=>setDayDate(e.target.value)} /></Field>
+          <button className="rp-btn" onClick={loadDayReport} disabled={dayLoading}>{dayLoading ? 'Загружаю…' : 'Показать отчёт'}</button>
+        </div>
+        {dayError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {dayError}</div>}
+
+        {dayReport && (
+          <div style={{marginTop:16}}>
+            <div className="rp-grid-4">
+              <Stat label="Выручка" value={fmtRub(dayReport.revenue?.total)} />
+              <Stat label="Чеков" value={fmt0(dayReport.revenue?.checks)} />
+              <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
+              <Stat label="Удаления" value={fmtRub(dayReport.deletions?.total)} accent={COLORS.danger} />
+            </div>
+
+            {dayReport.revenue?.byPayType && Object.keys(dayReport.revenue.byPayType).length > 0 && (
+              <div style={{marginTop:16}}>
+                <div className="rp-draft-section">По способам оплаты</div>
+                <div className="rp-list">
+                  {Object.entries(dayReport.revenue.byPayType).map(([name, amt]) => (
+                    <div className="rp-list-row" key={name}><div className="rp-list-main"><div className="rp-list-cat">{name}</div></div><div className="rp-list-amount">{fmtRub(amt)}</div></div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {dayReport.cashShifts?.length > 0 && (
+              <div style={{marginTop:16}}>
+                <div className="rp-draft-section">Кассовая смена</div>
+                {dayReport.cashShifts.map((s,i) => (
+                  <div key={i} className="rp-list-row" style={{flexWrap:'wrap', gap:16}}>
+                    <div>Смена №{s.sessionNumber} · {s.status === 'OPEN' ? 'открыта' : 'закрыта'}</div>
+                    <div>Внесено: <b>{fmtRub(s.payIn)}</b></div>
+                    <div>Изъято: <b>{fmtRub(s.payOut)}</b></div>
+                    <div>Нал: {fmtRub(s.salesCash)} · Карта: {fmtRub(s.salesCard)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {dayReport.cashShifts?.length === 0 && <div className="rp-muted" style={{marginTop:16}}>Кассовых смен за этот день не найдено (или все были фантомными).</div>}
+
+            {dayReport.topDishes?.length > 0 && (
+              <div style={{marginTop:16}}>
+                <div className="rp-draft-section">Что продавалось (топ-20)</div>
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                    <tbody>
+                      {dayReport.topDishes.map((d,i) => (
+                        <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {dayReport.deletions?.items?.length > 0 && (
+              <div style={{marginTop:16}}>
+                <div className="rp-draft-section">Что удаляли</div>
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                    <tbody>
+                      {dayReport.deletions.items.map((d,i) => (
+                        <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {Object.keys(dayReport.errors || {}).length > 0 && (
+              <div className="rp-muted" style={{marginTop:16, fontSize:11}}>
+                Часть данных не удалось получить: {Object.entries(dayReport.errors).filter(([k])=>!k.endsWith('Raw')).map(([k,v]) => `${k} — ${v}`).join('; ')}
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
 
       {loading && <Card><div className="rp-muted">Загружаю данные из iiko…</div></Card>}
       {error && <div className="rp-alert" style={{marginBottom:16}}><AlertTriangle size={16}/> {error} <button className="rp-btn-link" onClick={load} style={{marginLeft:8}}>Повторить</button></div>}
