@@ -148,6 +148,31 @@ export default async function handler(req, res) {
         .slice(0, 20);
     } catch (e) { result.errors.topDishes = e.message; }
 
+    // 2c. Детализация по чекам — тот же запрос, но группируем ПО КАЖДОМУ ЗАКАЗУ, а не
+    // по названию блюда, чтобы показать состав и сумму каждого отдельного чека, а не
+    // только агрегированный топ блюд. "Блюдо от Шефа" сюда не включаем — это выручка
+    // второго филиала, а не позиция чека этого заведения (см. блок 2b).
+    try {
+      const rows = await queryDay(serverUrl, token, date, ['OrderNum', 'DishName', 'OpenTime', 'PayTypes'], ['DishAmountInt', 'DishDiscountSumInt']);
+      const byOrder = new Map();
+      for (const r of rows) {
+        if (isSecondBranchDishName(r['DishName'])) continue;
+        const orderNum = r['OrderNum'] ?? '—';
+        if (!byOrder.has(orderNum)) {
+          byOrder.set(orderNum, { orderNum, time: (r['OpenTime'] || '').slice(11, 16) || null, payType: r['PayTypes'] || 'Не указано', total: 0, items: [] });
+        }
+        const order = byOrder.get(orderNum);
+        const amount = Number(r['DishDiscountSumInt']) || 0;
+        const qty = Number(r['DishAmountInt']) || 0;
+        order.total += amount;
+        order.items.push({ name: r['DishName'] || 'Без названия', qty, amount });
+      }
+      result.checks = Array.from(byOrder.values())
+        .map(o => ({ ...o, total: Math.round(o.total * 100) / 100 }))
+        .filter(o => o.total > 0)
+        .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    } catch (e) { result.errors.checks = e.message; }
+
     // 2b. Отдельно — сумма второго филиала. Группируем ПО КАЖДОМУ ЗАКАЗУ (OrderNum),
     // а не по всему дню сразу: если в один день с суммой филиала 2 был ещё и обычный
     // мелкий разовый заказ первого заведения под тем же названием «Блюдо от Шефа»,

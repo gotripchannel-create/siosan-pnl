@@ -3190,6 +3190,32 @@ function IikoDashboardPage({ ctx }) {
             )}
             {dayReport.cashShifts?.length === 0 && <div className="rp-muted" style={{marginTop:16}}>Кассовых смен за этот день не найдено (или все были фантомными).</div>}
 
+            {dayReport.checks?.length > 0 && (
+              <div style={{marginTop:16}}>
+                <div className="rp-draft-section">Чеки за день ({dayReport.checks.length})</div>
+                <div style={{display:'flex', flexDirection:'column', gap:6}}>
+                  {dayReport.checks.map((c,i) => (
+                    <details key={i} className="rp-table-wrap" style={{padding:'8px 12px'}}>
+                      <summary style={{cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, listStyle:'none'}}>
+                        <span style={{fontSize:13}}>
+                          {c.time ? <b>{c.time}</b> : null} № {c.orderNum} <span className="rp-muted" style={{fontSize:11}}>· {c.payType}</span>
+                        </span>
+                        <span style={{fontWeight:600}}>{fmtRub(c.total)}</span>
+                      </summary>
+                      <table className="rp-table" style={{marginTop:8}}>
+                        <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                        <tbody>
+                          {c.items.map((it,j) => (
+                            <tr key={j}><td>{it.name}</td><td className="rp-num">{fmt0(it.qty)}</td><td className="rp-num">{fmtRub(it.amount)}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </details>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {dayReport.topDishes?.length > 0 && (
               <div style={{marginTop:16}}>
                 <div className="rp-draft-section">Что продавалось (топ-20)</div>
