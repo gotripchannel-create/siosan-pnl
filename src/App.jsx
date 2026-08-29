@@ -3106,6 +3106,38 @@ function IikoDashboardPage({ ctx }) {
               </div>
             )}
 
+            {dayReport.secondBranchRawOrders?.length > 0 && (
+              <details style={{marginTop:12}}>
+                <summary style={{cursor:'pointer', fontSize:12, color:COLORS.inkSoft}}>Показать заказы «Блюдо от Шефа» за этот день (для проверки)</summary>
+                <div className="rp-table-wrap" style={{marginTop:8}}>
+                  <table className="rp-table">
+                    <thead><tr><th>Дата</th><th>Время</th><th>№ заказа</th><th>Сумма</th><th>Учтено как филиал 2?</th></tr></thead>
+                    <tbody>
+                      {dayReport.secondBranchRawOrders.map((o,i) => (
+                        <tr key={i}><td>{o.date}</td><td>{o.time || '—'}</td><td>{o.orderNum ?? '—'}</td><td className="rp-num">{fmtRub(o.amount)}</td><td>{o.countedAsBranch ? 'Да' : 'Нет (меньше 5000₽)'}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+
+            {dayReport.secondBranchNextDayOrders?.orders?.length > 0 && (
+              <details style={{marginTop:8}} open>
+                <summary style={{cursor:'pointer', fontSize:12, color:COLORS.danger, fontWeight:600}}>⚠ Есть заказы «Блюдо от Шефа» на следующий день ({dayReport.secondBranchNextDayOrders.date}) — возможно, выручка «утекла» туда из-за перехода через полночь</summary>
+                <div className="rp-table-wrap" style={{marginTop:8}}>
+                  <table className="rp-table">
+                    <thead><tr><th>Дата</th><th>Время</th><th>№ заказа</th><th>Сумма</th></tr></thead>
+                    <tbody>
+                      {dayReport.secondBranchNextDayOrders.orders.map((o,i) => (
+                        <tr key={i}><td>{o.date}</td><td>{o.time || '—'}</td><td>{o.orderNum ?? '—'}</td><td className="rp-num">{fmtRub(o.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+
             {dayReport.revenue?.byPayType && Object.keys(dayReport.revenue.byPayType).length > 0 && (
               <div style={{marginTop:16}}>
                 <div className="rp-draft-section">По способам оплаты</div>
