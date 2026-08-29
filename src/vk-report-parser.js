@@ -76,6 +76,7 @@ export function parseVkReport(text, ctx = {}) {
   const findChannel = (patterns) => revenueChannels.find(c => patterns.some(p => p.test(String(c.name || ''))));
   const cashChannel = findChannel([/налич/i]);
   const cardChannel = findChannel([/карт/i, /безнал/i]);
+  const netmonetChannel = findChannel([/нет\s*монет/i]);
 
   let inAdvances = false;
   let inPurchases = false;
@@ -125,6 +126,10 @@ export function parseVkReport(text, ctx = {}) {
       if (cardChannel) result.revenue[cardChannel.id] = amount; else result.unmatchedLines.push(line);
       inAdvances = inPurchases = inOther = false; continue;
     }
+    if (/нет\s*монет/i.test(lower)) {
+      if (netmonetChannel) result.revenue[netmonetChannel.id] = amount; else result.unmatchedLines.push(line);
+      inAdvances = inPurchases = inOther = false; continue;
+    }
     const matchedChannelEarly = revenueChannels.find(c => lower.includes(String(c.name || '').toLowerCase()));
     if (matchedChannelEarly) {
       result.revenue[matchedChannelEarly.id] = amount;
@@ -151,8 +156,11 @@ export function parseVkReport(text, ctx = {}) {
 
     if (amount == null) {
       const honorificRe = /^(?:тёт[яь]|теть|дяд[яь])\.?$/i;
-      const tokens = line.split(/\s+/).filter(Boolean).filter(t => !honorificRe.test(t));
-      const matchCount = tokens.filter(t => empByFirstName.has(t.toLowerCase().replace(/[.,]$/,''))).length;
+      const tokens = line.split(/\s+/)
+        .map(t => t.replace(/^[.,;:!?]+|[.,;:!?]+$/g, '')) // убираем знаки препинания по краям слова
+        .filter(Boolean) // убираем то, что стало пустым (например, одиночная запятая)
+        .filter(t => !honorificRe.test(t));
+      const matchCount = tokens.filter(t => empByFirstName.has(t.toLowerCase())).length;
       // Строку считаем списком «кто работал», если хотя бы половина слов — известные имена
       // сотрудников (не требуем 100% совпадения: прозвища вроде «тёть Оля» не должны ломать
       // распознавание всей строки — непонятые слова просто покажутся как «не найден»).
@@ -188,16 +196,14 @@ export function parseVkReport(text, ctx = {}) {
   return result;
 }
 
-// Разбивает большой кусок текста (например, целиком скопированный чат за несколько дней)
-// на отдельные отчёты. Ищет строки-маркеры дня ("26 августа", "вчера", "26.08.26").
-// Важно: маркер обрывает текущий блок ТОЛЬКО если то, что уже накоплено, само по себе
-// похоже на отчёт (есть выручка/итого). Если накопленного ещё недостаточно (например
-// маркер идёт раньше самого списка «кто работал», или это просто повторная/уточняющая
-// дата в конце сообщения) — блок не обрывается, а маркер просто обновляет дату текущего
-// блока. Хвост в конце текста, который сам по себе не похож на отчёт (например список
-// имён без сумм), не отбрасывается как шум, а приклеивается к последнему найденному
-// отчёту — так роспись «кто работал» подхватывается независимо от того, стоит она
-// в начале сообщения или в конце.
+// Разбивает большой кусок текста (например, целиком скопированный чат за несколько дней,
+// или несколько отдельных сообщений, вставленных вместе через пустую строку) на отдельные
+// отчёты. Разделителем блока считается либо строка-маркер дня ("26 августа", "вчера"),
+// либо ПУСТАЯ СТРОКА — но только если то, что уже накоплено ДО неё, само по себе уже
+// похоже на завершённый отчёт (есть выручка/итого). Так несколько сообщений, вставленных
+// одно за другим с пустой строкой между ними (частый случай при копировании из ВК), не
+// слипаются в один отчёт, даже если у второго и последующих дата указана текстом в конце,
+// а не отдельным маркером-заголовком в начале.
 export function parseVkReportMulti(text, ctx = {}) {
   const rawText = String(text || '').trim();
   if (!rawText) return [];
@@ -208,15 +214,37 @@ export function parseVkReportMulti(text, ctx = {}) {
   let buffer = [];
   const bufferText = () => buffer.join('\n');
 
-  for (const rawLine of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
     const marker = matchDayMarker(rawLine, ctx.fallbackDate);
     if (marker) {
       if (buffer.length > 0 && looksLikeReport(bufferText())) {
+        // Маркер встретился уже ПОСЛЕ того, как в буфере накопился полноценный отчёт —
+        // значит это не заголовок для следующего блока, а дата-подпись в конце ЭТОГО
+        // отчёта (как «27 августа» в конце сообщения). Отдаём дату этому блоку, а не
+        // переносим её на следующий.
+        blocks.push({ markerDate: marker, text: bufferText() });
+        buffer = [];
+        currentMarkerDate = null;
+      } else {
+        currentMarkerDate = marker;
+      }
+      continue;
+    }
+    if (!rawLine.trim() && buffer.length > 0 && looksLikeReport(bufferText())) {
+      // Пустая строка после уже похожего на отчёт куска — проверяем, что идёт ДАЛЬШЕ.
+      // Разбиваем только если следующая непустая строка явно начинает НОВЫЙ отчёт
+      // (начинается с числа — как обычно и оформляют вставку из ВК). Если дальше идёт
+      // что-то другое (например список имён без сумм) — это, скорее всего, продолжение
+      // текущего отчёта (роспись «кто работал» после пустой строки), а не новый блок.
+      let nextNonEmpty = null;
+      for (let j = i + 1; j < lines.length; j++) { if (lines[j].trim()) { nextNonEmpty = lines[j].trim(); break; } }
+      if (nextNonEmpty && (/^\d/.test(nextNonEmpty) || matchDayMarker(nextNonEmpty, ctx.fallbackDate))) {
         blocks.push({ markerDate: currentMarkerDate, text: bufferText() });
         buffer = [];
+        currentMarkerDate = null;
+        continue;
       }
-      currentMarkerDate = marker;
-      continue;
     }
     buffer.push(rawLine);
   }
