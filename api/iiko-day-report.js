@@ -46,15 +46,27 @@ async function olapQuery(serverUrl, token, body) {
   return json?.data || [];
 }
 
+// Настоящий признак технической/фантомной смены — ПОЛНОЕ отсутствие любой финансовой
+// активности (открыли и тут же закрыли без единой операции). Проверку по длительности
+// намеренно не делаем: короткая смена — не то же самое, что пустая. Например, смену
+// открывают специально на 1-2 минуты, чтобы пробить один чек (например, выручку
+// точки без своей кассы) и сразу закрыть — такая смена короткая, но в ней реальные
+// деньги, и её нельзя терять.
 const isPhantomShift = (s) => {
-  const noActivity = !(Number(s.payIn) || Number(s.payOut) || Number(s.salesCash) || Number(s.salesCard) || Number(s.sessionStartCash));
-  let tooShort = false;
-  if (s.openDate && s.closeDate) {
-    const durationMs = new Date(s.closeDate) - new Date(s.openDate);
-    tooShort = durationMs >= 0 && durationMs < 2 * 60 * 1000;
-  }
-  return noActivity || tooShort;
+  return !(Number(s.payIn) || Number(s.payOut) || Number(s.salesCash) || Number(s.salesCard) || Number(s.sessionStartCash));
 };
+
+// Второй филиал СиоСан не имеет своей онлайн-кассы. Его дневную выручку пробивают
+// через кассу основного заведения отдельной позицией — так она отражается в общей
+// бухгалтерии/налоговой, но её нужно отделять от реальных продаж первого заведения,
+// иначе она искажает средний чек, топ блюд и метрики конкретно этой точки.
+// ВАЖНО: под тем же названием иногда пробивают и обычные разовые позиции первого
+// заведения, которых нет в меню (тогда сумма небольшая). Признак именно второго
+// филиала — сумма от 5000 ₽ и выше, меньше касса там не бывает по словам владельца.
+const SECOND_BRANCH_DISH_NAME = 'Блюдо от Шефа';
+const SECOND_BRANCH_MIN_AMOUNT = 5000;
+const isSecondBranchDish = (name, amount) =>
+  String(name || '').trim().toLowerCase() === SECOND_BRANCH_DISH_NAME.toLowerCase() && (Number(amount) || 0) >= SECOND_BRANCH_MIN_AMOUNT;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -115,7 +127,8 @@ export default async function handler(req, res) {
       result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
     } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
 
-    // 2. Топ проданных блюд
+    // 2. Топ проданных блюд — и здесь же отделяем "Блюдо от Шефа" (это не блюдо,
+    // а способ провести выручку второго филиала через кассу первого)
     try {
       const rows = await olapQuery(serverUrl, token, {
         reportType: 'SALES', buildSummary: false,
@@ -123,10 +136,23 @@ export default async function handler(req, res) {
         aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
         filters: { 'OpenDate.Typed': dateFilter }
       });
-      result.topDishes = rows
+      const secondBranchRows = rows.filter(r => isSecondBranchDish(r['DishName'], r['DishDiscountSumInt']));
+      const realDishRows = rows.filter(r => !isSecondBranchDish(r['DishName'], r['DishDiscountSumInt']));
+
+      result.topDishes = realDishRows
         .map(r => ({ name: r['DishName'] || 'Без названия', qty: Number(r['DishAmountInt']) || 0, amount: Number(r['DishDiscountSumInt']) || 0 }))
         .sort((a, b) => b.amount - a.amount)
         .slice(0, 20);
+
+      const secondBranchTotal = secondBranchRows.reduce((s, r) => s + (Number(r['DishDiscountSumInt']) || 0), 0);
+      const secondBranchCount = secondBranchRows.reduce((s, r) => s + (Number(r['DishAmountInt']) || 0), 0);
+      if (secondBranchTotal > 0) {
+        result.secondBranch = { total: Math.round(secondBranchTotal * 100) / 100, count: secondBranchCount };
+        if (result.revenue) {
+          result.revenue.totalWithSecondBranch = result.revenue.total;
+          result.revenue.total = Math.round(Math.max(0, result.revenue.total - secondBranchTotal) * 100) / 100;
+        }
+      }
     } catch (e) { result.errors.topDishes = e.message; }
 
     // 3. Удаления

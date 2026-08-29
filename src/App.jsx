@@ -541,7 +541,7 @@ function EmptyState({ icon, title, sub }) {
 
 const NAV = [
   { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
-  { id: 'day', label: 'День', icon: CalendarDays },
+  { id: 'day', label: 'Кассовая смена (день)', icon: CalendarDays },
   { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
   { id: 'employees', label: 'Сотрудники', icon: Users },
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
@@ -549,7 +549,9 @@ const NAV = [
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
   { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
   { id: 'history', label: 'История', icon: History },
-  { id: 'iiko', label: 'iiko', icon: Radio },
+  { id: 'iiko-novo', label: 'Отчёт Новошахтинск', icon: Radio },
+  { id: 'iiko-belaya', label: 'Отчёт Белая Калитва', icon: Radio },
+  { id: 'combined', label: 'Общий отчёт', icon: LayoutDashboard },
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
@@ -875,7 +877,9 @@ export default function App() {
           {page === 'settings' && <SettingsPage ctx={ctx} />}
           {page === 'compare' && <ComparePage ctx={ctx} />}
           {page === 'history' && <HistoryPage ctx={ctx} />}
-          {page === 'iiko' && <IikoDashboardPage ctx={ctx} />}
+          {page === 'iiko-novo' && <IikoDashboardPage ctx={ctx} />}
+          {page === 'iiko-belaya' && <BelayaKalitvaPage ctx={ctx} />}
+          {page === 'combined' && <CombinedReportPage ctx={ctx} />}
         </main>
       </div>
     </div>
@@ -3068,13 +3072,13 @@ function IikoDashboardPage({ ctx }) {
   return (
     <div className="rp-page">
       <div className="rp-page-head">
-        <h1><Radio size={20} style={{verticalAlign:'-3px', marginRight:8}}/>iiko</h1>
-        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · данные напрямую с кассы, для сверки — в P&L не входят</div>
+        <h1><Radio size={20} style={{verticalAlign:'-3px', marginRight:8}}/>Отчёт Новошахтинск</h1>
+        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · данные напрямую с кассы iiko, для сверки — в P&L не входят</div>
       </div>
 
       <div className="rp-alert rp-alert-info" style={{marginBottom:16}}>
-        <Info size={16}/> Это отдельная витрина данных из iiko. Она никак не связана с тем, что вы вносите вручную в «День» —
-        цифры здесь никогда не попадают в P&L автоматически. Если хотите перенести что-то отсюда в отчёт — сделайте это вручную на странице «День».
+        <Info size={16}/> Это отдельная витрина данных из iiko. Она никак не связана с тем, что вы вносите вручную в «Кассовая смена (день)» —
+        цифры здесь никогда не попадают в P&L автоматически. Если хотите перенести что-то отсюда в отчёт — сделайте это вручную на странице «Кассовая смена (день)».
       </div>
 
       <Card style={{marginBottom:16}}>
@@ -3094,6 +3098,13 @@ function IikoDashboardPage({ ctx }) {
               <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
               <Stat label="Удаления" value={fmtRub(dayReport.deletions?.total)} accent={COLORS.danger} />
             </div>
+
+            {dayReport.secondBranch && (
+              <div className="rp-cash-check" style={{marginTop:12}}>
+                <Info size={13}/> Из выручки уже исключена сумма второго филиала: <b>{fmtRub(dayReport.secondBranch.total)}</b> ({dayReport.secondBranch.count} чек.), пробитая через «Блюдо от Шефа» (от 5000 ₽ — меньшие суммы под этим названием считаются обычным заказом первого заведения).
+                {dayReport.revenue?.totalWithSecondBranch != null && <> Разбивка «По способам оплаты» ниже пока показана с учётом этой суммы (общая касса за день — {fmtRub(dayReport.revenue.totalWithSecondBranch)}).</>}
+              </div>
+            )}
 
             {dayReport.revenue?.byPayType && Object.keys(dayReport.revenue.byPayType).length > 0 && (
               <div style={{marginTop:16}}>
@@ -3173,6 +3184,13 @@ function IikoDashboardPage({ ctx }) {
             <Stat label="Средний чек" value={fmtRub(data.avgCheck)} />
             <Stat label="Скидки за месяц" value={fmtRub(data.totalDiscount)} accent={COLORS.accent2} />
           </div>
+
+          {data.secondBranch && (
+            <div className="rp-cash-check" style={{marginBottom:16}}>
+              <Info size={13}/> Выручка второго филиала (без своей кассы, пробивается через «Блюдо от Шефа» от 5000 ₽): <b>{fmtRub(data.secondBranch.total)}</b> за месяц — уже исключена из всех цифр выше, показана отдельно.
+            </div>
+          )}
+          {data.secondBranchError && <div className="rp-muted" style={{marginBottom:16, fontSize:11}}>Не удалось проверить выручку второго филиала: {data.secondBranchError}</div>}
 
           <div className="rp-grid-2">
             <Card>
@@ -3259,7 +3277,156 @@ function IikoDashboardPage({ ctx }) {
   );
 }
 
-/* ============================== COMPARE ============================== */
+function BelayaKalitvaPage({ ctx }) {
+  const { session, year, monthIdx } = ctx;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const monthFrom = dateStr(year, monthIdx, 1);
+  const monthTo = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const resp = await fetch('/api/iiko-dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from: monthFrom, to: monthTo })
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json?.error || 'Не удалось получить данные из iiko.'); setData(null); return; }
+      setData(json.secondBranch);
+    } catch (e) {
+      setError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setLoading(false);
+    }
+  }, [monthFrom, monthTo, session]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dailySeries = (data?.days || []).map(d => ({ day: Number(d.date.slice(8, 10)), Выручка: d.total }));
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1><Radio size={20} style={{verticalAlign:'-3px', marginRight:8}}/>Отчёт Белая Калитва</h1>
+        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · выручка, которую присылают вечером и пробивают через кассу Новошахтинска</div>
+      </div>
+
+      <div className="rp-alert rp-alert-info" style={{marginBottom:16}}>
+        <Info size={16}/> У этой точки нет своей онлайн-кассы. Здесь показана только выручка (то, что распознано как позиция «Блюдо от Шефа» на сумму от 5000 ₽ — так на кассе Новошахтинска отмечают суммы, присланные из Белой Калитвы). Расходов, ФОТ и P&L по этой точке в приложении нет — вести их можно на странице «Кассовая смена (день)» вручную, если понадобится.
+      </div>
+
+      {loading && <Card><div className="rp-muted">Загружаю данные из iiko…</div></Card>}
+      {error && <div className="rp-alert" style={{marginBottom:16}}><AlertTriangle size={16}/> {error} <button className="rp-btn-link" onClick={load} style={{marginLeft:8}}>Повторить</button></div>}
+
+      {!loading && !error && (
+        data ? (
+          <>
+            <div className="rp-grid-4">
+              <Stat label="Выручка за месяц" value={fmtRub(data.total)} />
+              <Stat label="Чеков" value={fmt0(data.checks)} />
+              <Stat label="Средний чек" value={fmtRub(data.avgCheck)} />
+              <Stat label="Дней с выручкой" value={fmt0((data.days || []).length)} />
+            </div>
+            <Card>
+              <div className="rp-card-title">Выручка по дням</div>
+              <ResponsiveContainer width="100%" height={260}>
+                <AreaChart data={dailySeries}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.15} strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Card>
+          </>
+        ) : (
+          <Card><EmptyState icon={<Radio size={24} color={COLORS.inkSoft} />} title="Нет данных за этот месяц" description="Выручка Белой Калитвы за этот период не найдена (или ещё не пробита через кассу)." /></Card>
+        )
+      )}
+    </div>
+  );
+}
+
+function CombinedReportPage({ ctx }) {
+  const { pnl, session, year, monthIdx } = ctx;
+  const [belaya, setBelaya] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const monthFrom = dateStr(year, monthIdx, 1);
+  const monthTo = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const resp = await fetch('/api/iiko-dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from: monthFrom, to: monthTo })
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json?.error || 'Не удалось получить данные из iiko.'); return; }
+      setBelaya(json.secondBranch);
+    } catch (e) {
+      setError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setLoading(false);
+    }
+  }, [monthFrom, monthTo, session]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const belayaRevenue = belaya?.total || 0;
+  const totalRevenue = pnl.revenue + belayaRevenue;
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1>Общий отчёт</h1>
+        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · обе точки вместе</div>
+      </div>
+
+      <div className="rp-alert rp-alert-info" style={{marginBottom:16}}>
+        <Info size={16}/> По Новошахтинску — полный P&L (выручка, расходы, прибыль), вносится вручную на странице «Кассовая смена (день)».
+        По Белой Калитве — только выручка из iiko, расходов и прибыли по этой точке в приложении нет, поэтому общая прибыль по бизнесу здесь не считается — только сумма выручки для понимания общего объёма.
+      </div>
+
+      {loading && <div className="rp-muted" style={{marginBottom:12}}>Обновляю данные Белой Калитвы…</div>}
+      {error && <div className="rp-alert" style={{marginBottom:16}}><AlertTriangle size={16}/> {error} <button className="rp-btn-link" onClick={load} style={{marginLeft:8}}>Повторить</button></div>}
+
+      <div className="rp-grid-2">
+        <Card>
+          <div className="rp-card-title">Новошахтинск (полный P&L)</div>
+          <div className="rp-grid-2" style={{marginTop:10}}>
+            <Stat label="Выручка" value={fmtRub(pnl.revenue)} />
+            <Stat label="Расходы" value={fmtRub(pnl.totalExpenses)} />
+          </div>
+          <div style={{marginTop:10}}>
+            <Stat label="Прибыль" value={fmtRub(pnl.profit)} accent={pnl.profit >= 0 ? COLORS.accent : COLORS.danger} sub={`рентабельность ${fmtPct(pnl.margin)}`} />
+          </div>
+        </Card>
+        <Card>
+          <div className="rp-card-title">Белая Калитва (только выручка из iiko)</div>
+          <div style={{marginTop:10}}>
+            <Stat label="Выручка" value={fmtRub(belayaRevenue)} />
+          </div>
+          <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Расходы и прибыль по этой точке не отслеживаются в приложении.</p>
+        </Card>
+      </div>
+
+      <Card>
+        <div className="rp-card-title">Суммарная выручка по бизнесу</div>
+        <div className="rp-hero-value" style={{marginTop:6}}>{fmtRub(totalRevenue)}</div>
+        <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Новошахтинск ({fmtRub(pnl.revenue)}) + Белая Калитва ({fmtRub(belayaRevenue)}). Это только выручка, не прибыль — по Белой Калитве расходы не считаются.</p>
+      </Card>
+    </div>
+  );
+}
 
 function MonthPicker({ year, monthIdx, onChange, yearOptions }) {
   return (

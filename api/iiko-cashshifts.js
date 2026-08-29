@@ -76,18 +76,12 @@ export default async function handler(req, res) {
     const list = Array.isArray(shifts) ? shifts : [];
 
     // Отсеиваем «фантомные» смены — техническое открытие и мгновенное закрытие без
-    // реальной работы (перезапуск кассы, сбой и т.п.). Признаки: либо вообще нет
-    // никакой финансовой активности (все суммы нулевые), либо смена закрылась
-    // практически сразу после открытия (меньше 2 минут) — за это время реальная
-    // смена отработать не могла.
+    // единой операции. Проверяем ТОЛЬКО полное отсутствие финансовой активности —
+    // проверку по длительности намеренно не делаем: короткая смена — не то же самое,
+    // что пустая (например, смену открывают на 1-2 минуты специально, чтобы пробить
+    // один чек и сразу закрыть — деньги там настоящие, их нельзя терять).
     const isPhantomShift = (s) => {
-      const noActivity = !(Number(s.payIn) || Number(s.payOut) || Number(s.salesCash) || Number(s.salesCard) || Number(s.sessionStartCash));
-      let tooShort = false;
-      if (s.openDate && s.closeDate) {
-        const durationMs = new Date(s.closeDate) - new Date(s.openDate);
-        tooShort = durationMs >= 0 && durationMs < 2 * 60 * 1000;
-      }
-      return noActivity || tooShort;
+      return !(Number(s.payIn) || Number(s.payOut) || Number(s.salesCash) || Number(s.salesCard) || Number(s.sessionStartCash));
     };
 
     const realShifts = list.filter(s => !isPhantomShift(s));

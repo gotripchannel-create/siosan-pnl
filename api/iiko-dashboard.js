@@ -27,6 +27,15 @@ async function iikoLogout(serverUrl, token) {
   try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
 }
 
+// Второй филиал СиоСан без своей кассы: его дневную выручку пробивают через кассу
+// основного заведения отдельной позицией меню. Отделяем её от реальных продаж первого
+// заведения, иначе она искажает тренд/средний чек/итоги этой конкретной точки.
+// Признак именно второго филиала — сумма от 5000 ₽: под тем же названием иногда
+// пробивают и обычные разовые позиции первого заведения, которых нет в меню, но
+// суммы там всегда меньше.
+const SECOND_BRANCH_DISH_NAME = 'Блюдо от Шефа';
+const SECOND_BRANCH_MIN_AMOUNT = 5000;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -112,6 +121,53 @@ export default async function handler(req, res) {
 
     const days = Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
 
+    // Отдельный запрос по позиции "Блюдо от Шефа" — это не блюдо, а способ провести
+    // выручку второго филиала через эту кассу. Вычитаем её из дневных сумм и итога,
+    // чтобы тренд/средний чек отражали только реальные продажи этого заведения.
+    let secondBranchTotal = 0;
+    let secondBranchChecks = 0;
+    let secondBranchByDay = {};
+    let secondBranchError = null;
+    try {
+      const sbResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'SALES', buildSummary: false,
+          groupByRowFields: ['OpenDate.Typed', 'DishName'], groupByColFields: [],
+          aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
+          filters: {
+            'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
+            'DishName': { filterType: 'IncludeValues', values: [SECOND_BRANCH_DISH_NAME] }
+          }
+        })
+      });
+      const sbText = await sbResp.text();
+      const sbJson = JSON.parse(sbText);
+      if (sbResp.ok) {
+        for (const r of (sbJson?.data || [])) {
+          const amt = Number(r['DishDiscountSumInt']) || 0;
+          const d = r['OpenDate.Typed'];
+          if (amt < SECOND_BRANCH_MIN_AMOUNT) continue; // маленькая сумма под этим названием — обычный заказ первого заведения, не филиал 2
+          secondBranchTotal += amt;
+          secondBranchChecks += Number(r['DishAmountInt']) || 0;
+          secondBranchByDay[d] = (secondBranchByDay[d] || 0) + amt;
+        }
+        // Вычитаем из дневных сумм и общего итога — days/grandTotal должны отражать
+        // только это заведение.
+        days.forEach(d => {
+          const sb = secondBranchByDay[d.date] || 0;
+          if (sb > 0) d.total = Math.round(Math.max(0, d.total - sb) * 100) / 100;
+        });
+        grandTotal = Math.max(0, grandTotal - secondBranchTotal);
+        totalChecks = Math.max(0, totalChecks - secondBranchChecks);
+      } else {
+        secondBranchError = `Запрос по второму филиалу вернул ошибку (${sbResp.status}).`;
+      }
+    } catch (e) {
+      secondBranchError = 'Не удалось получить данные по второму филиалу: ' + (e?.message || 'неизвестная ошибка');
+    }
+
     // Отдельный запрос по удалённым блюдам (та же схема отчёта, документированный фильтр
     // DeletedWithWriteoff). Если он не сработает — не роняем весь дашборд, просто не покажем блок удалений.
     let deletions = null;
@@ -157,7 +213,14 @@ export default async function handler(req, res) {
       totalChecks,
       avgCheck: totalChecks ? Math.round((grandTotal / totalChecks) * 100) / 100 : 0,
       deletions,
-      deletionsError
+      deletionsError,
+      secondBranch: secondBranchTotal > 0 ? {
+        total: Math.round(secondBranchTotal * 100) / 100,
+        checks: secondBranchChecks,
+        avgCheck: secondBranchChecks ? Math.round((secondBranchTotal / secondBranchChecks) * 100) / 100 : 0,
+        days: Object.entries(secondBranchByDay).map(([date, total]) => ({ date, total: Math.round(total * 100) / 100 })).sort((a, b) => a.date.localeCompare(b.date))
+      } : null,
+      secondBranchError
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
