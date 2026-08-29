@@ -233,10 +233,10 @@ export default async function handler(req, res) {
       // сумму для проверки, не добавляем, пока не подтверждена точная структура.
     } catch (e) { result.errors.cashShifts = e.message; }
 
-    // 5. Внесения по заказу — из отчёта по проводкам, только с комментариями «заказ»
-    // и «бамбук» (не «дб» — начальный остаток, и не прочие типы внесений/изъятий).
-    // Сводка по смене выше суммирует ВСЕ внесения без разбора по комментарию, поэтому
-    // не годится для точного расчёта выручки.
+    // 5. Внесения по заказу — из отчёта по проводкам. Считаем выручкой ВСЁ, кроме
+    // комментария «дб» (единственный известный тип, который не является выручкой —
+    // начальный остаток кассы). Сводка по смене выше суммирует все внесения без
+    // разбора по комментарию, поэтому не годится для точного расчёта выручки.
     try {
       const txResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
         method: 'POST',
@@ -255,7 +255,7 @@ export default async function handler(req, res) {
       const txJson = JSON.parse(txText);
       if (txResp.ok) {
         const payIncome = (txJson?.data || [])
-          .filter(r => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'заказ' || c === 'бамбук'; })
+          .filter(r => String(r['Comment'] || '').trim().toLowerCase() !== 'дб')
           .reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
         if (payIncome > 0 && result.revenue) {
           result.revenue.payIncomeAdded = Math.round(payIncome * 100) / 100;
