@@ -2214,14 +2214,43 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
 /* ============================== P&L ============================== */
 
 function PnLPage({ ctx }) {
-  const { pnl, year, monthIdx } = ctx;
+  const { pnl, year, monthIdx, month, updateMonth, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
+  const [newName, setNewName] = useState('');
+  const [newAmount, setNewAmount] = useState('');
+  const [newGroup, setNewGroup] = useState('fixed');
+  const locked = month.closed;
 
   const Row = ({ label, value, pctOf = pnl.revenue, bold, onClick, indent }) => (
     <div className={`rp-pnl-row ${bold ? 'bold' : ''} ${onClick ? 'rp-clickable' : ''}`} style={indent ? { paddingLeft: 20 } : {}} onClick={onClick}>
       <span>{label}</span>
       <span className="rp-num">{fmtRub(value)}</span>
       <span className="rp-num rp-muted-sm">{pctOf ? fmtPct((value / pctOf) * 100) : '—'}</span>
+    </div>
+  );
+
+  const removeExpenseItem = (id) => {
+    const item = (month.monthExpenses || []).find(f => f.id === id);
+    updateMonth(m => ({ ...m, monthExpenses: (m.monthExpenses || []).filter(f => f.id !== id) }));
+    logAudit({ what: `Удалена статья постоянных расходов «${item?.name || ''}» из P&L месяца`, date: dateStr(year, monthIdx, 1) });
+  };
+
+  const renameExpenseItem = (id, patch) => {
+    updateMonth(m => ({ ...m, monthExpenses: (m.monthExpenses || []).map(f => f.id === id ? { ...f, ...patch } : f) }));
+  };
+
+  const addExpenseItem = () => {
+    if (!newName.trim()) return;
+    updateMonth(m => ({ ...m, monthExpenses: [...(m.monthExpenses || []), { id: uid(), name: newName.trim(), amount: Number(newAmount) || 0, group: newGroup, paymentMethod: 'cashless' }] }));
+    logAudit({ what: `Добавлена статья постоянных расходов «${newName.trim()}» в P&L месяца`, date: dateStr(year, monthIdx, 1) });
+    setNewName(''); setNewAmount('');
+  };
+
+  const EditableFixedRow = (f) => (
+    <div className="rp-pnl-row" style={{ paddingLeft: 20, gap: 8 }} key={f.id}>
+      <input className="rp-inline-input" defaultValue={f.name} disabled={locked} onBlur={(e) => e.target.value !== f.name && renameExpenseItem(f.id, { name: e.target.value })} style={{ flex: 1, minWidth: 0 }} />
+      <input className="rp-inline-input rp-num" type="number" defaultValue={f.amount} disabled={locked} onBlur={(e) => Number(e.target.value) !== f.amount && renameExpenseItem(f.id, { amount: Number(e.target.value) })} style={{ width: 100 }} />
+      {!locked && <button className="rp-icon-btn rp-icon-btn-danger" onClick={() => removeExpenseItem(f.id)} title="Удалить эту статью из текущего месяца"><Trash2 size={13} /></button>}
     </div>
   );
 
@@ -2249,10 +2278,21 @@ function PnLPage({ ctx }) {
         <Row label="Налоги на сотрудников" value={pnl.fotTaxTotal} indent />
         <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total + pnl.fotTaxTotal} bold />
 
-        <div className="rp-pnl-section-title">Постоянные расходы</div>
-        {pnl.fixedItems.map((f) => <Row key={f.id} label={f.name} value={f.amount} indent />)}
-        {pnl.otherFixed.map((f) => <Row key={f.id} label={f.name} value={f.amount} indent />)}
+        <div className="rp-pnl-section-title">Постоянные расходы {locked && <span className="rp-muted-sm">(месяц закрыт — только просмотр)</span>}</div>
+        {pnl.fixedItems.map(EditableFixedRow)}
+        {pnl.otherFixed.map(EditableFixedRow)}
         <Row label="Итого постоянные" value={pnl.fixedTotal} bold />
+        {!locked && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingLeft: 20, marginTop: 8, flexWrap: 'wrap' }}>
+            <input className="rp-inline-input" placeholder="Название статьи" value={newName} onChange={e => setNewName(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
+            <input className="rp-inline-input rp-num" type="number" placeholder="Сумма" value={newAmount} onChange={e => setNewAmount(e.target.value)} style={{ width: 100 }} />
+            <select value={newGroup} onChange={e => setNewGroup(e.target.value)}><option value="fixed">Постоянный</option><option value="fot_tax">Налог на ФОТ</option></select>
+            <button className="rp-btn rp-btn-sm" onClick={addExpenseItem}><Plus size={13} /> Добавить в этот месяц</button>
+          </div>
+        )}
+        <p className="rp-muted" style={{ fontSize: 11, marginTop: 8, paddingLeft: 20 }}>
+          Изменения здесь касаются только {MONTHS_RU[monthIdx].toLowerCase()}а {year}. Следующий месяц, когда будет создан, унаследует этот же список — если статья больше не нужна нигде, уберите её и в «Настройки → Постоянные статьи», чтобы она не попала и в будущие месяцы.
+        </p>
 
         <div className="rp-pnl-divider" />
         <Row label="ИТОГО РАСХОДОВ" value={pnl.totalExpenses} bold pctOf={pnl.revenue} />
