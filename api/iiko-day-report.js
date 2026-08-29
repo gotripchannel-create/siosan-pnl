@@ -233,10 +233,10 @@ export default async function handler(req, res) {
       // сумму для проверки, не добавляем, пока не подтверждена точная структура.
     } catch (e) { result.errors.cashShifts = e.message; }
 
-    // 5. Внесения по заказу — из отчёта по проводкам, только с комментарием «заказ»
-    // (не «дб» — начальный остаток, и не прочие типы внесений/изъятий). Сводка по
-    // смене выше суммирует ВСЕ внесения без разбора по комментарию, поэтому не
-    // годится для точного расчёта выручки.
+    // 5. Внесения по заказу — из отчёта по проводкам, только с комментариями «заказ»
+    // и «бамбук» (не «дб» — начальный остаток, и не прочие типы внесений/изъятий).
+    // Сводка по смене выше суммирует ВСЕ внесения без разбора по комментарию, поэтому
+    // не годится для точного расчёта выручки.
     try {
       const txResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
         method: 'POST',
@@ -254,8 +254,9 @@ export default async function handler(req, res) {
       const txText = await txResp.text();
       const txJson = JSON.parse(txText);
       if (txResp.ok) {
-        const orderRow = (txJson?.data || []).find(r => String(r['Comment'] || '').trim().toLowerCase() === 'заказ');
-        const payIncome = orderRow ? (Number(orderRow['Sum.Incoming']) || 0) : 0;
+        const payIncome = (txJson?.data || [])
+          .filter(r => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'заказ' || c === 'бамбук'; })
+          .reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
         if (payIncome > 0 && result.revenue) {
           result.revenue.payIncomeAdded = Math.round(payIncome * 100) / 100;
           result.revenue.total = Math.round((result.revenue.total + payIncome) * 100) / 100;
