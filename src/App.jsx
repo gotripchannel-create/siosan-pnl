@@ -80,8 +80,25 @@ function defaultSettings() {
       { id: uid(), name: 'Налоги (организации)', amount: 20000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
       { id: uid(), name: 'Подоходный налог (НДФЛ)', amount: 60000, group: 'fot_tax', paymentMethod: 'cashless', recurring: true },
     ],
+    dashboardWidgets: {
+      hero: true, statToday: true, statFoodCost: true, statLaborCost: true, statSupplierDebt: true,
+      trendChart: true, forecast: true, insights: true, expenseStructure: true, revenueByChannel: true,
+    },
   };
 }
+
+const DASHBOARD_WIDGET_LABELS = {
+  hero: 'Главный блок (прибыль за месяц)',
+  statToday: 'Выручка сегодня',
+  statFoodCost: 'Food Cost',
+  statLaborCost: 'Labor Cost',
+  statSupplierDebt: 'Задолженность поставщикам',
+  trendChart: 'График выручки и расходов по дням',
+  forecast: 'Прогноз на конец месяца',
+  insights: 'Наблюдения ИИ',
+  expenseStructure: 'Структура расходов (диаграмма)',
+  revenueByChannel: 'Выручка по каналам (диаграмма)',
+};
 
 // Seeded demo data derived from the uploaded reference workbook (real staff names & rates)
 // so the app is immediately explorable. All numeric daily entries below are illustrative.
@@ -874,6 +891,10 @@ function Dashboard({ ctx, setPage }) {
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
   const [insightsLoaded, setInsightsLoaded] = useState(false);
+  const [viewMode, setViewMode] = useState('month'); // 'month' | 'day'
+  const [dayDate, setDayDate] = useState(selectedDate);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
@@ -904,6 +925,28 @@ function Dashboard({ ctx, setPage }) {
   ].filter((d) => d.value > 0);
 
   const delta = (a, b) => (b ? ((a - b) / b) * 100 : 0);
+
+  // --- Данные по одному конкретному дню (для переключателя Месяц/День). Считаем только то,
+  // что реально привязано к дню в самих данных (выручка, закупки, курьер, промо) — ФОТ и
+  // постоянные расходы это месячные суммы, которые не разбиваются корректно по дням, поэтому
+  // в дневном виде их не показываем, чтобы не выдумывать точность, которой нет.
+  const dayObj = getDay(month, dayDate);
+  const dayRevByChannel = settings.revenueChannels.map(c => ({ name: c.name, id: c.id, value: Number(dayObj.revenue?.[c.id]) || 0 }));
+  const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
+  const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const dayOther = (dayObj.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const dayCourierPay = Number(dayObj.courier?.pay) || 0;
+  const dayCourierFuel = (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
+  const dayPromo = Number(dayObj.promo?.pay) || 0;
+  const dayExpensesSel = dayKitchen + dayOther + dayCourierPay + dayCourierFuel + dayPromo;
+  const dayProfitSel = dayRevenueSel - dayExpensesSel;
+  const dayStructure = [
+    { name: 'Закупки (кухня/бар)', value: dayKitchen },
+    { name: 'Курьер (ставка+бензин)', value: dayCourierPay + dayCourierFuel },
+    { name: 'Промо', value: dayPromo },
+    { name: 'Прочие', value: dayOther },
+  ].filter(d => d.value > 0);
+  const dayIndexInMonth = dailySeries.findIndex(d => dateStr(year, monthIdx, d.day) === dayDate);
 
   // --- Прогноз на конец месяца: чистая математика, без ИИ, считается мгновенно и бесплатно.
   // Постоянные расходы и налоги ФОТ обычно вносятся как сумма за весь месяц сразу, поэтому
@@ -988,118 +1031,221 @@ function Dashboard({ ctx, setPage }) {
 
   return (
     <div className="rp-page">
-      <div className="rp-page-head">
-        <h1>Дашборд</h1>
-        <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · {pnl.nd} дней</div>
-      </div>
-
-      {/* Главный показатель: прибыльно или нет — то, что владелец хочет понять за 1 секунду */}
-      <div className={`rp-hero ${pnl.profit >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} onClick={() => setPage('pnl')}>
-        <div className="rp-hero-main">
-          <div className="rp-hero-label">Прибыль за месяц</div>
-          <div className="rp-hero-value">{fmtRub(pnl.profit)}</div>
-          <div className="rp-hero-meta">
-            <span className={`rp-delta ${delta(pnl.profit, prevPnl.profit) >= 0 ? 'rp-delta-good' : 'rp-delta-bad'}`}>
-              {delta(pnl.profit, prevPnl.profit) >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-              {fmtPct(Math.abs(delta(pnl.profit, prevPnl.profit)))} к пред. месяцу
-            </span>
-            <span className="rp-hero-margin">рентабельность {fmtPct(pnl.margin)}</span>
-          </div>
-          {pnl.profit < 0 && <div className="rp-hero-warning"><AlertTriangle size={13}/> Проверьте расходы или довнесите данные за оставшиеся дни</div>}
+      <div className="rp-page-head-row">
+        <div className="rp-page-head">
+          <h1>Дашборд</h1>
+          <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · {pnl.nd} дней</div>
         </div>
-        <div className="rp-hero-side">
-          <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(pnl.revenue)}</div></div>
-          <div className="rp-clickable" onClick={(e) => { e.stopPropagation(); setDrill('expenses'); }}><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(pnl.totalExpenses)}</div></div>
+        <div style={{display:'flex', gap:10, alignItems:'center'}}>
+          <div className="rp-view-toggle">
+            <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>Месяц</button>
+            <button className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>День</button>
+          </div>
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
 
-      <div className="rp-grid-4">
-        <Stat label={`Выручка сегодня (${selectedDate.split('-').reverse().join('.')})`} value={fmtRub(todayRevenue)} onClick={() => setPage('day')} />
-        <Stat label="Food Cost" value={fmtPct(pnl.foodCostPct)} sub={fmtRub(pnl.kitchen.total + pnl.supplierPay.total)} />
-        <Stat label="Labor Cost" value={fmtPct(pnl.laborCostPct)} sub={fmtRub(pnl.payroll.totalFot)} onClick={() => setPage('payroll')} />
-        <Stat label="Задолженность поставщикам" value={fmtRub(supplierDebtTotal(ctx))} accent={supplierDebtTotal(ctx) > 0 ? COLORS.accent2 : undefined} onClick={() => setPage('suppliers')} />
-      </div>
-
-      <Card>
-        <div className="rp-card-title">Выручка и расходы по дням</div>
-        <ResponsiveContainer width="100%" height={280}>
-          <AreaChart data={dailySeries}>
-            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-            <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
-            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-            <Tooltip formatter={(v) => fmtRub(v)} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent} fill={COLORS.accent} fillOpacity={0.15} strokeWidth={2} />
-            <Area type="monotone" dataKey="Расходы" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.1} strokeWidth={2} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <div className="rp-grid-2">
-        {forecast && (
-          <Card>
-            <div className="rp-card-title">Прогноз на конец месяца</div>
-            <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
-            <div className="rp-forecast-grid">
-              <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
-              <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
-              <div><div className="rp-forecast-label">Прибыль</div><div className="rp-forecast-value" style={{color: forecast.projectedProfit>=0?COLORS.accent:COLORS.danger}}>{fmtRub(forecast.projectedProfit)}</div></div>
-              <div><div className="rp-forecast-label">Рентабельность</div><div className="rp-forecast-value">{fmtPct(forecast.projectedMargin)}</div></div>
-            </div>
-          </Card>
-        )}
-        <Card>
-          <div className="rp-card-title-row">
-            <div className="rp-card-title">✨ Наблюдения ИИ</div>
-            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={refreshInsights} disabled={insightsLoading}>{insightsLoading?'Анализирую…':'Обновить'}</button>
-          </div>
-          {insights?.generatedAt && <div className="rp-muted" style={{marginBottom:10}}>Обновлено {new Date(insights.generatedAt).toLocaleString('ru-RU', {day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>}
-          {insightsError && <div className="rp-inline-warn"><AlertTriangle size={13}/> {insightsError}</div>}
-          {!insightsError && insightsLoaded && !insights && <div className="rp-muted">Ещё не анализировали этот месяц. Нажмите «Обновить».</div>}
-          {insights?.insights?.length === 0 && <div className="rp-muted">Ничего примечательного не найдено.</div>}
-          {insights?.insights?.length > 0 && (
-            <div className="rp-insights-list">
-              {insights.insights.slice(0,3).map((ins, i) => (
-                <div key={i} className={`rp-insight rp-insight-${ins.severity}`}>
-                  <div className="rp-insight-title">{ins.title}</div>
-                  <div className="rp-insight-detail">{ins.detail}</div>
+      {viewMode === 'month' ? (
+        <>
+          {showWidget('hero') && (
+            <div className={`rp-hero ${pnl.profit >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} onClick={() => setPage('pnl')}>
+              <div className="rp-hero-main">
+                <div className="rp-hero-label">Прибыль за месяц</div>
+                <div className="rp-hero-value">{fmtRub(pnl.profit)}</div>
+                <div className="rp-hero-meta">
+                  <span className={`rp-delta ${delta(pnl.profit, prevPnl.profit) >= 0 ? 'rp-delta-good' : 'rp-delta-bad'}`}>
+                    {delta(pnl.profit, prevPnl.profit) >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+                    {fmtPct(Math.abs(delta(pnl.profit, prevPnl.profit)))} к пред. месяцу
+                  </span>
+                  <span className="rp-hero-margin">рентабельность {fmtPct(pnl.margin)}</span>
+                  {pnl.profit < 0 && <span className="rp-hero-warning"><AlertTriangle size={12}/> проверьте расходы</span>}
                 </div>
-              ))}
+              </div>
+              <div className="rp-hero-side">
+                <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(pnl.revenue)}</div></div>
+                <div className="rp-clickable" onClick={(e) => { e.stopPropagation(); setDrill('expenses'); }}><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(pnl.totalExpenses)}</div></div>
+              </div>
             </div>
           )}
-        </Card>
-      </div>
 
-      <div className="rp-grid-2">
+          {(showWidget('statToday') || showWidget('statFoodCost') || showWidget('statLaborCost') || showWidget('statSupplierDebt')) && (
+            <div className="rp-grid-4">
+              {showWidget('statToday') && <Stat label={`Выручка сегодня (${selectedDate.split('-').reverse().join('.')})`} value={fmtRub(todayRevenue)} onClick={() => setPage('day')} />}
+              {showWidget('statFoodCost') && <Stat label="Food Cost" value={fmtPct(pnl.foodCostPct)} sub={fmtRub(pnl.kitchen.total + pnl.supplierPay.total)} />}
+              {showWidget('statLaborCost') && <Stat label="Labor Cost" value={fmtPct(pnl.laborCostPct)} sub={fmtRub(pnl.payroll.totalFot)} onClick={() => setPage('payroll')} />}
+              {showWidget('statSupplierDebt') && <Stat label="Задолженность поставщикам" value={fmtRub(supplierDebtTotal(ctx))} accent={supplierDebtTotal(ctx) > 0 ? COLORS.accent2 : undefined} onClick={() => setPage('suppliers')} />}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <Card style={{marginBottom:16}}>
+            <div style={{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginBottom:14}}>
+              <Field label="Выберите день"><input type="date" value={dayDate} onChange={e => setDayDate(e.target.value)} min={dateStr(year, monthIdx, 1)} max={dateStr(year, monthIdx, daysInMonth(year, monthIdx))} /></Field>
+              <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setPage('day')} style={{marginTop:18}}>Открыть в «День» для редактирования →</button>
+            </div>
+            <div className={`rp-hero ${dayProfitSel >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} style={{marginBottom:0, cursor:'default'}}>
+              <div className="rp-hero-main">
+                <div className="rp-hero-label">Прибыль за {dayDate.split('-').reverse().join('.')}</div>
+                <div className="rp-hero-value">{fmtRub(dayProfitSel)}</div>
+                <div className="rp-hero-meta">
+                  <span>рентабельность {fmtPct(dayRevenueSel ? (dayProfitSel/dayRevenueSel)*100 : 0)}</span>
+                </div>
+              </div>
+              <div className="rp-hero-side">
+                <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(dayRevenueSel)}</div></div>
+                <div><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(dayExpensesSel)}</div></div>
+              </div>
+            </div>
+          </Card>
+
+          <div className="rp-grid-2">
+            <Card>
+              <div className="rp-card-title">Выручка по каналам за день</div>
+              {dayRevenueSel === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Нет данных за этот день" /> : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={dayRevByChannel.filter(c => c.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
+                      {dayRevByChannel.filter(c => c.value > 0).map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v) => fmtRub(v)} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </Card>
+            <Card>
+              <div className="rp-card-title">Расходы за день</div>
+              {dayStructure.length === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Расходов за этот день нет" /> : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={dayStructure} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
+                      {dayStructure.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v) => fmtRub(v)} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+              <p className="rp-muted" style={{fontSize:11, marginTop:8}}>ФОТ и постоянные расходы считаются за месяц целиком и здесь не разбиваются по дням.</p>
+            </Card>
+          </div>
+        </>
+      )}
+
+      {showWidget('trendChart') && (
         <Card>
-          <div className="rp-card-title">Структура расходов</div>
-          <ResponsiveContainer width="100%" height={240}>
-            <PieChart>
-              <Pie data={structureData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
-                {structureData.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-              </Pie>
+          <div className="rp-card-title">Выручка и расходы по дням</div>
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={dailySeries}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+              <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
               <Tooltip formatter={(v) => fmtRub(v)} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-            </PieChart>
+              <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent} fill={COLORS.accent} fillOpacity={0.15} strokeWidth={2} />
+              <Area type="monotone" dataKey="Расходы" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.1} strokeWidth={2} />
+            </AreaChart>
           </ResponsiveContainer>
         </Card>
-        <Card>
-          <div className="rp-card-title">Выручка по каналам</div>
-          <ResponsiveContainer width="100%" height={240}>
-            <PieChart>
-              <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
-                {settings.revenueChannels.map((c, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-              </Pie>
-              <Tooltip formatter={(v) => fmtRub(v)} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
+      )}
+
+      {viewMode === 'month' && (showWidget('forecast') || showWidget('insights')) && (
+        <div className="rp-grid-2">
+          {showWidget('forecast') && forecast && (
+            <Card>
+              <div className="rp-card-title">Прогноз на конец месяца</div>
+              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
+              <div className="rp-forecast-grid">
+                <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
+                <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
+                <div><div className="rp-forecast-label">Прибыль</div><div className="rp-forecast-value" style={{color: forecast.projectedProfit>=0?COLORS.accent:COLORS.danger}}>{fmtRub(forecast.projectedProfit)}</div></div>
+                <div><div className="rp-forecast-label">Рентабельность</div><div className="rp-forecast-value">{fmtPct(forecast.projectedMargin)}</div></div>
+              </div>
+            </Card>
+          )}
+          {showWidget('insights') && (
+            <Card>
+              <div className="rp-card-title-row">
+                <div className="rp-card-title">✨ Наблюдения ИИ</div>
+                <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={refreshInsights} disabled={insightsLoading}>{insightsLoading?'Анализирую…':'Обновить'}</button>
+              </div>
+              {insights?.generatedAt && <div className="rp-muted" style={{marginBottom:10}}>Обновлено {new Date(insights.generatedAt).toLocaleString('ru-RU', {day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>}
+              {insightsError && <div className="rp-inline-warn"><AlertTriangle size={13}/> {insightsError}</div>}
+              {!insightsError && insightsLoaded && !insights && <div className="rp-muted">Ещё не анализировали этот месяц. Нажмите «Обновить».</div>}
+              {insights?.insights?.length === 0 && <div className="rp-muted">Ничего примечательного не найдено.</div>}
+              {insights?.insights?.length > 0 && (
+                <div className="rp-insights-list">
+                  {insights.insights.slice(0,3).map((ins, i) => (
+                    <div key={i} className={`rp-insight rp-insight-${ins.severity}`}>
+                      <div className="rp-insight-title">{ins.title}</div>
+                      <div className="rp-insight-detail">{ins.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {viewMode === 'month' && (showWidget('expenseStructure') || showWidget('revenueByChannel')) && (
+        <div className="rp-grid-2">
+          {showWidget('expenseStructure') && (
+            <Card>
+              <div className="rp-card-title">Структура расходов</div>
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie data={structureData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
+                    {structureData.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Card>
+          )}
+          {showWidget('revenueByChannel') && (
+            <Card>
+              <div className="rp-card-title">Выручка по каналам</div>
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
+                    {settings.revenueChannels.map((c, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Card>
+          )}
+        </div>
+      )}
 
       {drill === 'expenses' && (
         <Modal title="Детализация расходов месяца" onClose={() => setDrill(null)} wide>
           <ExpenseBreakdownTable pnl={pnl} />
+        </Modal>
+      )}
+
+      {customizeOpen && (
+        <Modal title="Настроить дашборд" onClose={() => setCustomizeOpen(false)}>
+          <p className="rp-muted" style={{marginBottom:14}}>Выберите, какие блоки показывать. Настройка сохраняется и применяется на всех ваших устройствах.</p>
+          <div className="rp-checklist">
+            {Object.keys(DASHBOARD_WIDGET_LABELS).map(key => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={showWidget(key)}
+                  onChange={(e) => ctx.setSettings(s => ({ ...s, dashboardWidgets: { ...(s.dashboardWidgets || {}), [key]: e.target.checked } }))}
+                />
+                {DASHBOARD_WIDGET_LABELS[key]}
+              </label>
+            ))}
+          </div>
+          <div style={{display:'flex', justifyContent:'flex-end', marginTop:16}}>
+            <button className="rp-btn" onClick={() => setCustomizeOpen(false)}>Готово</button>
+          </div>
         </Modal>
       )}
     </div>
@@ -4133,19 +4279,23 @@ function GlobalStyle() {
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
 
-      .rp-hero { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 24px 28px; border-radius: 16px; margin-bottom: 18px; cursor: pointer; transition: transform 0.1s ease; }
+      .rp-page-head-row { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; }
+      .rp-view-toggle { display: inline-flex; border: 1px solid ${COLORS.line}; border-radius: 9px; overflow: hidden; }
+      .rp-view-toggle button { background: ${COLORS.panel}; border: none; padding: 7px 16px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: ${COLORS.inkSoft}; }
+      .rp-view-toggle button.active { background: ${COLORS.ink}; color: white; }
+      .rp-hero { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 20px; border-radius: 12px; margin-bottom: 16px; cursor: pointer; transition: transform 0.1s ease; }
       .rp-hero:hover { transform: translateY(-1px); }
       .rp-hero-pos { background: linear-gradient(135deg, #EAF3EE, #F4F3EF); border: 1px solid #CFE3D6; }
       .rp-hero-neg { background: linear-gradient(135deg, #FBEAEA, #F4F3EF); border: 1px solid #E7C6C6; }
-      .rp-hero-label { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.inkSoft}; margin-bottom: 4px; }
-      .rp-hero-value { font-size: 38px; font-weight: 800; letter-spacing: -0.01em; color: ${COLORS.ink}; line-height: 1.1; }
-      .rp-hero-meta { display: flex; align-items: center; gap: 14px; margin-top: 8px; font-size: 12.5px; color: ${COLORS.inkSoft}; flex-wrap: wrap; }
+      .rp-hero-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.inkSoft}; margin-bottom: 2px; }
+      .rp-hero-value { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; color: ${COLORS.ink}; line-height: 1.15; }
+      .rp-hero-meta { display: flex; align-items: center; gap: 12px; margin-top: 4px; font-size: 11.5px; color: ${COLORS.inkSoft}; flex-wrap: wrap; }
       .rp-hero-margin { font-weight: 600; }
-      .rp-hero-warning { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: ${COLORS.danger}; font-weight: 600; }
-      .rp-hero-side { display: flex; gap: 28px; flex-shrink: 0; }
-      .rp-hero-side-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
-      .rp-hero-side-value { font-size: 19px; font-weight: 700; color: ${COLORS.ink}; }
-      @media (max-width: 760px) { .rp-hero { flex-direction: column; align-items: flex-start; padding: 18px 18px; } .rp-hero-value { font-size: 30px; } .rp-hero-side { gap: 20px; } }
+      .rp-hero-warning { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: ${COLORS.danger}; font-weight: 600; }
+      .rp-hero-side { display: flex; gap: 22px; flex-shrink: 0; }
+      .rp-hero-side-label { font-size: 10.5px; color: ${COLORS.inkSoft}; margin-bottom: 2px; }
+      .rp-hero-side-value { font-size: 15px; font-weight: 700; color: ${COLORS.ink}; }
+      @media (max-width: 760px) { .rp-hero { flex-direction: column; align-items: flex-start; padding: 14px 16px; } .rp-hero-side { gap: 18px; } }
       .rp-forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
       .rp-forecast-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
       .rp-forecast-value { font-size: 17px; font-weight: 700; color: ${COLORS.ink}; }
