@@ -46,35 +46,19 @@ async function olapQuery(serverUrl, token, body) {
   return json?.data || [];
 }
 
-// Поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов, закрытых
-// поздно вечером (например, заказ реально открыт в 23:07, но iiko относит его к
-// следующему дню). Эта функция запрашивает окно на день шире с каждой стороны и сама
-// вычисляет настоящую дату заказа по полю "OpenTime", оставляя только строки, которые
-// РЕАЛЬНО относятся к запрошенному дню — используется для ЛЮБОГО отчёта по дню, не
-// только для Белой Калитвы, потому что эта путаница касается всех заказов, а не только
-// пробитых как «Блюдо от Шефа».
-async function queryDayWithRealDate(serverUrl, token, date, groupByRowFields, aggregateFields, extraFilters = {}) {
-  const prevDateObj = new Date(date + 'T00:00:00'); prevDateObj.setDate(prevDateObj.getDate() - 1);
-  const nextDateObj = new Date(date + 'T00:00:00'); nextDateObj.setDate(nextDateObj.getDate() + 1);
-  const wideFrom = prevDateObj.toISOString().slice(0, 10);
-  const wideTo = nextDateObj.toISOString().slice(0, 10);
-  const wideFilter = { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true };
-
-  const rows = await olapQuery(serverUrl, token, {
+// Запрос данных за день — напрямую по "OpenDate.Typed", доверяем тому, как iiko сам
+// относит заказ к дню (так же, как в кассовых сменах). Раньше здесь была реклассификация
+// по полю "OpenTime" — убрана, так как разбивала смены, закрывающиеся после полуночи,
+// по календарному времени вместо реальной границы смены/бизнес-дня.
+async function queryDay(serverUrl, token, date, groupByRowFields, aggregateFields, extraFilters = {}) {
+  const dateFilter = { filterType: 'DateRange', periodType: 'CUSTOM', from: date, to: date, includeLow: true, includeHigh: true };
+  return olapQuery(serverUrl, token, {
     reportType: 'SALES', buildSummary: false,
-    groupByRowFields: [...new Set(['OpenDate.Typed', 'OpenTime', ...groupByRowFields])],
+    groupByRowFields: [...new Set(['OpenDate.Typed', ...groupByRowFields])],
     groupByColFields: [],
     aggregateFields,
-    filters: { ...extraFilters, 'OpenDate.Typed': wideFilter }
+    filters: { ...extraFilters, 'OpenDate.Typed': dateFilter }
   });
-
-  return rows
-    .map(r => {
-      const timeStr = r['OpenTime'] || '';
-      const realDate = timeStr.slice(0, 10) || r['OpenDate.Typed'];
-      return { ...r, __realDate: realDate, __iikoDate: r['OpenDate.Typed'], __reclassified: r['OpenDate.Typed'] && realDate !== r['OpenDate.Typed'] };
-    })
-    .filter(r => r.__realDate === date);
 }
 
 // Настоящий признак технической/фантомной смены — ПОЛНОЕ отсутствие любой финансовой
@@ -136,7 +120,7 @@ export default async function handler(req, res) {
 
     // 1. Выручка по способам оплаты (+ сумма до скидки, для расчёта скидки)
     try {
-      const rows = await queryDayWithRealDate(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt']);
+      const rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt']);
       const byPayType = {};
       let total = 0, totalBeforeDiscount = 0, checks = 0;
       for (const r of rows) {
@@ -150,14 +134,13 @@ export default async function handler(req, res) {
       }
       result.revenue = { byPayType, total: Math.round(total * 100) / 100, checks };
       result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
-      result.revenueReclassifiedCount = rows.filter(r => r.__reclassified).length;
     } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
 
     // 2. Топ проданных блюд — "Блюдо от Шефа" сюда никогда не попадает, это не блюдо,
     // а способ пробить нестандартную сумму (либо разовый заказ первого заведения,
     // либо выручка второго филиала — см. отдельный запрос ниже).
     try {
-      const rows = await queryDayWithRealDate(serverUrl, token, date, ['DishName'], ['DishAmountInt', 'DishDiscountSumInt']);
+      const rows = await queryDay(serverUrl, token, date, ['DishName'], ['DishAmountInt', 'DishDiscountSumInt']);
       result.topDishes = rows
         .filter(r => !isSecondBranchDishName(r['DishName']))
         .map(r => ({ name: r['DishName'] || 'Без названия', qty: Number(r['DishAmountInt']) || 0, amount: Number(r['DishDiscountSumInt']) || 0 }))
@@ -170,53 +153,31 @@ export default async function handler(req, res) {
     // мелкий разовый заказ первого заведения под тем же названием «Блюдо от Шефа»,
     // при группировке только по дню они бы сложились в одну сумму и завысили итог.
     // Порог 5000₽ применяем к КАЖДОМУ заказу отдельно, а не к сумме за день.
-    //
-    // ВАЖНО: поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов,
-    // закрытых поздно вечером (например, заказ реально открыт в 23:07 25-го числа, но
-    // iiko относит его к 26-му). Поэтому НЕ доверяем этому полю для определения дня —
-    // запрашиваем на день шире с каждой стороны и сами вычисляем настоящую дату
-    // заказа по полю "OpenTime" (реальная метка времени).
+    // Дата берётся напрямую из OpenDate.Typed — так же, как в кассовых сменах.
     try {
-      const prevDateObj = new Date(date + 'T00:00:00'); prevDateObj.setDate(prevDateObj.getDate() - 1);
-      const nextDateObj = new Date(date + 'T00:00:00'); nextDateObj.setDate(nextDateObj.getDate() + 1);
-      const wideFrom = prevDateObj.toISOString().slice(0, 10);
-      const wideTo = nextDateObj.toISOString().slice(0, 10);
-      const wideFilter = { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true };
-
       const rows = await olapQuery(serverUrl, token, {
         reportType: 'SALES', buildSummary: false,
-        groupByRowFields: ['DishName', 'OrderNum', 'OpenDate.Typed', 'OpenTime', 'PayTypes'], groupByColFields: [],
+        groupByRowFields: ['DishName', 'OrderNum', 'OpenDate.Typed', 'PayTypes'], groupByColFields: [],
         aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
         filters: {
-          'OpenDate.Typed': wideFilter,
+          'OpenDate.Typed': dateFilter,
           'DishName': { filterType: 'IncludeValues', values: [SECOND_BRANCH_DISH_NAME] }
         }
       });
 
-      // Настоящая дата заказа — из времени, а не из ярлыка iiko.
-      const withRealDate = rows.map(r => {
-        const timeStr = r['OpenTime'] || '';
-        const realDate = timeStr.slice(0, 10) || r['OpenDate.Typed'];
-        return {
-          orderNum: r['OrderNum'] ?? null,
-          iikoDate: r['OpenDate.Typed'] ?? null,
-          realDate,
-          time: timeStr || null,
-          payType: r['PayTypes'] || 'Не указано',
-          amount: Number(r['DishDiscountSumInt']) || 0,
-          qty: Number(r['DishAmountInt']) || 0,
-          reclassified: r['OpenDate.Typed'] && realDate !== r['OpenDate.Typed']
-        };
-      });
+      const allOrders = rows.map(r => ({
+        orderNum: r['OrderNum'] ?? null,
+        iikoDate: r['OpenDate.Typed'] ?? null,
+        payType: r['PayTypes'] || 'Не указано',
+        amount: Number(r['DishDiscountSumInt']) || 0,
+        qty: Number(r['DishAmountInt']) || 0
+      }));
 
-      // Оставляем только то, что по-настоящему относится к запрошенному дню.
-      const todaysOrders = withRealDate.filter(r => r.realDate === date);
-      const branchOrders = todaysOrders.filter(r => r.amount >= SECOND_BRANCH_MIN_AMOUNT);
+      const branchOrders = allOrders.filter(r => r.amount >= SECOND_BRANCH_MIN_AMOUNT);
       const secondBranchTotal = branchOrders.reduce((s, r) => s + r.amount, 0);
       const secondBranchCount = branchOrders.reduce((s, r) => s + r.qty, 0);
 
-      result.secondBranchRawOrders = todaysOrders.map(r => ({ ...r, countedAsBranch: r.amount >= SECOND_BRANCH_MIN_AMOUNT }));
-      result.secondBranchReclassified = withRealDate.filter(r => r.reclassified); // для прозрачности — что было переопределено
+      result.secondBranchRawOrders = allOrders.map(r => ({ ...r, countedAsBranch: r.amount >= SECOND_BRANCH_MIN_AMOUNT }));
       if (secondBranchTotal > 0) {
         result.secondBranch = { total: Math.round(secondBranchTotal * 100) / 100, count: secondBranchCount, orders: branchOrders.length };
         if (result.revenue) {
@@ -236,7 +197,7 @@ export default async function handler(req, res) {
 
     // 3. Удаления
     try {
-      const rows = await queryDayWithRealDate(serverUrl, token, date, ['DishName'], ['DishSumInt', 'DishAmountInt'], {
+      const rows = await queryDay(serverUrl, token, date, ['DishName'], ['DishSumInt', 'DishAmountInt'], {
         'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] }
       });
       result.deletions = {

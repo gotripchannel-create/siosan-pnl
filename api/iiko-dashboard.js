@@ -68,26 +68,17 @@ export default async function handler(req, res) {
   try {
     token = await iikoAuth(serverUrl, login, password);
 
-    // Поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов,
-    // закрытых поздно вечером — запрашиваем на день шире с каждой стороны диапазона
-    // и сами определяем настоящую дату каждой строки по полю "OpenTime", а не по
-    // ярлыку iiko. Это касается ЛЮБЫХ заказов, не только выручки второго филиала.
-    const wideFromObj = new Date(from + 'T00:00:00'); wideFromObj.setDate(wideFromObj.getDate() - 1);
-    const wideToObj = new Date(to + 'T00:00:00'); wideToObj.setDate(wideToObj.getDate() + 1);
-    const wideFrom = wideFromObj.toISOString().slice(0, 10);
-    const wideTo = wideToObj.toISOString().slice(0, 10);
-
     const olapResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         reportType: 'SALES',
         buildSummary: false,
-        groupByRowFields: ['OpenDate.Typed', 'OpenTime', 'PayTypes'],
+        groupByRowFields: ['OpenDate.Typed', 'PayTypes'],
         groupByColFields: [],
         aggregateFields: ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt'],
         filters: {
-          'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true }
+          'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true }
         }
       })
     });
@@ -107,13 +98,9 @@ export default async function handler(req, res) {
     let grandTotal = 0;
     let grandTotalBeforeDiscount = 0;
     let totalChecks = 0;
-    let reclassifiedCount = 0;
 
     for (const row of rows) {
-      const timeStr = row['OpenTime'] || '';
-      const date = timeStr.slice(0, 10) || row['OpenDate.Typed']; // настоящая дата по времени, не ярлык iiko
-      if (date < from || date > to) continue; // относится к дню за пределами запрошенного периода
-      if (row['OpenDate.Typed'] && date !== row['OpenDate.Typed']) reclassifiedCount++;
+      const date = row['OpenDate.Typed']; // доверяем дате из iiko напрямую — так же, как в кассовых сменах
       const payType = row['PayTypes'] || 'Не указано';
       const amount = Number(row['DishDiscountSumInt']) || 0;
       const amountBeforeDiscount = Number(row['DishSumInt']) || amount;
@@ -139,30 +126,21 @@ export default async function handler(req, res) {
     // а не только по дню: если в тот же день был ещё и обычный мелкий разовый заказ
     // первого заведения под тем же названием, при группировке только по дню он бы
     // сложился с суммой филиала 2 и завысил её. Порог 5000₽ — на каждый заказ отдельно.
-    //
-    // ВАЖНО: поле "OpenDate.Typed" от iiko иногда путает календарный день для заказов,
-    // закрытых поздно вечером (например, заказ реально открыт в 23:07, но iiko относит
-    // его к следующему дню). Запрашиваем окно на день шире с каждой стороны и сами
-    // вычисляем настоящую дату заказа по полю "OpenTime".
+    // Дата берётся напрямую из OpenDate.Typed — так же, как в остальном дашборде.
     let secondBranchTotal = 0;
     let secondBranchChecks = 0;
     let secondBranchByDay = {};
     let secondBranchError = null;
     try {
-      const wideFromObj = new Date(from + 'T00:00:00'); wideFromObj.setDate(wideFromObj.getDate() - 1);
-      const wideToObj = new Date(to + 'T00:00:00'); wideToObj.setDate(wideToObj.getDate() + 1);
-      const wideFrom = wideFromObj.toISOString().slice(0, 10);
-      const wideTo = wideToObj.toISOString().slice(0, 10);
-
       const sbResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reportType: 'SALES', buildSummary: false,
-          groupByRowFields: ['OpenDate.Typed', 'DishName', 'OrderNum', 'OpenTime', 'PayTypes'], groupByColFields: [],
+          groupByRowFields: ['OpenDate.Typed', 'DishName', 'OrderNum', 'PayTypes'], groupByColFields: [],
           aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
           filters: {
-            'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true },
+            'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
             'DishName': { filterType: 'IncludeValues', values: [SECOND_BRANCH_DISH_NAME] }
           }
         })
@@ -174,21 +152,13 @@ export default async function handler(req, res) {
           const amt = Number(r['DishDiscountSumInt']) || 0;
           if (amt < SECOND_BRANCH_MIN_AMOUNT) continue; // маленький заказ под этим названием — обычный заказ первого заведения, не филиал 2
           const iikoDate = r['OpenDate.Typed'];
-          const timeStr = r['OpenTime'] || '';
-          const realDate = timeStr.slice(0, 10) || iikoDate;
           const payType = r['PayTypes'] || 'Не указано';
-          if (realDate < from || realDate > to) continue; // относится к дню за пределами запрошенного месяца — не считаем
 
           secondBranchTotal += amt;
           secondBranchChecks += Number(r['DishAmountInt']) || 0;
-          // Показываем сумму под НАСТОЯЩЕЙ датой (по времени заказа)…
-          secondBranchByDay[realDate] = (secondBranchByDay[realDate] || 0) + amt;
-          // …но вычитаем из общей выручки И из конкретного способа оплаты того дня,
-          // под которым эта сумма реально лежит в основном запросе (там используется
-          // дата iiko, поэтому вычитаем оттуда же — иначе баланс между "выручка
-          // Новошахтинска" и "выручка Белой Калитвы" разъедется на день перехода
-          // через полночь). Вычитаем именно из того способа оплаты, которым реально
-          // пробили филиал 2, а не только из общего итога дня.
+          secondBranchByDay[iikoDate] = (secondBranchByDay[iikoDate] || 0) + amt;
+          // Вычитаем из общей выручки И из конкретного способа оплаты того дня,
+          // под которым эта сумма реально лежит в основном запросе.
           const dayEntry = days.find(d => d.date === iikoDate);
           if (dayEntry) {
             dayEntry.total = Math.round(Math.max(0, dayEntry.total - amt) * 100) / 100;
@@ -313,8 +283,7 @@ export default async function handler(req, res) {
         avgCheck: secondBranchChecks ? Math.round((secondBranchTotal / secondBranchChecks) * 100) / 100 : 0,
         days: Object.entries(secondBranchByDay).map(([date, total]) => ({ date, total: Math.round(total * 100) / 100 })).sort((a, b) => a.date.localeCompare(b.date))
       } : null,
-      secondBranchError,
-      reclassifiedCount
+      secondBranchError
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

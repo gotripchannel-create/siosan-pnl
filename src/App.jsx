@@ -3135,9 +3135,6 @@ function IikoDashboardPage({ ctx }) {
               <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
               <Stat label="Удаления" value={fmtRub(dayReport.deletions?.total)} accent={COLORS.danger} />
             </div>
-            {dayReport.revenueReclassifiedCount > 0 && (
-              <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Дата исправлена для {dayReport.revenueReclassifiedCount} заказ(ов) во всей выручке дня — iiko относил их к другому дню, чем реальное время заказа.</p>
-            )}
             {dayReport.revenue?.payIncomeAdded > 0 && (
               <div className="rp-cash-check" style={{marginTop:12}}>
                 <Info size={13}/> В выручку дня включено внесение по заказу: <b>{fmtRub(dayReport.revenue.payIncomeAdded)}</b> — деньги, принятые за заказ отдельной кассовой операцией (комментарий «заказ»), не проходят через обычную продажу и не попадают в отчёт по продажам, поэтому добавлены отдельно.
@@ -3156,26 +3153,10 @@ function IikoDashboardPage({ ctx }) {
                 <summary style={{cursor:'pointer', fontSize:12, color:COLORS.inkSoft}}>Показать заказы «Блюдо от Шефа» за этот день (для проверки)</summary>
                 <div className="rp-table-wrap" style={{marginTop:8}}>
                   <table className="rp-table">
-                    <thead><tr><th>Дата (настоящая)</th><th>Время</th><th>№ заказа</th><th>Сумма</th><th>Учтено как филиал 2?</th></tr></thead>
+                    <thead><tr><th>№ заказа</th><th>Сумма</th><th>Учтено как филиал 2?</th></tr></thead>
                     <tbody>
                       {dayReport.secondBranchRawOrders.map((o,i) => (
-                        <tr key={i}><td>{o.realDate}</td><td>{o.time || '—'}</td><td>{o.orderNum ?? '—'}</td><td className="rp-num">{fmtRub(o.amount)}</td><td>{o.countedAsBranch ? 'Да' : 'Нет (меньше 5000₽)'}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </details>
-            )}
-
-            {dayReport.secondBranchReclassified?.length > 0 && (
-              <details style={{marginTop:8}} open>
-                <summary style={{cursor:'pointer', fontSize:12, color:COLORS.accent2, fontWeight:600}}>↺ Переопределена дата у {dayReport.secondBranchReclassified.length} заказ(ов) — iiko отнёс их к другому дню, чем реальное время заказа</summary>
-                <div className="rp-table-wrap" style={{marginTop:8}}>
-                  <table className="rp-table">
-                    <thead><tr><th>Дата у iiko</th><th>Настоящая дата (по времени)</th><th>Время</th><th>№ заказа</th><th>Сумма</th></tr></thead>
-                    <tbody>
-                      {dayReport.secondBranchReclassified.map((o,i) => (
-                        <tr key={i}><td>{o.iikoDate}</td><td><b>{o.realDate}</b></td><td>{o.time || '—'}</td><td>{o.orderNum ?? '—'}</td><td className="rp-num">{fmtRub(o.amount)}</td></tr>
+                        <tr key={i}><td>{o.orderNum ?? '—'}</td><td className="rp-num">{fmtRub(o.amount)}</td><td>{o.countedAsBranch ? 'Да' : 'Нет (меньше 5000₽)'}</td></tr>
                       ))}
                     </tbody>
                   </table>
