@@ -993,69 +993,59 @@ function Dashboard({ ctx, setPage }) {
         <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · {pnl.nd} дней</div>
       </div>
 
-      {pnl.profit < 0 && (
-        <div className="rp-alert">
-          <AlertTriangle size={16} /> Месяц пока убыточный: {fmtRub(pnl.profit)}. Проверьте расходы или довнесите данные за оставшиеся дни.
+      {/* Главный показатель: прибыльно или нет — то, что владелец хочет понять за 1 секунду */}
+      <div className={`rp-hero ${pnl.profit >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} onClick={() => setPage('pnl')}>
+        <div className="rp-hero-main">
+          <div className="rp-hero-label">Прибыль за месяц</div>
+          <div className="rp-hero-value">{fmtRub(pnl.profit)}</div>
+          <div className="rp-hero-meta">
+            <span className={`rp-delta ${delta(pnl.profit, prevPnl.profit) >= 0 ? 'rp-delta-good' : 'rp-delta-bad'}`}>
+              {delta(pnl.profit, prevPnl.profit) >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+              {fmtPct(Math.abs(delta(pnl.profit, prevPnl.profit)))} к пред. месяцу
+            </span>
+            <span className="rp-hero-margin">рентабельность {fmtPct(pnl.margin)}</span>
+          </div>
+          {pnl.profit < 0 && <div className="rp-hero-warning"><AlertTriangle size={13}/> Проверьте расходы или довнесите данные за оставшиеся дни</div>}
         </div>
-      )}
+        <div className="rp-hero-side">
+          <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(pnl.revenue)}</div></div>
+          <div className="rp-clickable" onClick={(e) => { e.stopPropagation(); setDrill('expenses'); }}><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(pnl.totalExpenses)}</div></div>
+        </div>
+      </div>
 
       <div className="rp-grid-4">
-        <Stat label="Выручка за месяц" value={fmtRub(pnl.revenue)} delta={delta(pnl.revenue, prevPnl.revenue)} onClick={() => setPage('pnl')} />
         <Stat label={`Выручка сегодня (${selectedDate.split('-').reverse().join('.')})`} value={fmtRub(todayRevenue)} onClick={() => setPage('day')} />
-        <Stat label="Средняя дневная выручка" value={fmtRub(pnl.avgDailyRevenue)} />
-        <Stat label="Расходы за месяц" value={fmtRub(pnl.totalExpenses)} delta={delta(pnl.totalExpenses, prevPnl.totalExpenses)} deltaGood={false} onClick={() => setDrill('expenses')} />
-        <Stat label="ФОТ" value={fmtRub(pnl.payroll.totalFot)} sub={fmtPct(pnl.laborCostPct) + ' от выручки'} onClick={() => setPage('payroll')} />
-        <Stat label="Закупки (Food Cost)" value={fmtRub(pnl.kitchen.total + pnl.supplierPay.total)} sub={fmtPct(pnl.foodCostPct) + ' от выручки'} />
-        <Stat label="Постоянные расходы" value={fmtRub(pnl.fixedTotal)} />
-        <Stat label="Переменные расходы" value={fmtRub(pnl.variableTotal)} />
-        <Stat label="Прибыль" value={fmtRub(pnl.profit)} accent={pnl.profit >= 0 ? COLORS.accent : COLORS.danger} delta={delta(pnl.profit, prevPnl.profit)} onClick={() => setPage('pnl')} />
-        <Stat label="Рентабельность" value={fmtPct(pnl.margin)} accent={pnl.margin >= 0 ? COLORS.accent : COLORS.danger} />
-        <Stat label="Доставок за месяц" value={fmt0(pnl.courier.deliveries)} sub={`сред. ${fmtRub(pnl.courier.avgPerDelivery)} / достав.`} />
-        <Stat label="Задолженность поставщикам" value={fmtRub(supplierDebtTotal(ctx))} accent={COLORS.accent2} onClick={() => setPage('suppliers')} />
+        <Stat label="Food Cost" value={fmtPct(pnl.foodCostPct)} sub={fmtRub(pnl.kitchen.total + pnl.supplierPay.total)} />
+        <Stat label="Labor Cost" value={fmtPct(pnl.laborCostPct)} sub={fmtRub(pnl.payroll.totalFot)} onClick={() => setPage('payroll')} />
+        <Stat label="Задолженность поставщикам" value={fmtRub(supplierDebtTotal(ctx))} accent={supplierDebtTotal(ctx) > 0 ? COLORS.accent2 : undefined} onClick={() => setPage('suppliers')} />
       </div>
 
-      <div className="rp-grid-2">
-        <Card>
-          <div className="rp-card-title">Выручка и расходы по дням</div>
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={dailySeries}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip formatter={(v) => fmtRub(v)} />
-              <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent} fill={COLORS.accent} fillOpacity={0.15} strokeWidth={2} />
-              <Area type="monotone" dataKey="Расходы" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.1} strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card>
-          <div className="rp-card-title">Динамика прибыли</div>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={dailySeries}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip formatter={(v) => fmtRub(v)} />
-              <Bar dataKey="Прибыль" radius={[3, 3, 0, 0]}>
-                {dailySeries.map((e, i) => <Cell key={i} fill={e['Прибыль'] >= 0 ? COLORS.accent : COLORS.danger} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
+      <Card>
+        <div className="rp-card-title">Выручка и расходы по дням</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <AreaChart data={dailySeries}>
+            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+            <XAxis dataKey="day" tick={{ fontSize: 11 }} interval={4} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+            <Tooltip formatter={(v) => fmtRub(v)} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Area type="monotone" dataKey="Выручка" stroke={COLORS.accent} fill={COLORS.accent} fillOpacity={0.15} strokeWidth={2} />
+            <Area type="monotone" dataKey="Расходы" stroke={COLORS.accent2} fill={COLORS.accent2} fillOpacity={0.1} strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </Card>
 
       <div className="rp-grid-2">
         {forecast && (
           <Card>
             <div className="rp-card-title">Прогноз на конец месяца</div>
-            <div className="rp-muted" style={{marginBottom:12}}>Линейная экстраполяция по {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
+            <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
             <div className="rp-forecast-grid">
               <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
               <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
               <div><div className="rp-forecast-label">Прибыль</div><div className="rp-forecast-value" style={{color: forecast.projectedProfit>=0?COLORS.accent:COLORS.danger}}>{fmtRub(forecast.projectedProfit)}</div></div>
               <div><div className="rp-forecast-label">Рентабельность</div><div className="rp-forecast-value">{fmtPct(forecast.projectedMargin)}</div></div>
             </div>
-            <div className="rp-muted" style={{marginTop:10,fontSize:11}}>Прогноз предполагает, что темп выручки и переменных расходов сохранится до конца месяца. Постоянные расходы и налоги ФОТ не масштабируются.</div>
           </Card>
         )}
         <Card>
@@ -1065,11 +1055,11 @@ function Dashboard({ ctx, setPage }) {
           </div>
           {insights?.generatedAt && <div className="rp-muted" style={{marginBottom:10}}>Обновлено {new Date(insights.generatedAt).toLocaleString('ru-RU', {day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>}
           {insightsError && <div className="rp-inline-warn"><AlertTriangle size={13}/> {insightsError}</div>}
-          {!insightsError && insightsLoaded && !insights && <div className="rp-muted">Ещё не анализировали этот месяц. Нажмите «Обновить», чтобы ИИ посмотрел на цифры и нашёл отклонения.</div>}
-          {insights?.insights?.length === 0 && <div className="rp-muted">Ничего примечательного не найдено — показатели в пределах обычных колебаний.</div>}
+          {!insightsError && insightsLoaded && !insights && <div className="rp-muted">Ещё не анализировали этот месяц. Нажмите «Обновить».</div>}
+          {insights?.insights?.length === 0 && <div className="rp-muted">Ничего примечательного не найдено.</div>}
           {insights?.insights?.length > 0 && (
             <div className="rp-insights-list">
-              {insights.insights.map((ins, i) => (
+              {insights.insights.slice(0,3).map((ins, i) => (
                 <div key={i} className={`rp-insight rp-insight-${ins.severity}`}>
                   <div className="rp-insight-title">{ins.title}</div>
                   <div className="rp-insight-detail">{ins.detail}</div>
@@ -1083,9 +1073,9 @@ function Dashboard({ ctx, setPage }) {
       <div className="rp-grid-2">
         <Card>
           <div className="rp-card-title">Структура расходов</div>
-          <ResponsiveContainer width="100%" height={260}>
+          <ResponsiveContainer width="100%" height={240}>
             <PieChart>
-              <Pie data={structureData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} innerRadius={55}>
+              <Pie data={structureData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
                 {structureData.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
               </Pie>
               <Tooltip formatter={(v) => fmtRub(v)} />
@@ -1095,9 +1085,9 @@ function Dashboard({ ctx, setPage }) {
         </Card>
         <Card>
           <div className="rp-card-title">Выручка по каналам</div>
-          <ResponsiveContainer width="100%" height={260}>
+          <ResponsiveContainer width="100%" height={240}>
             <PieChart>
-              <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} innerRadius={55}>
+              <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
                 {settings.revenueChannels.map((c, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
               </Pie>
               <Tooltip formatter={(v) => fmtRub(v)} />
@@ -4142,6 +4132,20 @@ function GlobalStyle() {
       .rp-alert-warn span { flex: 1; }
       .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
       .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
+
+      .rp-hero { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 24px 28px; border-radius: 16px; margin-bottom: 18px; cursor: pointer; transition: transform 0.1s ease; }
+      .rp-hero:hover { transform: translateY(-1px); }
+      .rp-hero-pos { background: linear-gradient(135deg, #EAF3EE, #F4F3EF); border: 1px solid #CFE3D6; }
+      .rp-hero-neg { background: linear-gradient(135deg, #FBEAEA, #F4F3EF); border: 1px solid #E7C6C6; }
+      .rp-hero-label { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.inkSoft}; margin-bottom: 4px; }
+      .rp-hero-value { font-size: 38px; font-weight: 800; letter-spacing: -0.01em; color: ${COLORS.ink}; line-height: 1.1; }
+      .rp-hero-meta { display: flex; align-items: center; gap: 14px; margin-top: 8px; font-size: 12.5px; color: ${COLORS.inkSoft}; flex-wrap: wrap; }
+      .rp-hero-margin { font-weight: 600; }
+      .rp-hero-warning { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: ${COLORS.danger}; font-weight: 600; }
+      .rp-hero-side { display: flex; gap: 28px; flex-shrink: 0; }
+      .rp-hero-side-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
+      .rp-hero-side-value { font-size: 19px; font-weight: 700; color: ${COLORS.ink}; }
+      @media (max-width: 760px) { .rp-hero { flex-direction: column; align-items: flex-start; padding: 18px 18px; } .rp-hero-value { font-size: 30px; } .rp-hero-side { gap: 20px; } }
       .rp-forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
       .rp-forecast-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
       .rp-forecast-value { font-size: 17px; font-weight: 700; color: ${COLORS.ink}; }
