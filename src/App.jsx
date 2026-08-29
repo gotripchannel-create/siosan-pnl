@@ -3105,7 +3105,7 @@ function IikoDashboardPage({ ctx }) {
             {dayReport.secondBranch && (
               <div className="rp-cash-check" style={{marginTop:12}}>
                 <Info size={13}/> Из выручки уже исключена сумма второго филиала: <b>{fmtRub(dayReport.secondBranch.total)}</b> ({dayReport.secondBranch.count} чек.), пробитая через «Блюдо от Шефа» (от 5000 ₽ — меньшие суммы под этим названием считаются обычным заказом первого заведения).
-                {dayReport.revenue?.totalWithSecondBranch != null && <> Разбивка «По способам оплаты» ниже пока показана с учётом этой суммы (общая касса за день — {fmtRub(dayReport.revenue.totalWithSecondBranch)}).</>}
+                {dayReport.revenue?.totalWithSecondBranch != null && <> Сумма филиала 2 вычтена и из разбивки «По способам оплаты» ниже — из того способа оплаты, которым её реально пробили (общая касса за день была {fmtRub(dayReport.revenue.totalWithSecondBranch)}).</>}
               </div>
             )}
 

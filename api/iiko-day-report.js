@@ -185,7 +185,7 @@ export default async function handler(req, res) {
 
       const rows = await olapQuery(serverUrl, token, {
         reportType: 'SALES', buildSummary: false,
-        groupByRowFields: ['DishName', 'OrderNum', 'OpenDate.Typed', 'OpenTime'], groupByColFields: [],
+        groupByRowFields: ['DishName', 'OrderNum', 'OpenDate.Typed', 'OpenTime', 'PayTypes'], groupByColFields: [],
         aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
         filters: {
           'OpenDate.Typed': wideFilter,
@@ -202,6 +202,7 @@ export default async function handler(req, res) {
           iikoDate: r['OpenDate.Typed'] ?? null,
           realDate,
           time: timeStr || null,
+          payType: r['PayTypes'] || 'Не указано',
           amount: Number(r['DishDiscountSumInt']) || 0,
           qty: Number(r['DishAmountInt']) || 0,
           reclassified: r['OpenDate.Typed'] && realDate !== r['OpenDate.Typed']
@@ -220,6 +221,14 @@ export default async function handler(req, res) {
         result.secondBranch = { total: Math.round(secondBranchTotal * 100) / 100, count: secondBranchCount, orders: branchOrders.length };
         if (result.revenue) {
           result.revenue.totalWithSecondBranch = result.revenue.total;
+          // Вычитаем сумму филиала 2 из ТОГО способа оплаты, которым её реально
+          // пробили (а не только из общего итога) — так «По способам оплаты» тоже
+          // отражает только это заведение, без смешивания с филиалом 2.
+          branchOrders.forEach(o => {
+            if (result.revenue.byPayType[o.payType] != null) {
+              result.revenue.byPayType[o.payType] = Math.round(Math.max(0, result.revenue.byPayType[o.payType] - o.amount) * 100) / 100;
+            }
+          });
           result.revenue.total = Math.round(Math.max(0, result.revenue.total - secondBranchTotal) * 100) / 100;
         }
       }

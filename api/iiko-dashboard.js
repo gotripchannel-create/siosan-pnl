@@ -159,7 +159,7 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reportType: 'SALES', buildSummary: false,
-          groupByRowFields: ['OpenDate.Typed', 'DishName', 'OrderNum', 'OpenTime'], groupByColFields: [],
+          groupByRowFields: ['OpenDate.Typed', 'DishName', 'OrderNum', 'OpenTime', 'PayTypes'], groupByColFields: [],
           aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
           filters: {
             'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: wideFrom, to: wideTo, includeLow: true, includeHigh: true },
@@ -176,18 +176,29 @@ export default async function handler(req, res) {
           const iikoDate = r['OpenDate.Typed'];
           const timeStr = r['OpenTime'] || '';
           const realDate = timeStr.slice(0, 10) || iikoDate;
+          const payType = r['PayTypes'] || 'Не указано';
           if (realDate < from || realDate > to) continue; // относится к дню за пределами запрошенного месяца — не считаем
 
           secondBranchTotal += amt;
           secondBranchChecks += Number(r['DishAmountInt']) || 0;
           // Показываем сумму под НАСТОЯЩЕЙ датой (по времени заказа)…
           secondBranchByDay[realDate] = (secondBranchByDay[realDate] || 0) + amt;
-          // …но вычитаем из общей выручки того дня, под которым эта сумма реально
-          // лежит в основном запросе (там используется дата iiko, поэтому вычитаем
-          // оттуда же — иначе баланс между "выручка Новошахтинска" и "выручка Белой
-          // Калитвы" разъедется на день перехода через полночь).
+          // …но вычитаем из общей выручки И из конкретного способа оплаты того дня,
+          // под которым эта сумма реально лежит в основном запросе (там используется
+          // дата iiko, поэтому вычитаем оттуда же — иначе баланс между "выручка
+          // Новошахтинска" и "выручка Белой Калитвы" разъедется на день перехода
+          // через полночь). Вычитаем именно из того способа оплаты, которым реально
+          // пробили филиал 2, а не только из общего итога дня.
           const dayEntry = days.find(d => d.date === iikoDate);
-          if (dayEntry) dayEntry.total = Math.round(Math.max(0, dayEntry.total - amt) * 100) / 100;
+          if (dayEntry) {
+            dayEntry.total = Math.round(Math.max(0, dayEntry.total - amt) * 100) / 100;
+            if (dayEntry.byPayType[payType] != null) {
+              dayEntry.byPayType[payType] = Math.round(Math.max(0, dayEntry.byPayType[payType] - amt) * 100) / 100;
+            }
+          }
+          if (totalsByPayType[payType] != null) {
+            totalsByPayType[payType] = Math.round(Math.max(0, totalsByPayType[payType] - amt) * 100) / 100;
+          }
         }
         grandTotal = Math.max(0, grandTotal - secondBranchTotal);
         totalChecks = Math.max(0, totalChecks - secondBranchChecks);
