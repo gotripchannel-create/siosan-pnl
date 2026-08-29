@@ -65,8 +65,7 @@ const isPhantomShift = (s) => {
 // филиала — сумма от 5000 ₽ и выше, меньше касса там не бывает по словам владельца.
 const SECOND_BRANCH_DISH_NAME = 'Блюдо от Шефа';
 const SECOND_BRANCH_MIN_AMOUNT = 5000;
-const isSecondBranchDish = (name, amount) =>
-  String(name || '').trim().toLowerCase() === SECOND_BRANCH_DISH_NAME.toLowerCase() && (Number(amount) || 0) >= SECOND_BRANCH_MIN_AMOUNT;
+const isSecondBranchDishName = (name) => String(name || '').trim().toLowerCase() === SECOND_BRANCH_DISH_NAME.toLowerCase();
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -127,8 +126,9 @@ export default async function handler(req, res) {
       result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
     } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
 
-    // 2. Топ проданных блюд — и здесь же отделяем "Блюдо от Шефа" (это не блюдо,
-    // а способ провести выручку второго филиала через кассу первого)
+    // 2. Топ проданных блюд — "Блюдо от Шефа" сюда никогда не попадает, это не блюдо,
+    // а способ пробить нестандартную сумму (либо разовый заказ первого заведения,
+    // либо выручка второго филиала — см. отдельный запрос ниже).
     try {
       const rows = await olapQuery(serverUrl, token, {
         reportType: 'SALES', buildSummary: false,
@@ -136,24 +136,39 @@ export default async function handler(req, res) {
         aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
         filters: { 'OpenDate.Typed': dateFilter }
       });
-      const secondBranchRows = rows.filter(r => isSecondBranchDish(r['DishName'], r['DishDiscountSumInt']));
-      const realDishRows = rows.filter(r => !isSecondBranchDish(r['DishName'], r['DishDiscountSumInt']));
-
-      result.topDishes = realDishRows
+      result.topDishes = rows
+        .filter(r => !isSecondBranchDishName(r['DishName']))
         .map(r => ({ name: r['DishName'] || 'Без названия', qty: Number(r['DishAmountInt']) || 0, amount: Number(r['DishDiscountSumInt']) || 0 }))
         .sort((a, b) => b.amount - a.amount)
         .slice(0, 20);
+    } catch (e) { result.errors.topDishes = e.message; }
 
-      const secondBranchTotal = secondBranchRows.reduce((s, r) => s + (Number(r['DishDiscountSumInt']) || 0), 0);
-      const secondBranchCount = secondBranchRows.reduce((s, r) => s + (Number(r['DishAmountInt']) || 0), 0);
+    // 2b. Отдельно — сумма второго филиала. Группируем ПО КАЖДОМУ ЗАКАЗУ (OrderNum),
+    // а не по всему дню сразу: если в один день с суммой филиала 2 был ещё и обычный
+    // мелкий разовый заказ первого заведения под тем же названием «Блюдо от Шефа»,
+    // при группировке только по дню они бы сложились в одну сумму и завысили итог.
+    // Порог 5000₽ применяем к КАЖДОМУ заказу отдельно, а не к сумме за день.
+    try {
+      const rows = await olapQuery(serverUrl, token, {
+        reportType: 'SALES', buildSummary: false,
+        groupByRowFields: ['DishName', 'OrderNum'], groupByColFields: [],
+        aggregateFields: ['DishAmountInt', 'DishDiscountSumInt'],
+        filters: {
+          'OpenDate.Typed': dateFilter,
+          'DishName': { filterType: 'IncludeValues', values: [SECOND_BRANCH_DISH_NAME] }
+        }
+      });
+      const branchOrders = rows.filter(r => (Number(r['DishDiscountSumInt']) || 0) >= SECOND_BRANCH_MIN_AMOUNT);
+      const secondBranchTotal = branchOrders.reduce((s, r) => s + (Number(r['DishDiscountSumInt']) || 0), 0);
+      const secondBranchCount = branchOrders.reduce((s, r) => s + (Number(r['DishAmountInt']) || 0), 0);
       if (secondBranchTotal > 0) {
-        result.secondBranch = { total: Math.round(secondBranchTotal * 100) / 100, count: secondBranchCount };
+        result.secondBranch = { total: Math.round(secondBranchTotal * 100) / 100, count: secondBranchCount, orders: branchOrders.length };
         if (result.revenue) {
           result.revenue.totalWithSecondBranch = result.revenue.total;
           result.revenue.total = Math.round(Math.max(0, result.revenue.total - secondBranchTotal) * 100) / 100;
         }
       }
-    } catch (e) { result.errors.topDishes = e.message; }
+    } catch (e) { result.errors.secondBranch = e.message; }
 
     // 3. Удаления
     try {

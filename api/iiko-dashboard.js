@@ -122,8 +122,10 @@ export default async function handler(req, res) {
     const days = Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
 
     // Отдельный запрос по позиции "Блюдо от Шефа" — это не блюдо, а способ провести
-    // выручку второго филиала через эту кассу. Вычитаем её из дневных сумм и итога,
-    // чтобы тренд/средний чек отражали только реальные продажи этого заведения.
+    // выручку второго филиала через эту кассу. Группируем ПО КАЖДОМУ ЗАКАЗУ (OrderNum),
+    // а не только по дню: если в тот же день был ещё и обычный мелкий разовый заказ
+    // первого заведения под тем же названием, при группировке только по дню он бы
+    // сложился с суммой филиала 2 и завысил её. Порог 5000₽ — на каждый заказ отдельно.
     let secondBranchTotal = 0;
     let secondBranchChecks = 0;
     let secondBranchByDay = {};
@@ -134,7 +136,7 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reportType: 'SALES', buildSummary: false,
-          groupByRowFields: ['OpenDate.Typed', 'DishName'], groupByColFields: [],
+          groupByRowFields: ['OpenDate.Typed', 'DishName', 'OrderNum'], groupByColFields: [],
           aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
           filters: {
             'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
@@ -148,7 +150,7 @@ export default async function handler(req, res) {
         for (const r of (sbJson?.data || [])) {
           const amt = Number(r['DishDiscountSumInt']) || 0;
           const d = r['OpenDate.Typed'];
-          if (amt < SECOND_BRANCH_MIN_AMOUNT) continue; // маленькая сумма под этим названием — обычный заказ первого заведения, не филиал 2
+          if (amt < SECOND_BRANCH_MIN_AMOUNT) continue; // маленький заказ под этим названием — обычный заказ первого заведения, не филиал 2
           secondBranchTotal += amt;
           secondBranchChecks += Number(r['DishAmountInt']) || 0;
           secondBranchByDay[d] = (secondBranchByDay[d] || 0) + amt;
