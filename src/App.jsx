@@ -2631,6 +2631,9 @@ function IikoIntegrationPanel({ ctx }) {
   const [cashLoading, setCashLoading] = useState(false);
   const [cashResult, setCashResult] = useState(null);
   const [cashError, setCashError] = useState('');
+  const [txLoading, setTxLoading] = useState(false);
+  const [txResult, setTxResult] = useState(null);
+  const [txError, setTxError] = useState('');
 
   const testConnection = async () => {
     setLoading(true); setError(''); setResult(null);
@@ -2686,6 +2689,24 @@ function IikoIntegrationPanel({ ctx }) {
     }
   };
 
+  const testTransactions = async () => {
+    setTxLoading(true); setTxError(''); setTxResult(null);
+    try {
+      const resp = await fetch('/api/iiko-transactions-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ date })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setTxError(data?.error || 'Не удалось получить отчёт по проводкам.'); setTxResult(data); return; }
+      setTxResult(data);
+    } catch (e) {
+      setTxError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setTxLoading(false);
+    }
+  };
+
   return (
     <>
     <Card>
@@ -2736,6 +2757,22 @@ function IikoIntegrationPanel({ ctx }) {
         <div style={{marginTop:14}}>
           <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> Сработало! Пришлите этот ответ, чтобы настроить внесения/изъятия/инкассацию.</div>
           <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(cashResult, null, 2)}</pre>
+        </div>
+      )}
+    </Card>
+    <Card style={{marginTop:16}}>
+      <div className="rp-card-title">Отчёт по проводкам (эксперимент)</div>
+      <p className="rp-muted" style={{marginBottom:14}}>
+        Пробуем получить отдельные операции внесения/изъятия с их комментарием («заказ», начальный остаток и т.п.) —
+        сводка по смене выше даёт только общую сумму без разбивки. Может не сработать с первого раза — если поля
+        называются иначе на вашей версии сервера, увидим точную ошибку и подправим запрос.
+      </p>
+      <button className="rp-btn" onClick={testTransactions} disabled={txLoading}>{txLoading ? 'Пробую…' : 'Проверить отчёт по проводкам'}</button>
+      {txError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {txError}</div>}
+      {txResult && (
+        <div style={{marginTop:14}}>
+          <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> {txResult.connected ? 'Сработало!' : 'Ответ с ошибкой —'} Пришлите этот JSON целиком.</div>
+          <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(txResult, null, 2)}</pre>
         </div>
       )}
     </Card>
@@ -3101,6 +3138,11 @@ function IikoDashboardPage({ ctx }) {
             {dayReport.revenueReclassifiedCount > 0 && (
               <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Дата исправлена для {dayReport.revenueReclassifiedCount} заказ(ов) во всей выручке дня — iiko относил их к другому дню, чем реальное время заказа.</p>
             )}
+            {dayReport.revenue?.payIncomeNotApplied > 0 && (
+              <div className="rp-cash-check" style={{marginTop:12}}>
+                <Info size={13}/> Внесения наличных за этот день (из кассовой смены): <b>{fmtRub(dayReport.revenue.payIncomeNotApplied)}</b>. Это ещё НЕ добавлено к выручке дня — нужно сначала отфильтровать только внесения с комментарием «заказ», исключив начальный остаток и прочее.
+              </div>
+            )}
 
             {dayReport.secondBranch && (
               <div className="rp-cash-check" style={{marginTop:12}}>
@@ -3227,6 +3269,13 @@ function IikoDashboardPage({ ctx }) {
           )}
           {data.secondBranchError && <div className="rp-muted" style={{marginBottom:16, fontSize:11}}>Не удалось проверить выручку второго филиала: {data.secondBranchError}</div>}
 
+          {data.cashPayIncome > 0 && (
+            <div className="rp-cash-check" style={{marginBottom:16}}>
+              <Info size={13}/> Все внесения наличных (payIncome) из кассовых смен за месяц: <b>{fmtRub(data.cashPayIncome)}</b>. Это ещё НЕ добавлено к выручке выше — среди внесений есть и «внесение по заказу» (нужно учесть), и другие типы вроде начального остатка в кассе (не выручка). Проверьте через «Проверить кассовые смены» в настройках интеграции, есть ли в ответе iiko комментарий к каждой операции — тогда точно отфильтруем только «заказ».
+            </div>
+          )}
+          {data.cashPayIncomeError && <div className="rp-muted" style={{marginBottom:16, fontSize:11}}>Не удалось получить внесения по заказу: {data.cashPayIncomeError}</div>}
+
           <div className="rp-grid-2">
             <Card>
               <div className="rp-card-title">Выручка по дням (iiko)</div>
@@ -3278,7 +3327,7 @@ function IikoDashboardPage({ ctx }) {
                   <Stat label="Смен за месяц" value={fmt0((cashData.shifts||[]).length)} />
                 </div>
                 <div className="rp-cash-check" style={{marginTop:12}}>
-                  <Info size={13}/> Отдельно поле «payIncome» (возможно, это и есть «внесение по заказу», которое вы видите в iikoWeb): <b>{fmtRub(cashData.totalPayIncome)}</b> за месяц. Сверьте с тем, что показывает сам iikoWeb — если совпадёт, добавим эту сумму в расчёт наличной выручки.
+                  <Info size={13}/> Внесения по заказу (payIncome): <b>{fmtRub(cashData.totalPayIncome)}</b> за месяц. Пока НЕ добавлено к выручке выше — нужно подтвердить через «Проверить кассовые смены», можно ли отфильтровать именно «заказ» среди всех внесений (там же начальный остаток кассы и другие типы).
                 </div>
                 <p className="rp-muted" style={{marginTop:10, fontSize:11}}>Отдельного поля «инкассация» в API нет — она входит в изъятия как один из их видов.</p>
                 {cashData.shifts?.length > 0 && (

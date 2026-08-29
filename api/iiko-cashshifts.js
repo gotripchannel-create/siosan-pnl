@@ -87,12 +87,13 @@ export default async function handler(req, res) {
     const realShifts = list.filter(s => !isPhantomShift(s));
     const skippedCount = list.length - realShifts.length;
 
-    let totalPayIn = 0, totalPayOut = 0, totalStartCash = 0;
+    let totalPayIn = 0, totalPayOut = 0, totalStartCash = 0, totalPayIncome = 0;
 
     const items = realShifts.map(s => {
       totalPayIn += Number(s.payIn) || 0;
       totalPayOut += Number(s.payOut) || 0;
       totalStartCash += Number(s.sessionStartCash) || 0;
+      totalPayIncome += Number(s.payIncome) || 0;
       return {
         date: (s.openDate || '').slice(0, 10),
         sessionNumber: s.sessionNumber,
@@ -102,6 +103,7 @@ export default async function handler(req, res) {
         sessionStartCash: Number(s.sessionStartCash) || 0,
         payIn: Number(s.payIn) || 0,
         payOut: Number(s.payOut) || 0,
+        payIncome: Number(s.payIncome) || 0,
         salesCash: Number(s.salesCash) || 0,
         salesCard: Number(s.salesCard) || 0,
         cashRemain: s.cashRemain != null ? Number(s.cashRemain) : null,
@@ -115,8 +117,9 @@ export default async function handler(req, res) {
       totalPayIn: Math.round(totalPayIn * 100) / 100,
       totalPayOut: Math.round(totalPayOut * 100) / 100,
       totalStartCash: Math.round(totalStartCash * 100) / 100,
+      totalPayIncome: Math.round(totalPayIncome * 100) / 100,
       skippedPhantomShifts: skippedCount,
-      note: 'Отдельного поля «инкассация» в API нет — она входит в изъятия (payOut) как один из видов изъятия.'
+      note: 'Отдельного поля «инкассация» в API нет — она входит в изъятия (payOut) как один из видов изъятия. Поле «payIncome» (внесение по заказу) уже добавлено к выручке в основном дашборде.'
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

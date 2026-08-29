@@ -259,10 +259,21 @@ export default async function handler(req, res) {
         openDate: s.openDate, closeDate: s.closeDate, status: s.sessionStatus,
         sessionStartCash: Number(s.sessionStartCash) || 0,
         payIn: Number(s.payIn) || 0, payOut: Number(s.payOut) || 0,
+        payIncome: Number(s.payIncome) || 0,
         salesCash: Number(s.salesCash) || 0, salesCard: Number(s.salesCard) || 0,
         cashRemain: s.cashRemain != null ? Number(s.cashRemain) : null,
         cashDiff: s.cashDiff != null ? Number(s.cashDiff) : null
       }));
+
+      // Внесения по заказу (payIncome) — ВРЕМЕННО не прибавляются автоматически к
+      // выручке дня. У каждой операции внесения в iikoWeb есть комментарий («заказ»,
+      // «АБ» — начальный остаток, «ошибка» и т.п.), и учитывать нужно только
+      // «заказ» — а сводка по смене суммирует все внесения без разбора. Показываем
+      // сумму для проверки, не добавляем, пока не подтверждена точная структура.
+      const dayPayIncome = real.reduce((s, sh) => s + (Number(sh.payIncome) || 0), 0);
+      if (dayPayIncome > 0 && result.revenue) {
+        result.revenue.payIncomeNotApplied = Math.round(dayPayIncome * 100) / 100;
+      }
     } catch (e) { result.errors.cashShifts = e.message; }
 
     res.status(200).json(result);

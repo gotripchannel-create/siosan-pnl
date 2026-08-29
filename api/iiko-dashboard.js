@@ -245,11 +245,40 @@ export default async function handler(req, res) {
       deletionsError = 'Не удалось получить отчёт по удалениям: ' + (e?.message || 'неизвестная ошибка');
     }
 
+    // Внесения по заказу (payIncome) из кассовых смен — ВРЕМЕННО НЕ добавляется
+    // автоматически к выручке. У каждой операции внесения в iikoWeb есть комментарий
+    // («заказ», «АБ» — начальный остаток, «ошибка» и т.п.), и только внесения с
+    // комментарием «заказ» должны считаться выручкой. Поле payIncome в сводке по смене
+    // суммирует ВСЕ внесения без разбора по комментарию, поэтому пока только
+    // показываем сумму для проверки — не прибавляем к grandTotal, пока не подтверждена
+    // точная структура через «Проверить кассовые смены» в настройках интеграции.
+    let cashPayIncome = 0;
+    let cashPayIncomeError = null;
+    try {
+      const cashResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/cashshifts/list?openDateFrom=${from}&openDateTo=${to}&status=ANY&key=${encodeURIComponent(token)}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      const cashText = await cashResp.text();
+      let cashJson = null;
+      try { cashJson = JSON.parse(cashText); } catch (_) {}
+      if (cashResp.ok) {
+        const list = Array.isArray(cashJson) ? cashJson : [];
+        cashPayIncome = list.reduce((s, sh) => s + (Number(sh.payIncome) || 0), 0);
+      } else {
+        cashPayIncomeError = `Кассовые смены вернули ошибку (${cashResp.status}).`;
+      }
+    } catch (e) {
+      cashPayIncomeError = 'Не удалось получить внесения по заказу: ' + (e?.message || 'неизвестная ошибка');
+    }
+
     res.status(200).json({
       from, to,
       days,
       totalsByPayType,
       grandTotal: Math.round(grandTotal * 100) / 100,
+      cashPayIncome: Math.round(cashPayIncome * 100) / 100,
+      cashPayIncomeError,
+      cashPayIncomeNotApplied: true,
       totalDiscount: Math.round(Math.max(0, grandTotalBeforeDiscount - grandTotal) * 100) / 100,
       totalChecks,
       avgCheck: totalChecks ? Math.round((grandTotal / totalChecks) * 100) / 100 : 0,
