@@ -270,11 +270,39 @@ export default async function handler(req, res) {
       // «АБ» — начальный остаток, «ошибка» и т.п.), и учитывать нужно только
       // «заказ» — а сводка по смене суммирует все внесения без разбора. Показываем
       // сумму для проверки, не добавляем, пока не подтверждена точная структура.
-      const dayPayIncome = real.reduce((s, sh) => s + (Number(sh.payIncome) || 0), 0);
-      if (dayPayIncome > 0 && result.revenue) {
-        result.revenue.payIncomeNotApplied = Math.round(dayPayIncome * 100) / 100;
-      }
     } catch (e) { result.errors.cashShifts = e.message; }
+
+    // 5. Внесения по заказу — из отчёта по проводкам, только с комментарием «заказ»
+    // (не «дб» — начальный остаток, и не прочие типы внесений/изъятий). Сводка по
+    // смене выше суммирует ВСЕ внесения без разбора по комментарию, поэтому не
+    // годится для точного расчёта выручки.
+    try {
+      const txResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'TRANSACTIONS', buildSummary: false,
+          groupByRowFields: ['Comment'], groupByColFields: [],
+          aggregateFields: ['Sum.Incoming'],
+          filters: {
+            'DateTime.Typed': dateFilter,
+            'TransactionType': { filterType: 'IncludeValues', values: ['PAYIN'] }
+          }
+        })
+      });
+      const txText = await txResp.text();
+      const txJson = JSON.parse(txText);
+      if (txResp.ok) {
+        const orderRow = (txJson?.data || []).find(r => String(r['Comment'] || '').trim().toLowerCase() === 'заказ');
+        const payIncome = orderRow ? (Number(orderRow['Sum.Incoming']) || 0) : 0;
+        if (payIncome > 0 && result.revenue) {
+          result.revenue.payIncomeAdded = Math.round(payIncome * 100) / 100;
+          result.revenue.total = Math.round((result.revenue.total + payIncome) * 100) / 100;
+        }
+      } else {
+        result.errors.payIncome = `Отчёт по проводкам вернул ошибку (${txResp.status}).`;
+      }
+    } catch (e) { result.errors.payIncome = e.message; }
 
     res.status(200).json(result);
   } catch (err) {

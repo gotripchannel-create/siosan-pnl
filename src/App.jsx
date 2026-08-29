@@ -3138,9 +3138,9 @@ function IikoDashboardPage({ ctx }) {
             {dayReport.revenueReclassifiedCount > 0 && (
               <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Дата исправлена для {dayReport.revenueReclassifiedCount} заказ(ов) во всей выручке дня — iiko относил их к другому дню, чем реальное время заказа.</p>
             )}
-            {dayReport.revenue?.payIncomeNotApplied > 0 && (
+            {dayReport.revenue?.payIncomeAdded > 0 && (
               <div className="rp-cash-check" style={{marginTop:12}}>
-                <Info size={13}/> Внесения наличных за этот день (из кассовой смены): <b>{fmtRub(dayReport.revenue.payIncomeNotApplied)}</b>. Это ещё НЕ добавлено к выручке дня — нужно сначала отфильтровать только внесения с комментарием «заказ», исключив начальный остаток и прочее.
+                <Info size={13}/> В выручку дня включено внесение по заказу: <b>{fmtRub(dayReport.revenue.payIncomeAdded)}</b> — деньги, принятые за заказ отдельной кассовой операцией (комментарий «заказ»), не проходят через обычную продажу и не попадают в отчёт по продажам, поэтому добавлены отдельно.
               </div>
             )}
 
@@ -3271,7 +3271,7 @@ function IikoDashboardPage({ ctx }) {
 
           {data.cashPayIncome > 0 && (
             <div className="rp-cash-check" style={{marginBottom:16}}>
-              <Info size={13}/> Все внесения наличных (payIncome) из кассовых смен за месяц: <b>{fmtRub(data.cashPayIncome)}</b>. Это ещё НЕ добавлено к выручке выше — среди внесений есть и «внесение по заказу» (нужно учесть), и другие типы вроде начального остатка в кассе (не выручка). Проверьте через «Проверить кассовые смены» в настройках интеграции, есть ли в ответе iiko комментарий к каждой операции — тогда точно отфильтруем только «заказ».
+              <Info size={13}/> В выручку за месяц включены внесения по заказу: <b>{fmtRub(data.cashPayIncome)}</b> — деньги, принятые за заказ отдельной кассовой операцией (комментарий «заказ» в отчёте по проводкам), не проходят через обычную продажу и не попадают в OLAP-отчёт, поэтому добавлены отдельно. Внесения с другими комментариями (начальный остаток кассы и т.п.) сюда не входят.
             </div>
           )}
           {data.cashPayIncomeError && <div className="rp-muted" style={{marginBottom:16, fontSize:11}}>Не удалось получить внесения по заказу: {data.cashPayIncomeError}</div>}
@@ -3327,13 +3327,13 @@ function IikoDashboardPage({ ctx }) {
                   <Stat label="Смен за месяц" value={fmt0((cashData.shifts||[]).length)} />
                 </div>
                 <div className="rp-cash-check" style={{marginTop:12}}>
-                  <Info size={13}/> Внесения по заказу (payIncome): <b>{fmtRub(cashData.totalPayIncome)}</b> за месяц. Пока НЕ добавлено к выручке выше — нужно подтвердить через «Проверить кассовые смены», можно ли отфильтровать именно «заказ» среди всех внесений (там же начальный остаток кассы и другие типы).
+                  <Info size={13}/> Внесение по заказу уже учтено в «Выручка за месяц (iiko)» выше (карточка с примечанием) — здесь показано общее движение наличных по всем причинам сразу (внесение остатка, заказы, инкассация и т.п.), без разбивки по комментарию.
                 </div>
                 <p className="rp-muted" style={{marginTop:10, fontSize:11}}>Отдельного поля «инкассация» в API нет — она входит в изъятия как один из их видов.</p>
                 {cashData.shifts?.length > 0 && (
                   <div className="rp-table-wrap" style={{marginTop:12}}>
                     <table className="rp-table">
-                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Внесение по заказу</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
+                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
                       <tbody>
                         {cashData.shifts.map((s,i) => (
                           <tr key={i}>
@@ -3342,7 +3342,6 @@ function IikoDashboardPage({ ctx }) {
                             <td>{s.status === 'OPEN' ? 'Открыта' : s.status === 'CLOSED' ? 'Закрыта' : s.status}</td>
                             <td className="rp-num">{fmtRub(s.payIn)}</td>
                             <td className="rp-num">{fmtRub(s.payOut)}</td>
-                            <td className="rp-num">{fmtRub(s.payIncome)}</td>
                             <td className="rp-num">{fmtRub(s.salesCash)}</td>
                             <td className="rp-num">{fmtRub(s.salesCard)}</td>
                           </tr>
