@@ -4025,10 +4025,16 @@ function GlobalStyle() {
       .rp-save-dot { width: 6px; height: 6px; border-radius: 50%; background: #4C8577; }
       .rp-save-dot.busy { background: ${COLORS.warn}; }
       .rp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-      .rp-topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 26px; border-bottom: 1px solid ${COLORS.line}; background: ${COLORS.panel}; position: sticky; top: 0; z-index: 5; }
+      .rp-topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 26px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid ${COLORS.line}; background: ${COLORS.panel}; position: sticky; top: 0; z-index: 5; }
       .rp-month-switch { display: flex; align-items: center; gap: 10px; }
       .rp-month-label { font-weight: 700; font-size: 15px; min-width: 130px; text-align: center; }
-      .rp-period-select { font-weight: 700; font-size: 13.5px; border: 1px solid ${COLORS.line}; border-radius: 8px; padding: 6px 8px; background: ${COLORS.panel}; cursor: pointer; }
+      .rp-period-select {
+        font-weight: 700; font-size: 13.5px; border: 1px solid ${COLORS.line}; border-radius: 8px;
+        padding: 6px 26px 6px 10px; background: ${COLORS.panel}; cursor: pointer;
+        -webkit-appearance: none; -moz-appearance: none; appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23555' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 9px center;
+      }
       .rp-content { padding: 24px 26px 60px; overflow-y: auto; }
       .rp-page-head { margin-bottom: 18px; }
       .rp-page-head h1 { font-size: 21px; margin: 0 0 3px; font-weight: 700; }
@@ -4046,13 +4052,15 @@ function GlobalStyle() {
         .rp-nav-close { display: inline-flex; margin-left: auto; color: #C7CDC4; }
         .rp-sidebar {
           position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: 250px;
+          padding-top: calc(20px + env(safe-area-inset-top, 0px));
+          padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
           transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 4px 0 24px rgba(0,0,0,0.25);
         }
         .rp-sidebar.open { transform: translateX(0); }
         .rp-nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,18,15,0.45); z-index: 55; }
-        .rp-topbar { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+        .rp-topbar { padding: 12px 14px; padding-top: calc(12px + env(safe-area-inset-top, 0px)); gap: 10px; flex-wrap: wrap; }
         .rp-month-switch { flex-wrap: wrap; gap: 6px; }
-        .rp-content { padding: 16px 14px 50px; }
+        .rp-content { padding: 16px 14px calc(50px + env(safe-area-inset-bottom, 0px)); }
         .rp-grid-4 { grid-template-columns: 1fr 1fr; }
         .rp-day-header { flex-wrap: wrap; gap: 8px; }
         .rp-shift-grid { grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); }
