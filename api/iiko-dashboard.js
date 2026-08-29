@@ -217,9 +217,9 @@ export default async function handler(req, res) {
 
     // Внесения по заказу — из отчёта ПО ПРОВОДКАМ (TRANSACTIONS), не из сводки по
     // кассовым сменам: сводка суммирует ВСЕ внесения без разбора, включая перенос
-    // остатка в кассу (комментарий «дб») и прочее. В проводках у каждой операции
-    // внесения есть свой комментарий — считаем выручкой ВСЁ, кроме «дб» (единственный
-    // известный тип, который не является выручкой — начальный остаток кассы).
+    // остатка в кассу (комментарий «дб») и выплату зарплаты («зп») наличными через
+    // кассу. В проводках у каждой операции внесения есть свой комментарий — считаем
+    // выручкой всё, кроме известных не-выручечных типов «дб» и «зп».
     let cashPayIncome = 0;
     const cashPayIncomeByDay = {};
     let cashPayIncomeError = null;
@@ -245,7 +245,7 @@ export default async function handler(req, res) {
       if (txResp.ok) {
         for (const r of (txJson?.data || [])) {
           const comment = String(r['Comment'] || '').trim().toLowerCase();
-          if (comment === 'дб') continue; // единственное исключение — начальный остаток кассы, не выручка
+          if (comment === 'дб' || comment === 'зп') continue; // не выручка: начальный остаток кассы / зарплата
           const amt = Number(r['Sum.Incoming']) || 0;
           const d = (r['DateTime.Typed'] || '').slice(0, 10);
           cashPayIncome += amt;
