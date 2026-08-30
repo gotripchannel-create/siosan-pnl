@@ -2843,11 +2843,18 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   const topThisMonth = [...curMap.values()].sort((a, b) => b.sum - a.sum);
 
-  const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null);
-  const growing = [...movers].filter((r) => r.deltaPct > 5).sort((a, b) => b.deltaPct - a.deltaPct).slice(0, 6);
-  const declining = [...movers].filter((r) => r.deltaPct < -5).sort((a, b) => a.deltaPct - b.deltaPct).slice(0, 6);
+  const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null).map((r) => ({ ...r, impact: r.curSum - r.prevSum }));
+  // Сортируем по РЕАЛЬНОМУ денежному эффекту, а не по проценту — рост на 300% у товара
+  // за 200 ₽ не так важен, как рост на 20% у товара за 40 000 ₽. Порог >5% отсекает шум
+  // от копеечных колебаний цены/веса.
+  const growing = [...movers].filter((r) => r.deltaPct > 5 && r.impact > 0).sort((a, b) => b.impact - a.impact).slice(0, 12);
+  const declining = [...movers].filter((r) => r.deltaPct < -5 && r.impact < 0).sort((a, b) => a.impact - b.impact).slice(0, 12);
   const newProducts = hasComparison ? comparisonRows.filter((r) => r.prevQty === 0 && r.curQty > 0).sort((a, b) => b.curSum - a.curSum) : [];
   const droppedProducts = hasComparison ? comparisonRows.filter((r) => r.prevQty > 0 && r.curQty === 0).sort((a, b) => b.prevSum - a.prevSum) : [];
+  const growingImpactTotal = growing.reduce((s, r) => s + r.impact, 0);
+  const decliningImpactTotal = declining.reduce((s, r) => s + r.impact, 0);
+  const newProductsTotal = newProducts.reduce((s, r) => s + r.curSum, 0);
+  const droppedProductsTotal = droppedProducts.reduce((s, r) => s + r.prevSum, 0);
 
   const curTotalSpend = topThisMonth.reduce((s, r) => s + r.sum, 0);
   const prevTotalSpend = [...prevMap.values()].reduce((s, r) => s + r.sum, 0);
@@ -3077,7 +3084,7 @@ function PurchaseAnalyticsPage({ ctx }) {
               <table className="rp-table">
                 <thead><tr><th>Товар</th><th>Поставщик(и)</th><th>Кол-во</th><th>Сумма</th></tr></thead>
                 <tbody>
-                  {topThisMonth.slice(0, 15).map((r) => (
+                  {topThisMonth.slice(0, 30).map((r) => (
                     <tr key={r.key} className="rp-clickable" onClick={() => setSelectedProduct(r.key)}>
                       <td className="rp-strong">{r.name}</td>
                       <td className="rp-muted" style={{ fontSize: 12 }}>{[...r.suppliers].join(', ')}</td>
@@ -3087,13 +3094,18 @@ function PurchaseAnalyticsPage({ ctx }) {
                   ))}
                 </tbody>
               </table>
-              {topThisMonth.length > 15 && <div className="rp-muted" style={{ fontSize: 12, marginTop: 8 }}>И ещё {topThisMonth.length - 15} позиций — см. «Все товары» ниже.</div>}
+              {topThisMonth.length > 30 && <div className="rp-muted" style={{ fontSize: 12, marginTop: 8 }}>И ещё {topThisMonth.length - 30} позиций — см. «Все товары» ниже.</div>}
             </div>
           )}
         </Section>
 
         {hasComparison && (growing.length > 0 || declining.length > 0) && (
           <Section title="Заметные изменения к прошлому месяцу" defaultOpen={true}>
+            {(growing.length > 0 || declining.length > 0) && (
+              <p className="rp-muted" style={{ fontSize: 12, marginBottom: 14 }}>
+                💡 Суммарно рост закупок «съел» примерно <b style={{color: COLORS.danger}}>{fmtRub(growingImpactTotal)}</b>, а снижение сэкономило около <b style={{color: COLORS.accent}}>{fmtRub(Math.abs(decliningImpactTotal))}</b> — чистый эффект: <b>{fmtRub(growingImpactTotal + decliningImpactTotal)}</b>. Отсортировано по реальному влиянию на бюджет, а не по проценту — так крупные позиции не теряются за громкими процентами у мелких.
+              </p>
+            )}
             <div className="rp-grid-2">
               <div>
                 <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: COLORS.danger }}>Закупаем больше</div>
@@ -3103,9 +3115,12 @@ function PurchaseAnalyticsPage({ ctx }) {
                       <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
                         <div className="rp-list-main">
                           <div className="rp-list-cat">{r.name}</div>
-                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)}</div>
+                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)} · {r.suppliers.join(', ')}</div>
                         </div>
-                        <DeltaBadge pct={r.deltaPct} />
+                        <div style={{ textAlign: 'right' }}>
+                          <DeltaBadge pct={r.deltaPct} />
+                          <div className="rp-muted" style={{ fontSize: 11 }}>+{fmtRub(r.impact)}</div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3119,9 +3134,12 @@ function PurchaseAnalyticsPage({ ctx }) {
                       <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
                         <div className="rp-list-main">
                           <div className="rp-list-cat">{r.name}</div>
-                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)}</div>
+                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)} · {r.suppliers.join(', ')}</div>
                         </div>
-                        <DeltaBadge pct={r.deltaPct} />
+                        <div style={{ textAlign: 'right' }}>
+                          <DeltaBadge pct={r.deltaPct} />
+                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtRub(r.impact)}</div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3131,38 +3149,43 @@ function PurchaseAnalyticsPage({ ctx }) {
           </Section>
         )}
 
+
         {hasComparison && (newProducts.length > 0 || droppedProducts.length > 0) && (
           <Section title="Новое и переставшее заказываться" count={newProducts.length + droppedProducts.length} defaultOpen={false}>
+            <p className="rp-muted" style={{ fontSize: 12, marginBottom: 14 }}>
+              💡 Новые позиции добавили к закупкам <b>{fmtRub(newProductsTotal)}</b>; то, что перестали заказывать, раньше стоило <b>{fmtRub(droppedProductsTotal)}</b> в месяц — возможно, стоит уточнить, забыли позицию или сознательно от неё отказались.
+            </p>
             <div className="rp-grid-2">
               <div>
                 <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Новые позиции ({newProducts.length})</div>
                 <div className="rp-list">
-                  {newProducts.slice(0, 10).map((r) => (
+                  {newProducts.slice(0, 25).map((r) => (
                     <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
                       <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
-                      <div className="rp-list-amount">{fmtQty(r.curQty, r.unit)}</div>
+                      <div style={{ textAlign: 'right' }}><div className="rp-list-amount">{fmtQty(r.curQty, r.unit)}</div><div className="rp-muted" style={{ fontSize: 11 }}>{fmtRub(r.curSum)}</div></div>
                     </div>
                   ))}
-                  {newProducts.length > 10 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {newProducts.length - 10}…</div>}
+                  {newProducts.length > 25 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {newProducts.length - 25}…</div>}
                   {newProducts.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Нет.</div>}
                 </div>
               </div>
               <div>
                 <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Перестали заказывать ({droppedProducts.length})</div>
                 <div className="rp-list">
-                  {droppedProducts.slice(0, 10).map((r) => (
+                  {droppedProducts.slice(0, 25).map((r) => (
                     <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
                       <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
-                      <div className="rp-list-amount">было {fmtQty(r.prevQty, r.unit)}</div>
+                      <div style={{ textAlign: 'right' }}><div className="rp-list-amount">было {fmtQty(r.prevQty, r.unit)}</div><div className="rp-muted" style={{ fontSize: 11 }}>{fmtRub(r.prevSum)}</div></div>
                     </div>
                   ))}
-                  {droppedProducts.length > 10 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {droppedProducts.length - 10}…</div>}
+                  {droppedProducts.length > 25 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {droppedProducts.length - 25}…</div>}
                   {droppedProducts.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Нет.</div>}
                 </div>
               </div>
             </div>
           </Section>
         )}
+
 
         {supplierTrendData.length > 0 && topSuppliersThisMonth.length > 0 && (
           <Section title="Траты по поставщикам — последние 6 месяцев" defaultOpen={false}>
