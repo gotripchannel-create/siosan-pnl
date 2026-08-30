@@ -2184,6 +2184,7 @@ function SuppliersPage({ ctx }) {
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncError, setSyncError] = useState('');
   const [syncSummary, setSyncSummary] = useState(null);
+  const [itemsFor, setItemsFor] = useState(null); // {supplierName, date, amount, items}
 
   const ledger = useMemo(() => supplierLedger(months, suppliers, year, monthIdx), [months, suppliers, year, monthIdx]);
   const activeSuppliers = suppliers.filter((s) => !s.archived);
@@ -2251,7 +2252,7 @@ function SuppliersPage({ ctx }) {
         const orderKey = `${supplierId}::${inv.date}::${inv.amount}`;
         if (existingOrderKeys.has(orderKey)) { skipped += 1; continue; }
         existingOrderKeys.add(orderKey);
-        newOrdersToAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko' });
+        newOrdersToAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko', items: inv.items || [] });
       }
 
       if (newSuppliersToAdd.length > 0) setSuppliers((prev) => [...prev, ...newSuppliersToAdd]);
@@ -2277,7 +2278,7 @@ function SuppliersPage({ ctx }) {
     for (const o of (month.supplierOrders || [])) {
       if (!o.date) continue;
       const sup = suppliers.find((s) => s.id === o.supplierId);
-      (map[o.date] ||= []).push({ supplierName: sup?.name || '—', amount: Number(o.amount) || 0 });
+      (map[o.date] ||= []).push({ id: o.id, supplierName: sup?.name || '—', amount: Number(o.amount) || 0, items: o.items || [] });
     }
     return map;
   }, [month.supplierOrders, suppliers]);
@@ -2369,7 +2370,12 @@ function SuppliersPage({ ctx }) {
                 {items.length > 0 && (
                   <div className="rp-cal-items">
                     {items.map((it, j) => (
-                      <div key={j} className="rp-cal-chip" title={`${it.supplierName}: ${fmtRub(it.amount)}`}>{it.supplierName}</div>
+                      <div
+                        key={j}
+                        className={`rp-cal-chip ${it.items?.length > 0 ? 'rp-cal-chip-clickable' : ''}`}
+                        title={`${it.supplierName}: ${fmtRub(it.amount)}${it.items?.length ? ' — нажмите, чтобы увидеть состав' : ''}`}
+                        onClick={it.items?.length > 0 ? () => setItemsFor({ supplierName: it.supplierName, date: dateKey, amount: it.amount, items: it.items }) : undefined}
+                      >{it.supplierName}</div>
                     ))}
                     <div className="rp-cal-daytotal">{fmtRub(dayTotal)}</div>
                   </div>
@@ -2406,6 +2412,20 @@ function SuppliersPage({ ctx }) {
 
       {historyFor && (
         <SupplierHistoryModal supplier={suppliers.find((s) => s.id === historyFor)} ledger={ledger[historyFor]} onClose={() => setHistoryFor(null)} />
+      )}
+
+      {itemsFor && (
+        <Modal title={`${itemsFor.supplierName} — ${itemsFor.date}`} onClose={() => setItemsFor(null)}>
+          <div className="rp-muted" style={{marginBottom:10}}>Сумма накладной: <b>{fmtRub(itemsFor.amount)}</b></div>
+          <div className="rp-table-wrap"><table className="rp-table">
+            <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+            <tbody>
+              {itemsFor.items.map((it, j) => (
+                <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+              ))}
+            </tbody>
+          </table></div>
+        </Modal>
       )}
 
       {renaming && (
@@ -2479,6 +2499,8 @@ function SupplierOpModal({ supplier, kind, onClose, onSave, history, thresholdPc
 }
 
 function SupplierHistoryModal({ supplier, ledger, onClose }) {
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggle = (id) => setExpanded((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const events = [
     ...(ledger?.orders || []).map((o) => ({ ...o, kind: 'Поставка' })),
     ...(ledger?.payments || []).map((p) => ({ ...p, kind: 'Оплата' })),
@@ -2488,9 +2510,34 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
       <div className="rp-table-wrap"><table className="rp-table">
         <thead><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Комментарий</th></tr></thead>
         <tbody>
-          {events.map((e) => (
-            <tr key={e.id}><td>{e.date}</td><td>{e.kind}</td><td className="rp-num">{fmtRub(e.amount)}</td><td>{e.comment || e.invoice || '—'}</td></tr>
-          ))}
+          {events.map((e) => {
+            const hasItems = e.kind === 'Поставка' && e.items?.length > 0;
+            const open = expanded.has(e.id);
+            return (
+              <React.Fragment key={e.id}>
+                <tr className={hasItems ? 'rp-clickable' : ''} onClick={hasItems ? () => toggle(e.id) : undefined}>
+                  <td>{e.date}</td>
+                  <td>{e.kind}{hasItems && (open ? <ChevronUp size={12} style={{verticalAlign:-1, marginLeft:4}}/> : <ChevronDown size={12} style={{verticalAlign:-1, marginLeft:4}}/>)}</td>
+                  <td className="rp-num">{fmtRub(e.amount)}</td>
+                  <td>{e.comment || e.invoice || '—'}</td>
+                </tr>
+                {hasItems && open && (
+                  <tr>
+                    <td colSpan={4} style={{padding:0, background:COLORS.bg}}>
+                      <table className="rp-table" style={{margin:'4px 0 8px 24px', width:'calc(100% - 24px)'}}>
+                        <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                        <tbody>
+                          {e.items.map((it, j) => (
+                            <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
           {events.length === 0 && <tr><td colSpan={4}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Пока нет операций" /></td></tr>}
         </tbody>
       </table></div>
@@ -4667,6 +4714,8 @@ function GlobalStyle() {
       .rp-cal-daynum { font-size: 11px; font-weight: 600; color: ${COLORS.inkSoft}; }
       .rp-cal-items { display: flex; flex-direction: column; gap: 2px; }
       .rp-cal-chip { font-size: 10.5px; background: ${COLORS.accent}22; color: ${COLORS.accent}; border-radius: 4px; padding: 1px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .rp-cal-chip-clickable { cursor: pointer; font-weight: 700; }
+      .rp-cal-chip-clickable:hover { background: ${COLORS.accent}44; }
       .rp-cal-daytotal { font-size: 11px; font-weight: 700; margin-top: 2px; }
       @media (max-width: 720px) {
         .rp-cal-grid { grid-template-columns: repeat(7, minmax(0,1fr)); gap: 3px; }

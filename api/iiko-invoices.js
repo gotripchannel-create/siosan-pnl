@@ -3,7 +3,9 @@
 // TransactionType=INVOICE). Группируем по дате и контрагенту (поставщику) — сумма
 // приходования на склад ("Sum.Incoming") уже сама по себе равна сумме накладной, так
 // как обе стороны проводки (задолженность/склад) при группировке без разбивки по счёту
-// автоматически сворачиваются в одно число, без задвоения.
+// автоматически сворачиваются в одно число, без задвоения. Дополнительно вторым запросом
+// получаем состав каждой накладной (товар + количество в собственной единице измерения
+// товара — API не отдаёт саму единицу измерения, только число).
 
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
@@ -95,6 +97,47 @@ export default async function handler(req, res) {
       }))
       .filter(inv => inv.amount > 0 && inv.date)
       .sort((a, b) => a.date.localeCompare(b.date) || a.supplier.localeCompare(b.supplier));
+
+    // Состав накладных (товар + количество) — тот же отчёт, но с разбивкой по товару
+    // вместо дня целиком. Поле количества у iiko называется просто "Amount" (без
+    // суффикса .Incoming, в отличие от Sum.Incoming) и приходит в собственной единице
+    // измерения товара (кг, шт, л и т.п.) — саму единицу измерения API не отдаёт.
+    let itemsByKey = {};
+    try {
+      const itemsResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'TRANSACTIONS',
+          buildSummary: false,
+          groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
+          groupByColFields: [],
+          aggregateFields: ['Sum.Incoming', 'Amount'],
+          filters: {
+            'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
+            'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
+          }
+        })
+      });
+      const itemsJson = JSON.parse(await itemsResp.text());
+      if (itemsResp.ok) {
+        for (const r of (itemsJson?.data || [])) {
+          const date = (r['DateTime.Typed'] || '').slice(0, 10);
+          const supplier = (r['Counteragent.Name'] || '').replace(/^"|"$/g, '').trim() || 'Без названия';
+          const key = `${date}::${supplier}`;
+          (itemsByKey[key] ||= []).push({
+            name: r['Product.Name'] || 'Без названия',
+            qty: Number(r['Amount']) || 0,
+            sum: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
+          });
+        }
+      }
+      // Ошибку состава не считаем фатальной для всего эндпоинта — сумма важнее.
+    } catch (_) {}
+
+    for (const inv of invoices) {
+      inv.items = itemsByKey[`${inv.date}::${inv.supplier}`] || [];
+    }
 
     res.status(200).json({ from, to, invoices });
   } catch (err) {
