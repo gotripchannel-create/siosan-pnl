@@ -2421,7 +2421,7 @@ function SuppliersPage({ ctx }) {
             <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
             <tbody>
               {itemsFor.items.map((it, j) => (
-                <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ""}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
               ))}
             </tbody>
           </table></div>
@@ -2528,7 +2528,7 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
                         <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
                         <tbody>
                           {e.items.map((it, j) => (
-                            <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                            <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ""}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
                           ))}
                         </tbody>
                       </table>

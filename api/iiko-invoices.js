@@ -98,10 +98,11 @@ export default async function handler(req, res) {
       .filter(inv => inv.amount > 0 && inv.date)
       .sort((a, b) => a.date.localeCompare(b.date) || a.supplier.localeCompare(b.supplier));
 
-    // Состав накладных (товар + количество) — тот же отчёт, но с разбивкой по товару
-    // вместо дня целиком. Поле количества у iiko называется просто "Amount" (без
-    // суффикса .Incoming, в отличие от Sum.Incoming) и приходит в собственной единице
-    // измерения товара (кг, шт, л и т.п.) — саму единицу измерения API не отдаёт.
+    // Состав накладных (товар + количество + единица измерения) — тот же отчёт, но с
+    // разбивкой по товару вместо дня целиком. Поле количества у iiko называется просто
+    // "Amount" (без суффикса .Incoming, в отличие от Sum.Incoming), а единица измерения —
+    // "Product.MeasureUnit" (даёт готовое "кг"/"шт"/"л" из справочника номенклатуры,
+    // гадать по названию товара не нужно).
     let itemsByKey = {};
     try {
       const itemsResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
@@ -110,7 +111,7 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           reportType: 'TRANSACTIONS',
           buildSummary: false,
-          groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
+          groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name', 'Product.MeasureUnit'],
           groupByColFields: [],
           aggregateFields: ['Sum.Incoming', 'Amount'],
           filters: {
@@ -128,6 +129,7 @@ export default async function handler(req, res) {
           (itemsByKey[key] ||= []).push({
             name: r['Product.Name'] || 'Без названия',
             qty: Number(r['Amount']) || 0,
+            unit: r['Product.MeasureUnit'] || '',
             sum: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
           });
         }
