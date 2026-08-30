@@ -74,7 +74,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         reportType: 'SALES',
         buildSummary: false,
-        groupByRowFields: ['OpenDate.Typed', 'PayTypes'],
+        groupByRowFields: ['OpenDate.Typed', 'PayTypes', 'OrderNum'],
         groupByColFields: [],
         aggregateFields: ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt'],
         filters: {
@@ -93,33 +93,36 @@ export default async function handler(req, res) {
     }
 
     const rows = olapJson?.data || [];
-    const byDay = new Map(); // date -> { total, byPayType: {} }
+    const byDay = new Map(); // date -> { total, byPayType: {}, orderKeys: Set }
     const totalsByPayType = {};
+    const allOrderKeys = new Set(); // "date::orderNum" — считаем УНИКАЛЬНЫЕ заказы, а не сумму количества блюд
     let grandTotal = 0;
     let grandTotalBeforeDiscount = 0;
-    let totalChecks = 0;
 
     for (const row of rows) {
       const date = row['OpenDate.Typed']; // доверяем дате из iiko напрямую — так же, как в кассовых сменах
       const payType = row['PayTypes'] || 'Не указано';
       const amount = Number(row['DishDiscountSumInt']) || 0;
       const amountBeforeDiscount = Number(row['DishSumInt']) || amount;
-      const checks = Number(row['DishAmountInt']) || 0;
+      const orderNum = row['OrderNum'] ?? null;
       if (/без оплаты/i.test(payType)) continue; // не считаем неоплаченные/открытые заказы выручкой
 
-      if (!byDay.has(date)) byDay.set(date, { date, total: 0, discount: 0, byPayType: {} });
+      if (!byDay.has(date)) byDay.set(date, { date, total: 0, discount: 0, byPayType: {}, orderKeys: new Set() });
       const dayEntry = byDay.get(date);
       dayEntry.total += amount;
       dayEntry.discount += Math.max(0, amountBeforeDiscount - amount);
       dayEntry.byPayType[payType] = (dayEntry.byPayType[payType] || 0) + amount;
+      if (orderNum != null) { const key = `${date}::${orderNum}`; dayEntry.orderKeys.add(key); allOrderKeys.add(key); }
 
       totalsByPayType[payType] = (totalsByPayType[payType] || 0) + amount;
       grandTotal += amount;
       grandTotalBeforeDiscount += amountBeforeDiscount;
-      totalChecks += checks;
     }
 
-    const days = Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date));
+    const days = Array.from(byDay.values())
+      .map(d => ({ date: d.date, total: d.total, discount: d.discount, byPayType: d.byPayType, checks: d.orderKeys.size }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    let totalChecks = allOrderKeys.size; // уникальные заказы за весь период — не сумма количества блюд
 
     // Отдельный запрос по позиции "Блюдо от Шефа" — это не блюдо, а способ провести
     // выручку второго филиала через эту кассу. Группируем ПО КАЖДОМУ ЗАКАЗУ (OrderNum),
@@ -155,7 +158,7 @@ export default async function handler(req, res) {
           const payType = r['PayTypes'] || 'Не указано';
 
           secondBranchTotal += amt;
-          secondBranchChecks += Number(r['DishAmountInt']) || 0;
+          secondBranchChecks += 1; // одна строка = один заказ (сгруппировано по OrderNum), не сумма количества блюд
           secondBranchByDay[iikoDate] = (secondBranchByDay[iikoDate] || 0) + amt;
           // Вычитаем из общей выручки И из конкретного способа оплаты того дня,
           // под которым эта сумма реально лежит в основном запросе.

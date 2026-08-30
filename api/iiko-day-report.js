@@ -120,9 +120,9 @@ export default async function handler(req, res) {
 
     // 1. Выручка по способам оплаты (+ сумма до скидки, для расчёта скидки)
     try {
-      const rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt', 'DishAmountInt']);
+      const rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt']);
       const byPayType = {};
-      let total = 0, totalBeforeDiscount = 0, checks = 0;
+      let total = 0, totalBeforeDiscount = 0;
       for (const r of rows) {
         const pt = r['PayTypes'] || 'Не указано';
         const amt = Number(r['DishDiscountSumInt']) || 0;
@@ -130,9 +130,8 @@ export default async function handler(req, res) {
         byPayType[pt] = (byPayType[pt] || 0) + amt;
         total += amt;
         totalBeforeDiscount += Number(r['DishSumInt']) || amt;
-        checks += Number(r['DishAmountInt']) || 0;
       }
-      result.revenue = { byPayType, total: Math.round(total * 100) / 100, checks };
+      result.revenue = { byPayType, total: Math.round(total * 100) / 100 };
       result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
     } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
 
@@ -171,6 +170,10 @@ export default async function handler(req, res) {
         .map(o => ({ ...o, total: Math.round(o.total * 100) / 100 }))
         .filter(o => o.total > 0)
         .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+      // Настоящее число чеков — количество уникальных заказов, а не сумма количества
+      // блюд (DishAmountInt раньше ошибочно использовался как "чеков", хотя это
+      // количество проданных порций еды — обычно в разы больше, чем заказов).
+      if (result.revenue) result.revenue.checks = result.checks.length;
     } catch (e) { result.errors.checks = e.message; }
 
     // 2b. Отдельно — сумма второго филиала. Группируем ПО КАЖДОМУ ЗАКАЗУ (OrderNum),
@@ -200,7 +203,7 @@ export default async function handler(req, res) {
 
       const branchOrders = allOrders.filter(r => r.amount >= SECOND_BRANCH_MIN_AMOUNT);
       const secondBranchTotal = branchOrders.reduce((s, r) => s + r.amount, 0);
-      const secondBranchCount = branchOrders.reduce((s, r) => s + r.qty, 0);
+      const secondBranchCount = branchOrders.length; // количество заказов, а не сумма количества блюд
 
       result.secondBranchRawOrders = allOrders.map(r => ({ ...r, countedAsBranch: r.amount >= SECOND_BRANCH_MIN_AMOUNT }));
       if (secondBranchTotal > 0) {
