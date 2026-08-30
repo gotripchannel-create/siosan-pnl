@@ -124,13 +124,29 @@ export default async function handler(req, res) {
     };
     const attemptC = await olapAttempt(serverUrl, token, bodyC);
 
+    // Попытка №4: состав накладной ЧЕРЕЗ УЖЕ РАБОЧИЙ TRANSACTIONS (не STOCK) — добавляем
+    // Product.Name к уже подтверждённым рабочим полям (DateTime.Typed, Counteragent.Name).
+    const bodyD = {
+      reportType: 'TRANSACTIONS',
+      buildSummary: false,
+      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
+      groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Amount.Incoming'],
+      filters: {
+        'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
+        'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
+      }
+    };
+    const attemptD = await olapAttempt(serverUrl, token, bodyD);
+
     res.status(200).json({
       connected: true,
       from: dateFrom, to: dateTo,
       attempt_TRANSACTIONS: { ok: attemptA.ok, status: attemptA.status, requestBody: bodyA, raw: attemptA.json ?? attemptA.text?.slice(0, 3000) },
       attempt_STOCK_min: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
       attempt_STOCK_items: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
-      note: 'Три попытки получить накладные разными способами. Пришлите весь этот JSON целиком — по нему увидим, что реально доступно на вашей версии сервера.'
+      attempt_TRANSACTIONS_items: { ok: attemptD.ok, status: attemptD.status, requestBody: bodyD, raw: attemptD.json ?? attemptD.text?.slice(0, 3000) },
+      note: 'Четыре попытки получить накладные и их состав. Пришлите весь этот JSON целиком — по нему увидим, что реально доступно на вашей версии сервера.'
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

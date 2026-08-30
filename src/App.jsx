@@ -2300,9 +2300,9 @@ function SuppliersPage({ ctx }) {
 
       <div className="rp-grid-4">
         <Stat label="Заявлено всего" value={fmtRub(totalOrdered)} />
-        <Stat label="Оплачено всего" value={fmtRub(totalPaid)} />
-        <Stat label="Общая задолженность" value={fmtRub(totalOrdered - totalPaid)} accent={COLORS.accent2} />
-        <Stat label="Оплачено в этом месяце" value={fmtRub(pnlSupplierPayThisMonth(month, suppliers))} />
+        <Stat label="Заявлено в этом месяце" value={fmtRub((month.supplierOrders || []).reduce((s, o) => s + (Number(o.amount) || 0), 0))} />
+        <Stat label="Поставок в этом месяце" value={fmt0((month.supplierOrders || []).length)} />
+        <Stat label="Активных поставщиков" value={fmt0(activeSuppliers.length)} />
       </div>
 
       <div className="rp-toolbar">
@@ -2325,17 +2325,14 @@ function SuppliersPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Поставщик</th><th>Поставлено</th><th>Оплачено</th><th>Долг</th><th /></tr></thead>
+          <thead><tr><th>Поставщик</th><th>Заявлено</th><th /></tr></thead>
           <tbody>
             {visibleSuppliers.map((s) => {
               const l = ledger[s.id] || { ordered: 0, paid: 0 };
-              const debt = l.ordered - l.paid;
               return (
                 <tr key={s.id} style={s.archived ? { opacity: 0.55 } : {}}>
                   <td className="rp-strong rp-link" onClick={() => setHistoryFor(s.id)}>{s.name}{s.archived && <span className="rp-badge off" style={{ marginLeft: 6 }}>архив</span>}</td>
                   <td className="rp-num">{fmtRub(l.ordered)}</td>
-                  <td className="rp-num">{fmtRub(l.paid)}</td>
-                  <td className="rp-num" style={{ color: debt > 0 ? COLORS.accent2 : COLORS.accent }}>{fmtRub(debt)}</td>
                   <td>
                     {!s.archived && (
                       <>
@@ -2350,7 +2347,7 @@ function SuppliersPage({ ctx }) {
                 </tr>
               );
             })}
-            {visibleSuppliers.length === 0 && <tr><td colSpan={5}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Поставщиков нет" /></td></tr>}
+            {visibleSuppliers.length === 0 && <tr><td colSpan={3}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Поставщиков нет" /></td></tr>}
           </tbody>
         </table></div>
       </Card>
