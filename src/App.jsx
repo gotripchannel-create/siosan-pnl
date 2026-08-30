@@ -2643,6 +2643,44 @@ function PurchaseAnalyticsPage({ ctx }) {
   const prevMap = productsByMonth[prevMonthKey] || new Map();
   const hasComparison = prevMap.size > 0; // есть ли вообще с чем сравнивать этот месяц
 
+  // Все поставки по всем месяцам (не только с составом — сюда попадают и введённые
+  // вручную, раз речь про суммы, а не про товары), отсортированные по дате, с дельтой
+  // к ПРЕДЫДУЩЕЙ поставке ТОГО ЖЕ поставщика. Это и есть "сколько закупали в прошлый
+  // раз" — работает уже с двумя поставками, месяцы можно вообще не набирать.
+  const deliveryHistory = useMemo(() => {
+    const all = [];
+    for (const m of Object.values(months)) {
+      for (const o of (m.supplierOrders || [])) {
+        if (!o.date) continue;
+        if (supplierFilter !== 'all' && o.supplierId !== supplierFilter) continue;
+        all.push({ id: o.id, date: o.date, supplierId: o.supplierId, amount: Number(o.amount) || 0, hasItems: (o.items || []).length > 0 });
+      }
+    }
+    all.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    const lastBySupplier = new Map();
+    const rows = all.map((d) => {
+      const prevAmount = lastBySupplier.get(d.supplierId);
+      lastBySupplier.set(d.supplierId, d.amount);
+      const deltaPct = prevAmount != null && prevAmount > 0 ? ((d.amount - prevAmount) / prevAmount) * 100 : null;
+      return { ...d, supplierName: supplierName(d.supplierId), prevAmount: prevAmount ?? null, deltaPct };
+    });
+    return rows.reverse(); // новые сверху
+  }, [months, suppliers, supplierFilter]);
+
+  // Средняя поставка по каждому поставщику — чтобы подсветить аномально крупную/мелкую
+  // поставку, даже если предыдущая всего одна и сравнение "к предыдущей" неустойчиво.
+  const avgBySupplier = useMemo(() => {
+    const sums = new Map(); // id -> {total, count}
+    for (const d of deliveryHistory) {
+      const cur = sums.get(d.supplierId) || { total: 0, count: 0 };
+      cur.total += d.amount; cur.count += 1;
+      sums.set(d.supplierId, cur);
+    }
+    const avg = new Map();
+    for (const [id, { total, count }] of sums) avg.set(id, count > 0 ? total / count : 0);
+    return avg;
+  }, [deliveryHistory]);
+
   const comparisonRows = useMemo(() => {
     const keys = new Set([...curMap.keys(), ...prevMap.keys()]);
     const rows = [];
@@ -2775,6 +2813,50 @@ function PurchaseAnalyticsPage({ ctx }) {
       {/* Всё содержимое — в одной карточке, разделено сворачиваемыми секциями,
           чтобы не было "стены" отдельных блоков подряд. */}
       <Card>
+        <Section title="История поставок — сравнение с предыдущей от того же поставщика" count={deliveryHistory.length} defaultOpen={true}>
+          {deliveryHistory.length === 0 ? (
+            <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет ни одной поставки.</div>
+          ) : (
+            <div className="rp-table-wrap">
+              <table className="rp-table">
+                <thead><tr><th>Дата</th><th>Поставщик</th><th>Сумма</th><th>Пред. поставка</th><th>Δ к предыдущей</th><th>Δ к средней</th></tr></thead>
+                <tbody>
+                  {deliveryHistory.slice(0, 40).map((d) => {
+                    const avg = avgBySupplier.get(d.supplierId) || 0;
+                    const avgDeltaPct = avg > 0 ? ((d.amount - avg) / avg) * 100 : null;
+                    const isAnomaly = avgDeltaPct != null && Math.abs(avgDeltaPct) >= 60;
+                    return (
+                      <tr key={d.id} style={isAnomaly ? { background: `${COLORS.accent2}11` } : {}}>
+                        <td>{d.date.split('-').reverse().join('.')}</td>
+                        <td className="rp-strong">{d.supplierName}{!d.hasItems && <span className="rp-muted" title="Без состава — добавлено вручную или ещё не дозаполнено" style={{ marginLeft: 4, fontSize: 10 }}>✎</span>}</td>
+                        <td className="rp-num">{fmtRub(d.amount)}</td>
+                        <td className="rp-num">{d.prevAmount != null ? fmtRub(d.prevAmount) : '—'}</td>
+                        <td className="rp-num">
+                          {d.deltaPct == null ? <span className="rp-muted">первая</span> : (
+                            <span className={`rp-delta ${d.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
+                              {d.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {d.deltaPct > 0 ? '+' : ''}{d.deltaPct.toFixed(0)}%
+                            </span>
+                          )}
+                        </td>
+                        <td className="rp-num">
+                          {avgDeltaPct == null ? '—' : (
+                            <span className={isAnomaly ? 'rp-delta rp-delta-bad' : 'rp-muted'} style={isAnomaly ? {} : { fontSize: 12 }}>
+                              {isAnomaly && <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 2 }} />}
+                              {avgDeltaPct > 0 ? '+' : ''}{avgDeltaPct.toFixed(0)}%
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {deliveryHistory.length > 40 && <div className="rp-muted" style={{ fontSize: 12, marginTop: 8 }}>Показаны последние 40 из {deliveryHistory.length}.</div>}
+              <p className="rp-muted" style={{ fontSize: 11, marginTop: 10 }}>«Δ к средней» — насколько поставка отличается от типичного размера поставки этого поставщика; подсвечены отклонения от 60% — возможно, стоит уточнить, почему заказали заметно больше или меньше обычного.</p>
+            </div>
+          )}
+        </Section>
+
         <Section title="Топ закупок в этом месяце" count={topThisMonth.length} defaultOpen={true}>
           {topThisMonth.length === 0 ? (
             <div className="rp-muted" style={{ fontSize: 13 }}>Нет данных за этот месяц.</div>
