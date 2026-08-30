@@ -77,12 +77,12 @@ export default async function handler(req, res) {
   try {
     token = await iikoAuth(serverUrl, login, password);
 
-    // Попытка №1: TRANSACTIONS с полями поставщика/документа рядом с уже известным
-    // TransactionType=INVOICE.
+    // Попытка №1: TRANSACTIONS с полями поставщика (без DocumentNumber — сервер сказал,
+    // что такого поля нет).
     const bodyA = {
       reportType: 'TRANSACTIONS',
       buildSummary: false,
-      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'DocumentNumber', 'Account.Name'],
+      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Account.Name'],
       groupByColFields: [],
       aggregateFields: ['Sum.Incoming', 'Sum.Outgoing'],
       filters: {
@@ -92,27 +92,42 @@ export default async function handler(req, res) {
     };
     const attemptA = await olapAttempt(serverUrl, token, bodyA);
 
-    // Попытка №2: reportType STORE_DOCUMENT / отчёт по складским документам — другая
-    // гипотеза, на случай если TRANSACTIONS не даёт нужной детализации.
+    // Попытка №2: reportType STOCK (правильное имя — сервер сам подсказал список типов:
+    // STOCK, SALES, TRANSACTIONS, DELIVERIES) — пробуем минимальный набор полей.
     const bodyB = {
-      reportType: 'STORE',
+      reportType: 'STOCK',
       buildSummary: false,
-      groupByRowFields: ['Department', 'Counteragent.Name', 'DocumentNumber', 'DocumentType', 'CloseDate.Typed'],
+      groupByRowFields: ['DocumentType', 'Counteragent.Name', 'Store.Name'],
       groupByColFields: [],
       aggregateFields: ['Amount', 'Sum'],
       filters: {
-        'CloseDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
         'DocumentType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
       }
     };
     const attemptB = await olapAttempt(serverUrl, token, bodyB);
 
+    // Попытка №3: STOCK с составом накладной — по товарам, на случай если попытка №2
+    // сработает и захочется сразу увидеть позиции.
+    const bodyC = {
+      reportType: 'STOCK',
+      buildSummary: false,
+      groupByRowFields: ['DocumentType', 'Counteragent.Name', 'Product.Name', 'Date.Typed'],
+      groupByColFields: [],
+      aggregateFields: ['Amount', 'Sum'],
+      filters: {
+        'Date.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
+        'DocumentType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
+      }
+    };
+    const attemptC = await olapAttempt(serverUrl, token, bodyC);
+
     res.status(200).json({
       connected: true,
       from: dateFrom, to: dateTo,
       attempt_TRANSACTIONS: { ok: attemptA.ok, status: attemptA.status, requestBody: bodyA, raw: attemptA.json ?? attemptA.text?.slice(0, 3000) },
-      attempt_STORE: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
-      note: 'Две попытки получить накладные разными способами. Пришлите весь этот JSON целиком — по нему увидим, что реально доступно на вашей версии сервера.'
+      attempt_STOCK_min: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
+      attempt_STOCK_items: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
+      note: 'Три попытки получить накладные разными способами. Пришлите весь этот JSON целиком — по нему увидим, что реально доступно на вашей версии сервера.'
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
