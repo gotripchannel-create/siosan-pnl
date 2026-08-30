@@ -2374,7 +2374,16 @@ function SuppliersPage({ ctx }) {
   };
 
   const [fullSyncOpen, setFullSyncOpen] = useState(false);
-  const [fullSyncFrom, setFullSyncFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().slice(0, 10); });
+  const earliestKnownOrderDate = useMemo(() => {
+    let earliest = null;
+    for (const m of Object.values(months)) {
+      for (const o of (m.supplierOrders || [])) {
+        if (o.date && (!earliest || o.date < earliest)) earliest = o.date;
+      }
+    }
+    return earliest;
+  }, [months]);
+  const [fullSyncFrom, setFullSyncFrom] = useState(() => earliestKnownOrderDate || (() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().slice(0, 10); })());
   const [fullSyncTo, setFullSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
 
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
@@ -2651,7 +2660,11 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
               <React.Fragment key={e.id}>
                 <tr className={hasItems ? 'rp-clickable' : ''} onClick={hasItems ? () => toggle(e.id) : undefined}>
                   <td>{e.date}</td>
-                  <td>{e.kind}{hasItems && (open ? <ChevronUp size={12} style={{verticalAlign:-1, marginLeft:4}}/> : <ChevronDown size={12} style={{verticalAlign:-1, marginLeft:4}}/>)}</td>
+                  <td>
+                    {e.kind}
+                    {hasItems && (open ? <ChevronUp size={12} style={{verticalAlign:-1, marginLeft:4}}/> : <ChevronDown size={12} style={{verticalAlign:-1, marginLeft:4}}/>)}
+                    {e.kind === 'Поставка' && !hasItems && <span className="rp-muted" style={{fontSize:11, marginLeft:6}}>(нет состава)</span>}
+                  </td>
                   <td className="rp-num">{fmtRub(e.amount)}</td>
                   <td>{e.comment || e.invoice || '—'}</td>
                 </tr>
