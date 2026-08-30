@@ -2223,6 +2223,59 @@ function SuppliersPage({ ctx }) {
   };
   const removeForever = (id, supplierName) => { setSuppliers((p) => p.filter((s) => s.id !== id)); logAudit({ what: 'Удалён поставщик', supplier: supplierName }); setDeleting(null); };
 
+  // Поиск дублей поставщиков — одна и та же компания могла попасть в справочник дважды
+  // из-за разного написания имени в разных синхронизациях (например, лишняя кавычка
+  // в старых данных до исправления парсинга). Сравниваем по имени без кавычек/лишних
+  // пробелов/регистра — если совпало, считаем дублем.
+  const normalizeForDupe = (s) => String(s || '').replace(/["«»]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const duplicateGroups = useMemo(() => {
+    const byNorm = new Map();
+    for (const s of suppliers) {
+      const key = normalizeForDupe(s.name);
+      if (!byNorm.has(key)) byNorm.set(key, []);
+      byNorm.get(key).push(s);
+    }
+    return [...byNorm.values()].filter((g) => g.length > 1);
+  }, [suppliers]);
+
+  const mergeDuplicates = () => {
+    if (duplicateGroups.length === 0) return;
+    // В каждой группе оставляем поставщика с самым коротким/чистым именем (без кавычек),
+    // остальных переносим в него и удаляем.
+    const idRemap = new Map(); // старый id -> оставшийся id
+    let keptSuppliers = [...suppliers];
+    for (const group of duplicateGroups) {
+      const sorted = [...group].sort((a, b) => a.name.length - b.name.length);
+      const keeper = sorted[0];
+      for (const dup of sorted.slice(1)) idRemap.set(dup.id, keeper.id);
+    }
+    keptSuppliers = keptSuppliers.filter((s) => !idRemap.has(s.id));
+    setSuppliers(keptSuppliers);
+    setMonths((prev) => {
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        const remappedOrders = (m.supplierOrders || []).map((o) => idRemap.has(o.supplierId) ? { ...o, supplierId: idRemap.get(o.supplierId) } : o);
+        // После переноса ID у одного и того же поставщика могли оказаться две записи
+        // об одной и той же накладной (одна из-под старого имени, другая — из-под нового).
+        // Убираем дубли по (поставщик+дата+сумма), оставляя ту, где уже есть состав.
+        const seen = new Map();
+        for (const o of remappedOrders) {
+          const key = `${o.supplierId}::${o.date}::${o.amount}`;
+          const existing = seen.get(key);
+          if (!existing) { seen.set(key, o); continue; }
+          if ((!existing.items || existing.items.length === 0) && o.items?.length > 0) seen.set(key, o);
+        }
+        next[mk] = {
+          ...m,
+          supplierOrders: [...seen.values()],
+          supplierPayments: (m.supplierPayments || []).map((p) => idRemap.has(p.supplierId) ? { ...p, supplierId: idRemap.get(p.supplierId) } : p),
+        };
+      }
+      return next;
+    });
+    logAudit({ what: `Объединены дубли поставщиков (${duplicateGroups.length})`, });
+  };
+
   // Синхронизация с iiko: подтягиваем накладные от поставщиков за текущий месяц
   // (Отчёт по проводкам, TransactionType=INVOICE) и превращаем их в записи "Поставка".
   // Поставщик ищется по названию (без учёта регистра/пробелов) среди уже существующих —
@@ -2379,6 +2432,13 @@ function SuppliersPage({ ctx }) {
           <Info size={13}/> {syncSummary.total === 0
             ? 'За выбранный период накладных в iiko не найдено.'
             : <>Готово: добавлено <b>{syncSummary.added}</b> поставок{syncSummary.newSuppliers > 0 && <> (создано {syncSummary.newSuppliers} новых поставщиков)</>}{syncSummary.filledIn > 0 && <>, у {syncSummary.filledIn} уже загруженных ранее дозаполнен состав</>}{syncSummary.skipped > 0 && <>, {syncSummary.skipped} уже были загружены раньше (без изменений)</>}.</>}
+        </div>
+      )}
+
+      {duplicateGroups.length > 0 && (
+        <div className="rp-alert" style={{marginBottom:16, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12}}>
+          <div><AlertTriangle size={16}/> Найдено {duplicateGroups.length} задвоенных поставщиков: {duplicateGroups.map((g) => g.map((s) => s.name).join(' = ')).join('; ')}.</div>
+          <button className="rp-btn" onClick={mergeDuplicates}>Объединить</button>
         </div>
       )}
 
