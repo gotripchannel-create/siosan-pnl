@@ -2192,7 +2192,7 @@ function PayrollPage({ ctx }) {
 /* ============================== SUPPLIERS ============================== */
 
 function SuppliersPage({ ctx }) {
-  const { suppliers, setSuppliers, months, month, updateMonth, year, monthIdx, logAudit, session } = ctx;
+  const { suppliers, setSuppliers, months, setMonths, month, updateMonth, year, monthIdx, logAudit, session, settings } = ctx;
   const [opModal, setOpModal] = useState(null); // {supplierId, kind:'order'|'payment'}
   const [newSupplier, setNewSupplier] = useState(false);
   const [name, setName] = useState('');
@@ -2229,11 +2229,11 @@ function SuppliersPage({ ctx }) {
   // если не найден, создаётся новый. Повторный запуск не создаёт дублей: каждая запись
   // помечается source:'iiko', и мы проверяем по паре (поставщик+дата+сумма), нет ли уже
   // такой же импортированной записи.
-  const syncFromIiko = async () => {
+  const syncFromIiko = async (customFrom, customTo) => {
     setSyncLoading(true); setSyncError(''); setSyncSummary(null);
     try {
-      const from = dateStr(year, monthIdx, 1);
-      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const from = customFrom || dateStr(year, monthIdx, 1);
+      const to = customTo || dateStr(year, monthIdx, daysInMonth(year, monthIdx));
       const resp = await fetch('/api/iiko-invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
@@ -2243,23 +2243,25 @@ function SuppliersPage({ ctx }) {
       if (!resp.ok) { setSyncError(data?.error || 'Не удалось получить накладные из iiko.'); return; }
 
       const invoices = data?.invoices || [];
-      if (invoices.length === 0) { setSyncSummary({ added: 0, newSuppliers: 0, skipped: 0, total: 0 }); return; }
+      if (invoices.length === 0) { setSyncSummary({ added: 0, newSuppliers: 0, skipped: 0, filledIn: 0, total: 0 }); return; }
 
+      // Работаем сразу по ВСЕМ месяцам, а не только по текущему выбранному — иначе при
+      // синхронизации широкого диапазона дат (несколько месяцев разом) записи из чужих
+      // месяцев не находились бы для дедупликации и задваивались, плюс новые попадали
+      // бы не в свой месяц, а в текущий открытый. Каждая накладная кладётся в тот месяц,
+      // к которому реально относится её дата.
       const normalize = (s) => String(s || '').trim().toLowerCase();
       const existingByName = new Map(suppliers.map((s) => [normalize(s.name), s]));
       const newSuppliersToAdd = [];
-      // key -> существующая запись (для дозаполнения составом задним числом)
-      const existingOrdersByKey = new Map(
-        (month.supplierOrders || [])
-          .filter((o) => o.source === 'iiko')
-          .map((o) => [`${o.supplierId}::${o.date}::${o.amount}`, o])
-      );
-      const newOrdersToAdd = [];
-      const idsToUpdateItems = new Map(); // id -> items[]
+      const monthPatches = {}; // monthKey -> { updateItemsById: Map, toAdd: [] }
       let skipped = 0;
       let filledIn = 0;
+      let added = 0;
 
       for (const inv of invoices) {
+        const invMonthKey = inv.date.slice(0, 7);
+        if (!monthPatches[invMonthKey]) monthPatches[invMonthKey] = { updateItemsById: new Map(), toAdd: [] };
+
         const key = normalize(inv.supplier);
         let supplierId;
         const found = existingByName.get(key);
@@ -2271,42 +2273,56 @@ function SuppliersPage({ ctx }) {
           existingByName.set(key, created); // на случай нескольких накладных от нового поставщика в одной синхронизации
           supplierId = created.id;
         }
-        const orderKey = `${supplierId}::${inv.date}::${inv.amount}`;
-        const existing = existingOrdersByKey.get(orderKey);
+
+        const existingOrders = (months[invMonthKey]?.supplierOrders || []).filter((o) => o.source === 'iiko');
+        const existing = existingOrders.find((o) => o.supplierId === supplierId && o.date === inv.date && o.amount === inv.amount);
         if (existing) {
-          // Уже загружена раньше — если тогда состав ещё не умели получать (или он был
-          // пустым), а сейчас он есть, дозаполняем существующую запись, не создавая дубль.
           if ((!existing.items || existing.items.length === 0) && inv.items?.length > 0) {
-            idsToUpdateItems.set(existing.id, inv.items);
+            monthPatches[invMonthKey].updateItemsById.set(existing.id, inv.items);
             filledIn += 1;
           } else {
             skipped += 1;
           }
           continue;
         }
-        existingOrdersByKey.set(orderKey, { id: null }); // защита от дублей внутри этой же синхронизации
-        newOrdersToAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko', items: inv.items || [] });
+        // Защита от дублей внутри этой же синхронизации (если одна и та же накладная
+        // почему-то встретилась дважды в ответе iiko).
+        const alreadyQueued = monthPatches[invMonthKey].toAdd.some((o) => o.supplierId === supplierId && o.date === inv.date && o.amount === inv.amount);
+        if (alreadyQueued) { skipped += 1; continue; }
+        monthPatches[invMonthKey].toAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko', items: inv.items || [] });
+        added += 1;
       }
 
       if (newSuppliersToAdd.length > 0) setSuppliers((prev) => [...prev, ...newSuppliersToAdd]);
-      if (newOrdersToAdd.length > 0 || idsToUpdateItems.size > 0) {
-        updateMonth((m) => ({
-          ...m,
-          supplierOrders: [
-            ...(m.supplierOrders || []).map((o) => idsToUpdateItems.has(o.id) ? { ...o, items: idsToUpdateItems.get(o.id) } : o),
-            ...newOrdersToAdd
-          ]
-        }));
-        logAudit({ what: 'Синхронизация накладных с iiko', amount: newOrdersToAdd.reduce((s, o) => s + o.amount, 0) });
+      if (added > 0 || filledIn > 0) {
+        setMonths((prevMonths) => {
+          const next = { ...prevMonths };
+          for (const [mk, patch] of Object.entries(monthPatches)) {
+            const cur = next[mk] || emptyMonth(settings, null);
+            next[mk] = {
+              ...cur,
+              supplierOrders: [
+                ...(cur.supplierOrders || []).map((o) => patch.updateItemsById.has(o.id) ? { ...o, items: patch.updateItemsById.get(o.id) } : o),
+                ...patch.toAdd
+              ]
+            };
+          }
+          return next;
+        });
+        logAudit({ what: 'Синхронизация накладных с iiko', amount: Object.values(monthPatches).reduce((s, p) => s + p.toAdd.reduce((s2, o) => s2 + o.amount, 0), 0) });
       }
 
-      setSyncSummary({ added: newOrdersToAdd.length, newSuppliers: newSuppliersToAdd.length, skipped, filledIn, total: invoices.length });
+      setSyncSummary({ added, newSuppliers: newSuppliersToAdd.length, skipped, filledIn, total: invoices.length });
     } catch (e) {
       setSyncError(e?.message || 'Не удалось связаться с сервером.');
     } finally {
       setSyncLoading(false);
     }
   };
+
+  const [fullSyncOpen, setFullSyncOpen] = useState(false);
+  const [fullSyncFrom, setFullSyncFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().slice(0, 10); });
+  const [fullSyncTo, setFullSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
 
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
   const totalPaid = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.paid || 0), 0);
@@ -2347,8 +2363,11 @@ function SuppliersPage({ ctx }) {
 
       <div className="rp-toolbar">
         <button className="rp-btn" onClick={() => setNewSupplier(true)}><Plus size={15} /> Добавить поставщика</button>
-        <button className="rp-btn rp-btn-ghost" onClick={syncFromIiko} disabled={syncLoading}>
+        <button className="rp-btn rp-btn-ghost" onClick={() => syncFromIiko()} disabled={syncLoading}>
           <RefreshCw size={15} className={syncLoading ? 'rp-spin' : ''} /> {syncLoading ? 'Синхронизирую…' : 'Синхронизировать с iiko'}
+        </button>
+        <button className="rp-btn rp-btn-ghost" onClick={() => setFullSyncOpen(true)} disabled={syncLoading} title="Пройтись по широкому диапазону дат разом — полезно, если состав накладных заполнен не за все месяцы">
+          <History size={15} /> Досинхронизировать историю
         </button>
         <label className="rp-toggle-inline">
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Показывать архивных
@@ -2358,9 +2377,25 @@ function SuppliersPage({ ctx }) {
       {syncSummary && (
         <div className="rp-cash-check" style={{marginBottom:16}}>
           <Info size={13}/> {syncSummary.total === 0
-            ? 'За этот месяц накладных в iiko не найдено.'
+            ? 'За выбранный период накладных в iiko не найдено.'
             : <>Готово: добавлено <b>{syncSummary.added}</b> поставок{syncSummary.newSuppliers > 0 && <> (создано {syncSummary.newSuppliers} новых поставщиков)</>}{syncSummary.filledIn > 0 && <>, у {syncSummary.filledIn} уже загруженных ранее дозаполнен состав</>}{syncSummary.skipped > 0 && <>, {syncSummary.skipped} уже были загружены раньше (без изменений)</>}.</>}
         </div>
+      )}
+
+      {fullSyncOpen && (
+        <Modal title="Досинхронизировать историю" onClose={() => setFullSyncOpen(false)}>
+          <p className="rp-muted" style={{marginBottom:14}}>Пройдёмся по выбранному диапазону дат разом. Уже загруженные поставки не задвоятся — если у них раньше не было состава (списка товаров), он дозаполнится. Чем шире диапазон, тем дольше запрос — обычно до минуты на несколько месяцев.</p>
+          <div className="rp-form-grid">
+            <Field label="С"><input type="date" value={fullSyncFrom} onChange={(e) => setFullSyncFrom(e.target.value)} /></Field>
+            <Field label="По"><input type="date" value={fullSyncTo} onChange={(e) => setFullSyncTo(e.target.value)} /></Field>
+          </div>
+          <div className="rp-modal-actions">
+            <button className="rp-btn rp-btn-ghost" onClick={() => setFullSyncOpen(false)}>Отмена</button>
+            <button className="rp-btn" disabled={syncLoading} onClick={async () => { setFullSyncOpen(false); await syncFromIiko(fullSyncFrom, fullSyncTo); }}>
+              {syncLoading ? 'Синхронизирую…' : 'Начать'}
+            </button>
+          </div>
+        </Modal>
       )}
 
       <Card>
