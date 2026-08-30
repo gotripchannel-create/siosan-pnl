@@ -2173,7 +2173,7 @@ function PayrollPage({ ctx }) {
 /* ============================== SUPPLIERS ============================== */
 
 function SuppliersPage({ ctx }) {
-  const { suppliers, setSuppliers, months, month, updateMonth, year, monthIdx, logAudit } = ctx;
+  const { suppliers, setSuppliers, months, month, updateMonth, year, monthIdx, logAudit, session } = ctx;
   const [opModal, setOpModal] = useState(null); // {supplierId, kind:'order'|'payment'}
   const [newSupplier, setNewSupplier] = useState(false);
   const [name, setName] = useState('');
@@ -2181,6 +2181,9 @@ function SuppliersPage({ ctx }) {
   const [renaming, setRenaming] = useState(null); // supplier obj
   const [deleting, setDeleting] = useState(null); // supplier obj
   const [showArchived, setShowArchived] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState('');
+  const [syncSummary, setSyncSummary] = useState(null);
 
   const ledger = useMemo(() => supplierLedger(months, suppliers, year, monthIdx), [months, suppliers, year, monthIdx]);
   const activeSuppliers = suppliers.filter((s) => !s.archived);
@@ -2200,6 +2203,71 @@ function SuppliersPage({ ctx }) {
   };
   const removeForever = (id, supplierName) => { setSuppliers((p) => p.filter((s) => s.id !== id)); logAudit({ what: 'Удалён поставщик', supplier: supplierName }); setDeleting(null); };
 
+  // Синхронизация с iiko: подтягиваем накладные от поставщиков за текущий месяц
+  // (Отчёт по проводкам, TransactionType=INVOICE) и превращаем их в записи "Поставка".
+  // Поставщик ищется по названию (без учёта регистра/пробелов) среди уже существующих —
+  // если не найден, создаётся новый. Повторный запуск не создаёт дублей: каждая запись
+  // помечается source:'iiko', и мы проверяем по паре (поставщик+дата+сумма), нет ли уже
+  // такой же импортированной записи.
+  const syncFromIiko = async () => {
+    setSyncLoading(true); setSyncError(''); setSyncSummary(null);
+    try {
+      const from = dateStr(year, monthIdx, 1);
+      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const resp = await fetch('/api/iiko-invoices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from, to })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setSyncError(data?.error || 'Не удалось получить накладные из iiko.'); return; }
+
+      const invoices = data?.invoices || [];
+      if (invoices.length === 0) { setSyncSummary({ added: 0, newSuppliers: 0, skipped: 0, total: 0 }); return; }
+
+      const normalize = (s) => String(s || '').trim().toLowerCase();
+      const existingByName = new Map(suppliers.map((s) => [normalize(s.name), s]));
+      const newSuppliersToAdd = [];
+      const existingOrderKeys = new Set(
+        (month.supplierOrders || [])
+          .filter((o) => o.source === 'iiko')
+          .map((o) => `${o.supplierId}::${o.date}::${o.amount}`)
+      );
+      const newOrdersToAdd = [];
+      let skipped = 0;
+
+      for (const inv of invoices) {
+        const key = normalize(inv.supplier);
+        let supplierId;
+        const found = existingByName.get(key);
+        if (found) {
+          supplierId = found.id;
+        } else {
+          const created = { id: uid(), name: inv.supplier, archived: false };
+          newSuppliersToAdd.push(created);
+          existingByName.set(key, created); // на случай нескольких накладных от нового поставщика в одной синхронизации
+          supplierId = created.id;
+        }
+        const orderKey = `${supplierId}::${inv.date}::${inv.amount}`;
+        if (existingOrderKeys.has(orderKey)) { skipped += 1; continue; }
+        existingOrderKeys.add(orderKey);
+        newOrdersToAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko' });
+      }
+
+      if (newSuppliersToAdd.length > 0) setSuppliers((prev) => [...prev, ...newSuppliersToAdd]);
+      if (newOrdersToAdd.length > 0) {
+        updateMonth((m) => ({ ...m, supplierOrders: [...(m.supplierOrders || []), ...newOrdersToAdd] }));
+        logAudit({ what: 'Синхронизация накладных с iiko', amount: newOrdersToAdd.reduce((s, o) => s + o.amount, 0) });
+      }
+
+      setSyncSummary({ added: newOrdersToAdd.length, newSuppliers: newSuppliersToAdd.length, skipped, total: invoices.length });
+    } catch (e) {
+      setSyncError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
   const totalPaid = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.paid || 0), 0);
 
@@ -2216,10 +2284,21 @@ function SuppliersPage({ ctx }) {
 
       <div className="rp-toolbar">
         <button className="rp-btn" onClick={() => setNewSupplier(true)}><Plus size={15} /> Добавить поставщика</button>
+        <button className="rp-btn rp-btn-ghost" onClick={syncFromIiko} disabled={syncLoading}>
+          <RefreshCw size={15} className={syncLoading ? 'rp-spin' : ''} /> {syncLoading ? 'Синхронизирую…' : 'Синхронизировать с iiko'}
+        </button>
         <label className="rp-toggle-inline">
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Показывать архивных
         </label>
       </div>
+      {syncError && <div className="rp-inline-warn" style={{marginBottom:16}}><AlertTriangle size={13}/> {syncError}</div>}
+      {syncSummary && (
+        <div className="rp-cash-check" style={{marginBottom:16}}>
+          <Info size={13}/> {syncSummary.total === 0
+            ? 'За этот месяц накладных в iiko не найдено.'
+            : <>Готово: добавлено <b>{syncSummary.added}</b> поставок{syncSummary.newSuppliers > 0 && <> (создано {syncSummary.newSuppliers} новых поставщиков)</>}{syncSummary.skipped > 0 && <>, {syncSummary.skipped} уже были загружены раньше</>}.</>}
+        </div>
+      )}
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
@@ -4529,6 +4608,8 @@ function GlobalStyle() {
   return (
     <style>{`
       * { box-sizing: border-box; }
+      @keyframes rp-spin-kf { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .rp-spin { animation: rp-spin-kf 0.9s linear infinite; }
       .rp-root { display: flex; min-height: 100vh; background: ${COLORS.bg}; font-family: 'Inter', -apple-system, sans-serif; color: ${COLORS.ink}; font-size: 13.5px; }
       .rp-sidebar { width: 216px; flex-shrink: 0; background: #1B2420; color: #EDEBE3; display: flex; flex-direction: column; padding: 20px 14px; }
       .rp-nav-close, .rp-nav-hamburger { display: none; }
