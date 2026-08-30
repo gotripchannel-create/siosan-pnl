@@ -2597,6 +2597,18 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || '—';
 
+  // Округление количества — на весовые/объёмные товары (кг, л) до 3 знаков, на штучные
+  // до целого. Без этого сумма нескольких поставок даёт "28.116999999999997" из-за
+  // погрешности плавающей точки в JS.
+  const roundQty = (v, unit) => {
+    const n = Number(v) || 0;
+    const isPieces = /^шт/i.test(String(unit || ''));
+    const decimals = isPieces ? 0 : 3;
+    const factor = 10 ** decimals;
+    return Math.round(n * factor) / factor;
+  };
+  const fmtQty = (v, unit) => `${roundQty(v, unit)}${unit ? ` ${unit}` : ''}`;
+
   // Товары по месяцам — берём ТОЛЬКО поставки с составом (пришли из iiko-синхронизации).
   // Поставки, добавленные вручную кнопкой «+ Поставка», состава не имеют и в разбивку
   // по товарам не попадают — только в общую сумму по поставщику.
@@ -2617,6 +2629,11 @@ function PurchaseAnalyticsPage({ ctx }) {
           entry.suppliers.add(supplierName(o.supplierId));
         }
       }
+      // Округляем сразу при сборке, чтобы погрешность не накапливалась и не утекала дальше.
+      for (const entry of bucket.values()) {
+        entry.qty = roundQty(entry.qty, entry.unit);
+        entry.sum = Math.round(entry.sum * 100) / 100;
+      }
       byMonth[mk] = bucket;
     }
     return byMonth;
@@ -2624,6 +2641,7 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   const curMap = productsByMonth[monthKey] || new Map();
   const prevMap = productsByMonth[prevMonthKey] || new Map();
+  const hasComparison = prevMap.size > 0; // есть ли вообще с чем сравнивать этот месяц
 
   const comparisonRows = useMemo(() => {
     const keys = new Set([...curMap.keys(), ...prevMap.keys()]);
@@ -2647,14 +2665,16 @@ function PurchaseAnalyticsPage({ ctx }) {
     return rows.sort((a, b) => b.curSum - a.curSum);
   }, [curMap, prevMap]);
 
-  const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null);
-  const growing = [...movers].sort((a, b) => b.deltaPct - a.deltaPct).slice(0, 6);
-  const declining = [...movers].sort((a, b) => a.deltaPct - b.deltaPct).slice(0, 6);
-  const newProducts = comparisonRows.filter((r) => r.prevQty === 0 && r.curQty > 0);
-  const droppedProducts = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty === 0);
+  const topThisMonth = [...curMap.values()].sort((a, b) => b.sum - a.sum);
 
-  const curTotalSpend = comparisonRows.reduce((s, r) => s + r.curSum, 0);
-  const prevTotalSpend = comparisonRows.reduce((s, r) => s + r.prevSum, 0);
+  const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null);
+  const growing = [...movers].filter((r) => r.deltaPct > 5).sort((a, b) => b.deltaPct - a.deltaPct).slice(0, 6);
+  const declining = [...movers].filter((r) => r.deltaPct < -5).sort((a, b) => a.deltaPct - b.deltaPct).slice(0, 6);
+  const newProducts = hasComparison ? comparisonRows.filter((r) => r.prevQty === 0 && r.curQty > 0).sort((a, b) => b.curSum - a.curSum) : [];
+  const droppedProducts = hasComparison ? comparisonRows.filter((r) => r.prevQty > 0 && r.curQty === 0).sort((a, b) => b.prevSum - a.prevSum) : [];
+
+  const curTotalSpend = topThisMonth.reduce((s, r) => s + r.sum, 0);
+  const prevTotalSpend = [...prevMap.values()].reduce((s, r) => s + r.sum, 0);
   const totalDeltaPct = prevTotalSpend > 0 ? ((curTotalSpend - prevTotalSpend) / prevTotalSpend) * 100 : 0;
 
   // Последние 6 месяцев — тренд трат по поставщикам.
@@ -2696,7 +2716,7 @@ function PurchaseAnalyticsPage({ ctx }) {
       for (const o of (m.supplierOrders || [])) {
         for (const it of (o.items || [])) {
           if (String(it.name || '').trim().toLowerCase() === selectedProduct) {
-            points.push({ date: o.date, qty: Number(it.qty) || 0, unit: it.unit || '', sum: Number(it.sum) || 0, supplier: supplierName(o.supplierId) });
+            points.push({ date: o.date, qty: roundQty(it.qty, it.unit), unit: it.unit || '', sum: Math.round((Number(it.sum) || 0) * 100) / 100, supplier: supplierName(o.supplierId) });
           }
         }
       }
@@ -2705,13 +2725,13 @@ function PurchaseAnalyticsPage({ ctx }) {
   }, [selectedProduct, months, suppliers]);
 
   const selectedProductName = comparisonRows.find((r) => r.key === selectedProduct)?.name
+    || topThisMonth.find((r) => r.key === selectedProduct)?.name
     || productTimeline[0]?.name || selectedProduct;
 
   const hasAnyItemsData = Object.values(productsByMonth).some((m) => m.size > 0);
 
   const DeltaBadge = ({ pct }) => {
     if (pct == null) return <span className="rp-badge" style={{ background: `${COLORS.accent}22`, color: COLORS.accent }}>новый</span>;
-    const good = pct <= 0; // для расходов "меньше" обычно нейтрально/хорошо, просто красим рост иначе
     return (
       <span className={`rp-delta ${pct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
         {pct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {pct > 0 ? '+' : ''}{pct.toFixed(0)}%
@@ -2723,7 +2743,11 @@ function PurchaseAnalyticsPage({ ctx }) {
     <div className="rp-page">
       <div className="rp-page-head">
         <h1>Аналитика закупок</h1>
-        <div className="rp-page-sub">Что покупаем больше, что меньше — {MONTHS_RU[monthIdx].toLowerCase()} {year} против {MONTHS_RU[prevDateObj.getMonth()].toLowerCase()} {prevDateObj.getFullYear()}</div>
+        <div className="rp-page-sub">
+          {hasComparison
+            ? <>{MONTHS_RU[monthIdx]} {year} против {MONTHS_RU[prevDateObj.getMonth()].toLowerCase()} {prevDateObj.getFullYear()}</>
+            : <>{MONTHS_RU[monthIdx]} {year} — за прошлый месяц данных ещё нет, сравнение появится позже</>}
+        </div>
       </div>
 
       {!hasAnyItemsData && (
@@ -2733,10 +2757,10 @@ function PurchaseAnalyticsPage({ ctx }) {
       )}
 
       <div className="rp-grid-4">
-        <Stat label="Закупки в этом месяце" value={fmtRub(curTotalSpend)} delta={prevTotalSpend > 0 ? totalDeltaPct : undefined} deltaGood={false} />
-        <Stat label="Закупки в прошлом месяце" value={fmtRub(prevTotalSpend)} />
-        <Stat label="Товарных позиций" value={fmt0(comparisonRows.length)} />
-        <Stat label="Новых позиций" value={fmt0(newProducts.length)} accent={newProducts.length > 0 ? COLORS.accent : undefined} />
+        <Stat label="Закупки в этом месяце" value={fmtRub(curTotalSpend)} delta={hasComparison ? totalDeltaPct : undefined} deltaGood={false} />
+        <Stat label="Закупки в прошлом месяце" value={hasComparison ? fmtRub(prevTotalSpend) : '—'} />
+        <Stat label="Товарных позиций" value={fmt0(topThisMonth.length)} />
+        <Stat label="Поставщиков закупало" value={fmt0(new Set(((months[monthKey]?.supplierOrders) || []).map((o) => o.supplierId)).size)} />
       </div>
 
       <div style={{ margin: '16px 0' }}>
@@ -2748,56 +2772,143 @@ function PurchaseAnalyticsPage({ ctx }) {
         </Field>
       </div>
 
-      <div className="rp-grid-2">
-        <Card>
-          <div className="rp-card-title" style={{ color: COLORS.danger }}><TrendingUp size={15} style={{ verticalAlign: -2, marginRight: 6 }} />Закупаем больше</div>
-          {growing.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет данных за два месяца подряд для сравнения.</div>}
-          <div className="rp-list">
-            {growing.map((r) => (
-              <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
-                <div className="rp-list-main">
-                  <div className="rp-list-cat">{r.name}</div>
-                  <div className="rp-muted" style={{ fontSize: 11 }}>{r.prevQty}{r.unit} → {r.curQty}{r.unit}</div>
-                </div>
-                <DeltaBadge pct={r.deltaPct} />
-              </div>
-            ))}
-          </div>
-        </Card>
-        <Card>
-          <div className="rp-card-title" style={{ color: COLORS.accent }}><TrendingDown size={15} style={{ verticalAlign: -2, marginRight: 6 }} />Закупаем меньше</div>
-          {declining.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет данных за два месяца подряд для сравнения.</div>}
-          <div className="rp-list">
-            {declining.map((r) => (
-              <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
-                <div className="rp-list-main">
-                  <div className="rp-list-cat">{r.name}</div>
-                  <div className="rp-muted" style={{ fontSize: 11 }}>{r.prevQty}{r.unit} → {r.curQty}{r.unit}</div>
-                </div>
-                <DeltaBadge pct={r.deltaPct} />
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
+      {/* Всё содержимое — в одной карточке, разделено сворачиваемыми секциями,
+          чтобы не было "стены" отдельных блоков подряд. */}
+      <Card>
+        <Section title="Топ закупок в этом месяце" count={topThisMonth.length} defaultOpen={true}>
+          {topThisMonth.length === 0 ? (
+            <div className="rp-muted" style={{ fontSize: 13 }}>Нет данных за этот месяц.</div>
+          ) : (
+            <div className="rp-table-wrap">
+              <table className="rp-table">
+                <thead><tr><th>Товар</th><th>Поставщик(и)</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                <tbody>
+                  {topThisMonth.slice(0, 15).map((r) => (
+                    <tr key={r.key} className="rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                      <td className="rp-strong">{r.name}</td>
+                      <td className="rp-muted" style={{ fontSize: 12 }}>{[...r.suppliers].join(', ')}</td>
+                      <td className="rp-num">{fmtQty(r.qty, r.unit)}</td>
+                      <td className="rp-num">{fmtRub(r.sum)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {topThisMonth.length > 15 && <div className="rp-muted" style={{ fontSize: 12, marginTop: 8 }}>И ещё {topThisMonth.length - 15} позиций — см. «Все товары» ниже.</div>}
+            </div>
+          )}
+        </Section>
 
-      {supplierTrendData.length > 0 && topSuppliersThisMonth.length > 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <div className="rp-card-title">Траты по поставщикам — последние 6 месяцев</div>
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={supplierTrendData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip formatter={(v) => fmtRub(v)} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              {topSuppliersThisMonth.map((id, i) => (
-                <Line key={id} type="monotone" dataKey={supplierName(id)} stroke={COLORS.chartPalette[i % COLORS.chartPalette.length]} strokeWidth={2} dot={{ r: 3 }} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-      )}
+        {hasComparison && (growing.length > 0 || declining.length > 0) && (
+          <Section title="Заметные изменения к прошлому месяцу" defaultOpen={true}>
+            <div className="rp-grid-2">
+              <div>
+                <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: COLORS.danger }}>Закупаем больше</div>
+                {growing.length === 0 ? <div className="rp-muted" style={{ fontSize: 13 }}>Заметного роста нет.</div> : (
+                  <div className="rp-list">
+                    {growing.map((r) => (
+                      <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                        <div className="rp-list-main">
+                          <div className="rp-list-cat">{r.name}</div>
+                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)}</div>
+                        </div>
+                        <DeltaBadge pct={r.deltaPct} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: COLORS.accent }}>Закупаем меньше</div>
+                {declining.length === 0 ? <div className="rp-muted" style={{ fontSize: 13 }}>Заметного падения нет.</div> : (
+                  <div className="rp-list">
+                    {declining.map((r) => (
+                      <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                        <div className="rp-list-main">
+                          <div className="rp-list-cat">{r.name}</div>
+                          <div className="rp-muted" style={{ fontSize: 11 }}>{fmtQty(r.prevQty, r.unit)} → {fmtQty(r.curQty, r.unit)}</div>
+                        </div>
+                        <DeltaBadge pct={r.deltaPct} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {hasComparison && (newProducts.length > 0 || droppedProducts.length > 0) && (
+          <Section title="Новое и переставшее заказываться" count={newProducts.length + droppedProducts.length} defaultOpen={false}>
+            <div className="rp-grid-2">
+              <div>
+                <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Новые позиции ({newProducts.length})</div>
+                <div className="rp-list">
+                  {newProducts.slice(0, 10).map((r) => (
+                    <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                      <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
+                      <div className="rp-list-amount">{fmtQty(r.curQty, r.unit)}</div>
+                    </div>
+                  ))}
+                  {newProducts.length > 10 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {newProducts.length - 10}…</div>}
+                  {newProducts.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Нет.</div>}
+                </div>
+              </div>
+              <div>
+                <div className="rp-muted" style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Перестали заказывать ({droppedProducts.length})</div>
+                <div className="rp-list">
+                  {droppedProducts.slice(0, 10).map((r) => (
+                    <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                      <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
+                      <div className="rp-list-amount">было {fmtQty(r.prevQty, r.unit)}</div>
+                    </div>
+                  ))}
+                  {droppedProducts.length > 10 && <div className="rp-muted" style={{ fontSize: 11 }}>И ещё {droppedProducts.length - 10}…</div>}
+                  {droppedProducts.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Нет.</div>}
+                </div>
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {supplierTrendData.length > 0 && topSuppliersThisMonth.length > 0 && (
+          <Section title="Траты по поставщикам — последние 6 месяцев" defaultOpen={false}>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={supplierTrendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                <Tooltip formatter={(v) => fmtRub(v)} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                {topSuppliersThisMonth.map((id, i) => (
+                  <Line key={id} type="monotone" dataKey={supplierName(id)} stroke={COLORS.chartPalette[i % COLORS.chartPalette.length]} strokeWidth={2} dot={{ r: 3 }} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </Section>
+        )}
+
+        {comparisonRows.length > 0 && (
+          <Section title="Все товары" count={comparisonRows.length} defaultOpen={false}>
+            <div className="rp-table-wrap">
+              <table className="rp-table">
+                <thead><tr><th>Товар</th><th>Поставщик(и)</th><th>Этот месяц</th><th>Прошлый месяц</th><th>Δ</th><th>Сумма (этот мес.)</th></tr></thead>
+                <tbody>
+                  {comparisonRows.map((r) => (
+                    <tr key={r.key} className="rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                      <td className="rp-strong">{r.name}</td>
+                      <td className="rp-muted" style={{ fontSize: 12 }}>{r.suppliers.join(', ')}</td>
+                      <td className="rp-num">{fmtQty(r.curQty, r.unit)}</td>
+                      <td className="rp-num">{fmtQty(r.prevQty, r.unit)}</td>
+                      <td className="rp-num">{hasComparison ? <DeltaBadge pct={r.deltaPct} /> : '—'}</td>
+                      <td className="rp-num">{fmtRub(r.curSum)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        )}
+      </Card>
 
       {selectedProduct && (
         <Card style={{ marginTop: 16 }}>
@@ -2821,7 +2932,7 @@ function PurchaseAnalyticsPage({ ctx }) {
                   <thead><tr><th>Дата</th><th>Поставщик</th><th>Кол-во</th><th>Сумма</th></tr></thead>
                   <tbody>
                     {productTimeline.slice().reverse().map((p, i) => (
-                      <tr key={i}><td>{p.date}</td><td>{p.supplier}</td><td className="rp-num">{p.qty} {p.unit}</td><td className="rp-num">{fmtRub(p.sum)}</td></tr>
+                      <tr key={i}><td>{p.date}</td><td>{p.supplier}</td><td className="rp-num">{fmtQty(p.qty, p.unit)}</td><td className="rp-num">{fmtRub(p.sum)}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -2830,64 +2941,10 @@ function PurchaseAnalyticsPage({ ctx }) {
           ) : <div className="rp-muted">Нет данных по этому товару.</div>}
         </Card>
       )}
-
-      {(newProducts.length > 0 || droppedProducts.length > 0) && (
-        <div className="rp-grid-2" style={{ marginTop: 16 }}>
-          {newProducts.length > 0 && (
-            <Card>
-              <div className="rp-card-title">Новые позиции в этом месяце</div>
-              <div className="rp-list">
-                {newProducts.map((r) => (
-                  <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
-                    <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
-                    <div className="rp-list-amount">{r.curQty}{r.unit}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-          {droppedProducts.length > 0 && (
-            <Card>
-              <div className="rp-card-title">Перестали заказывать</div>
-              <div className="rp-list">
-                {droppedProducts.map((r) => (
-                  <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
-                    <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
-                    <div className="rp-list-amount">было {r.prevQty}{r.unit}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-        </div>
-      )}
-
-      {comparisonRows.length > 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <Section title="Все товары" count={comparisonRows.length} defaultOpen={false}>
-            <div className="rp-table-wrap">
-              <table className="rp-table">
-                <thead><tr><th>Товар</th><th>Поставщик(и)</th><th>Этот месяц</th><th>Прошлый месяц</th><th>Δ</th><th>Сумма (этот мес.)</th></tr></thead>
-                <tbody>
-                  {comparisonRows.map((r) => (
-                    <tr key={r.key} className="rp-clickable" onClick={() => setSelectedProduct(r.key)}>
-                      <td className="rp-strong">{r.name}</td>
-                      <td className="rp-muted" style={{ fontSize: 12 }}>{r.suppliers.join(', ')}</td>
-                      <td className="rp-num">{r.curQty} {r.unit}</td>
-                      <td className="rp-num">{r.prevQty} {r.unit}</td>
-                      <td className="rp-num"><DeltaBadge pct={r.deltaPct} /></td>
-                      <td className="rp-num">{fmtRub(r.curSum)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        </Card>
-      )}
     </div>
   );
 }
+
 
 /* ============================== P&L ============================== */
 
