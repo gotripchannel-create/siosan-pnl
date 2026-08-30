@@ -566,6 +566,7 @@ const NAV = [
   { id: 'employees', label: 'Сотрудники', icon: Users },
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
+  { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
   { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
   { id: 'history', label: 'История', icon: History },
@@ -631,7 +632,24 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState('');
-  const [page, setPage] = useState('dashboard');
+  const VALID_PAGES = ['dashboard', 'day', 'inbox', 'employees', 'payroll', 'suppliers', 'purchases', 'pnl', 'compare', 'history', 'iiko-novo', 'iiko-belaya', 'combined', 'settings'];
+  const initialPage = (() => {
+    const h = (window.location.hash || '').replace('#', '');
+    return VALID_PAGES.includes(h) ? h : 'dashboard';
+  })();
+  const [page, _setPage] = useState(initialPage);
+  const setPage = useCallback((p) => {
+    _setPage(p);
+    if (VALID_PAGES.includes(p)) window.location.hash = p;
+  }, []);
+  useEffect(() => {
+    const onHashChange = () => {
+      const h = (window.location.hash || '').replace('#', '');
+      if (VALID_PAGES.includes(h)) _setPage(h);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [pendingReportsCount, setPendingReportsCount] = useState(0);
@@ -893,6 +911,7 @@ export default function App() {
           {page === 'employees' && <EmployeesPage ctx={ctx} />}
           {page === 'payroll' && <PayrollPage ctx={ctx} />}
           {page === 'suppliers' && <SuppliersPage ctx={ctx} />}
+          {page === 'purchases' && <PurchaseAnalyticsPage ctx={ctx} />}
           {page === 'pnl' && <PnLPage ctx={ctx} />}
           {page === 'settings' && <SettingsPage ctx={ctx} />}
           {page === 'compare' && <ComparePage ctx={ctx} />}
@@ -2562,6 +2581,311 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
         </tbody>
       </table></div>
     </Modal>
+  );
+}
+
+/* ============================== Аналитика закупок ============================== */
+
+function PurchaseAnalyticsPage({ ctx }) {
+  const { months, suppliers, year, monthIdx } = ctx;
+  const [selectedProduct, setSelectedProduct] = useState(null); // normalized key
+  const [supplierFilter, setSupplierFilter] = useState('all');
+
+  const monthKey = monthKeyOf(year, monthIdx);
+  const prevDateObj = new Date(year, monthIdx - 1, 1);
+  const prevMonthKey = monthKeyOf(prevDateObj.getFullYear(), prevDateObj.getMonth());
+
+  const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || '—';
+
+  // Товары по месяцам — берём ТОЛЬКО поставки с составом (пришли из iiko-синхронизации).
+  // Поставки, добавленные вручную кнопкой «+ Поставка», состава не имеют и в разбивку
+  // по товарам не попадают — только в общую сумму по поставщику.
+  const productsByMonth = useMemo(() => {
+    const byMonth = {};
+    for (const [mk, m] of Object.entries(months)) {
+      const bucket = new Map();
+      for (const o of (m.supplierOrders || [])) {
+        if (!o.items || o.items.length === 0) continue;
+        if (supplierFilter !== 'all' && o.supplierId !== supplierFilter) continue;
+        for (const it of o.items) {
+          const key = String(it.name || '').trim().toLowerCase();
+          if (!key) continue;
+          if (!bucket.has(key)) bucket.set(key, { key, name: it.name, unit: it.unit || '', qty: 0, sum: 0, suppliers: new Set() });
+          const entry = bucket.get(key);
+          entry.qty += Number(it.qty) || 0;
+          entry.sum += Number(it.sum) || 0;
+          entry.suppliers.add(supplierName(o.supplierId));
+        }
+      }
+      byMonth[mk] = bucket;
+    }
+    return byMonth;
+  }, [months, suppliers, supplierFilter]);
+
+  const curMap = productsByMonth[monthKey] || new Map();
+  const prevMap = productsByMonth[prevMonthKey] || new Map();
+
+  const comparisonRows = useMemo(() => {
+    const keys = new Set([...curMap.keys(), ...prevMap.keys()]);
+    const rows = [];
+    for (const key of keys) {
+      const cur = curMap.get(key);
+      const prev = prevMap.get(key);
+      const curQty = cur?.qty || 0;
+      const prevQty = prev?.qty || 0;
+      const deltaQty = curQty - prevQty;
+      const deltaPct = prevQty > 0 ? (deltaQty / prevQty) * 100 : (curQty > 0 ? null : 0); // null = "новый товар"
+      rows.push({
+        key,
+        name: cur?.name || prev?.name,
+        unit: cur?.unit || prev?.unit || '',
+        curQty, prevQty, deltaQty, deltaPct,
+        curSum: cur?.sum || 0, prevSum: prev?.sum || 0,
+        suppliers: [...new Set([...(cur?.suppliers || []), ...(prev?.suppliers || [])])]
+      });
+    }
+    return rows.sort((a, b) => b.curSum - a.curSum);
+  }, [curMap, prevMap]);
+
+  const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null);
+  const growing = [...movers].sort((a, b) => b.deltaPct - a.deltaPct).slice(0, 6);
+  const declining = [...movers].sort((a, b) => a.deltaPct - b.deltaPct).slice(0, 6);
+  const newProducts = comparisonRows.filter((r) => r.prevQty === 0 && r.curQty > 0);
+  const droppedProducts = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty === 0);
+
+  const curTotalSpend = comparisonRows.reduce((s, r) => s + r.curSum, 0);
+  const prevTotalSpend = comparisonRows.reduce((s, r) => s + r.prevSum, 0);
+  const totalDeltaPct = prevTotalSpend > 0 ? ((curTotalSpend - prevTotalSpend) / prevTotalSpend) * 100 : 0;
+
+  // Последние 6 месяцев — тренд трат по поставщикам.
+  const last6MonthKeys = useMemo(() => {
+    const keys = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(year, monthIdx - i, 1);
+      keys.push(monthKeyOf(d.getFullYear(), d.getMonth()));
+    }
+    return keys;
+  }, [year, monthIdx]);
+
+  const topSuppliersThisMonth = useMemo(() => {
+    const totals = new Map();
+    for (const o of ((months[monthKey]?.supplierOrders) || [])) {
+      totals.set(o.supplierId, (totals.get(o.supplierId) || 0) + (Number(o.amount) || 0));
+    }
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id]) => id);
+  }, [months, monthKey]);
+
+  const supplierTrendData = useMemo(() => {
+    return last6MonthKeys.map((mk) => {
+      const row = { label: `${mk.slice(5)}.${mk.slice(2, 4)}` };
+      for (const id of topSuppliersThisMonth) {
+        const name = supplierName(id);
+        const total = ((months[mk]?.supplierOrders) || []).filter((o) => o.supplierId === id).reduce((s, o) => s + (Number(o.amount) || 0), 0);
+        row[name] = Math.round(total * 100) / 100;
+      }
+      return row;
+    });
+  }, [last6MonthKeys, months, topSuppliersThisMonth, suppliers]);
+
+  // Хронология конкретного товара — все поставки этого товара по всем месяцам,
+  // отсортированные по дате: это и есть сравнение "от поставки к поставке".
+  const productTimeline = useMemo(() => {
+    if (!selectedProduct) return [];
+    const points = [];
+    for (const m of Object.values(months)) {
+      for (const o of (m.supplierOrders || [])) {
+        for (const it of (o.items || [])) {
+          if (String(it.name || '').trim().toLowerCase() === selectedProduct) {
+            points.push({ date: o.date, qty: Number(it.qty) || 0, unit: it.unit || '', sum: Number(it.sum) || 0, supplier: supplierName(o.supplierId) });
+          }
+        }
+      }
+    }
+    return points.sort((a, b) => a.date.localeCompare(b.date));
+  }, [selectedProduct, months, suppliers]);
+
+  const selectedProductName = comparisonRows.find((r) => r.key === selectedProduct)?.name
+    || productTimeline[0]?.name || selectedProduct;
+
+  const hasAnyItemsData = Object.values(productsByMonth).some((m) => m.size > 0);
+
+  const DeltaBadge = ({ pct }) => {
+    if (pct == null) return <span className="rp-badge" style={{ background: `${COLORS.accent}22`, color: COLORS.accent }}>новый</span>;
+    const good = pct <= 0; // для расходов "меньше" обычно нейтрально/хорошо, просто красим рост иначе
+    return (
+      <span className={`rp-delta ${pct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
+        {pct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {pct > 0 ? '+' : ''}{pct.toFixed(0)}%
+      </span>
+    );
+  };
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1>Аналитика закупок</h1>
+        <div className="rp-page-sub">Что покупаем больше, что меньше — {MONTHS_RU[monthIdx].toLowerCase()} {year} против {MONTHS_RU[prevDateObj.getMonth()].toLowerCase()} {prevDateObj.getFullYear()}</div>
+      </div>
+
+      {!hasAnyItemsData && (
+        <div className="rp-alert rp-alert-info" style={{ marginBottom: 16 }}>
+          <Info size={16} /> Пока нет ни одной поставки с составом (товарами). Зайдите на страницу «Поставщики» и нажмите «Синхронизировать с iiko» — аналитика строится по составу накладных, полученному оттуда. Поставки, добавленные вручную, сюда не попадают (у них нет списка товаров).
+        </div>
+      )}
+
+      <div className="rp-grid-4">
+        <Stat label="Закупки в этом месяце" value={fmtRub(curTotalSpend)} delta={prevTotalSpend > 0 ? totalDeltaPct : undefined} deltaGood={false} />
+        <Stat label="Закупки в прошлом месяце" value={fmtRub(prevTotalSpend)} />
+        <Stat label="Товарных позиций" value={fmt0(comparisonRows.length)} />
+        <Stat label="Новых позиций" value={fmt0(newProducts.length)} accent={newProducts.length > 0 ? COLORS.accent : undefined} />
+      </div>
+
+      <div style={{ margin: '16px 0' }}>
+        <Field label="Фильтр по поставщику">
+          <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+            <option value="all">Все поставщики</option>
+            {suppliers.filter((s) => !s.archived).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div className="rp-grid-2">
+        <Card>
+          <div className="rp-card-title" style={{ color: COLORS.danger }}><TrendingUp size={15} style={{ verticalAlign: -2, marginRight: 6 }} />Закупаем больше</div>
+          {growing.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет данных за два месяца подряд для сравнения.</div>}
+          <div className="rp-list">
+            {growing.map((r) => (
+              <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                <div className="rp-list-main">
+                  <div className="rp-list-cat">{r.name}</div>
+                  <div className="rp-muted" style={{ fontSize: 11 }}>{r.prevQty}{r.unit} → {r.curQty}{r.unit}</div>
+                </div>
+                <DeltaBadge pct={r.deltaPct} />
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Card>
+          <div className="rp-card-title" style={{ color: COLORS.accent }}><TrendingDown size={15} style={{ verticalAlign: -2, marginRight: 6 }} />Закупаем меньше</div>
+          {declining.length === 0 && <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет данных за два месяца подряд для сравнения.</div>}
+          <div className="rp-list">
+            {declining.map((r) => (
+              <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                <div className="rp-list-main">
+                  <div className="rp-list-cat">{r.name}</div>
+                  <div className="rp-muted" style={{ fontSize: 11 }}>{r.prevQty}{r.unit} → {r.curQty}{r.unit}</div>
+                </div>
+                <DeltaBadge pct={r.deltaPct} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      {supplierTrendData.length > 0 && topSuppliersThisMonth.length > 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <div className="rp-card-title">Траты по поставщикам — последние 6 месяцев</div>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={supplierTrendData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+              <Tooltip formatter={(v) => fmtRub(v)} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {topSuppliersThisMonth.map((id, i) => (
+                <Line key={id} type="monotone" dataKey={supplierName(id)} stroke={COLORS.chartPalette[i % COLORS.chartPalette.length]} strokeWidth={2} dot={{ r: 3 }} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
+
+      {selectedProduct && (
+        <Card style={{ marginTop: 16 }}>
+          <div className="rp-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>«{selectedProductName}» — по каждой поставке</span>
+            <button className="rp-icon-btn" onClick={() => setSelectedProduct(null)}><X size={16} /></button>
+          </div>
+          {productTimeline.length > 0 ? (
+            <>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={productTimeline}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(d) => d?.slice(5).split('-').reverse().join('.')} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip labelFormatter={(d) => d?.split('-').reverse().join('.')} formatter={(v, n) => n === 'qty' ? [`${v} ${productTimeline[0]?.unit || ''}`, 'Количество'] : v} />
+                  <Line type="monotone" dataKey="qty" stroke={COLORS.accent2} strokeWidth={2} dot={{ r: 4 }} />
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="rp-table-wrap" style={{ marginTop: 12 }}>
+                <table className="rp-table">
+                  <thead><tr><th>Дата</th><th>Поставщик</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                  <tbody>
+                    {productTimeline.slice().reverse().map((p, i) => (
+                      <tr key={i}><td>{p.date}</td><td>{p.supplier}</td><td className="rp-num">{p.qty} {p.unit}</td><td className="rp-num">{fmtRub(p.sum)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : <div className="rp-muted">Нет данных по этому товару.</div>}
+        </Card>
+      )}
+
+      {(newProducts.length > 0 || droppedProducts.length > 0) && (
+        <div className="rp-grid-2" style={{ marginTop: 16 }}>
+          {newProducts.length > 0 && (
+            <Card>
+              <div className="rp-card-title">Новые позиции в этом месяце</div>
+              <div className="rp-list">
+                {newProducts.map((r) => (
+                  <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                    <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
+                    <div className="rp-list-amount">{r.curQty}{r.unit}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+          {droppedProducts.length > 0 && (
+            <Card>
+              <div className="rp-card-title">Перестали заказывать</div>
+              <div className="rp-list">
+                {droppedProducts.map((r) => (
+                  <div key={r.key} className="rp-list-row rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                    <div className="rp-list-main"><div className="rp-list-cat">{r.name}</div><div className="rp-muted" style={{ fontSize: 11 }}>{r.suppliers.join(', ')}</div></div>
+                    <div className="rp-list-amount">было {r.prevQty}{r.unit}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {comparisonRows.length > 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <Section title="Все товары" count={comparisonRows.length} defaultOpen={false}>
+            <div className="rp-table-wrap">
+              <table className="rp-table">
+                <thead><tr><th>Товар</th><th>Поставщик(и)</th><th>Этот месяц</th><th>Прошлый месяц</th><th>Δ</th><th>Сумма (этот мес.)</th></tr></thead>
+                <tbody>
+                  {comparisonRows.map((r) => (
+                    <tr key={r.key} className="rp-clickable" onClick={() => setSelectedProduct(r.key)}>
+                      <td className="rp-strong">{r.name}</td>
+                      <td className="rp-muted" style={{ fontSize: 12 }}>{r.suppliers.join(', ')}</td>
+                      <td className="rp-num">{r.curQty} {r.unit}</td>
+                      <td className="rp-num">{r.prevQty} {r.unit}</td>
+                      <td className="rp-num"><DeltaBadge pct={r.deltaPct} /></td>
+                      <td className="rp-num">{fmtRub(r.curSum)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </Card>
+      )}
+    </div>
   );
 }
 
