@@ -2229,13 +2229,16 @@ function SuppliersPage({ ctx }) {
       const normalize = (s) => String(s || '').trim().toLowerCase();
       const existingByName = new Map(suppliers.map((s) => [normalize(s.name), s]));
       const newSuppliersToAdd = [];
-      const existingOrderKeys = new Set(
+      // key -> существующая запись (для дозаполнения составом задним числом)
+      const existingOrdersByKey = new Map(
         (month.supplierOrders || [])
           .filter((o) => o.source === 'iiko')
-          .map((o) => `${o.supplierId}::${o.date}::${o.amount}`)
+          .map((o) => [`${o.supplierId}::${o.date}::${o.amount}`, o])
       );
       const newOrdersToAdd = [];
+      const idsToUpdateItems = new Map(); // id -> items[]
       let skipped = 0;
+      let filledIn = 0;
 
       for (const inv of invoices) {
         const key = normalize(inv.supplier);
@@ -2250,18 +2253,35 @@ function SuppliersPage({ ctx }) {
           supplierId = created.id;
         }
         const orderKey = `${supplierId}::${inv.date}::${inv.amount}`;
-        if (existingOrderKeys.has(orderKey)) { skipped += 1; continue; }
-        existingOrderKeys.add(orderKey);
+        const existing = existingOrdersByKey.get(orderKey);
+        if (existing) {
+          // Уже загружена раньше — если тогда состав ещё не умели получать (или он был
+          // пустым), а сейчас он есть, дозаполняем существующую запись, не создавая дубль.
+          if ((!existing.items || existing.items.length === 0) && inv.items?.length > 0) {
+            idsToUpdateItems.set(existing.id, inv.items);
+            filledIn += 1;
+          } else {
+            skipped += 1;
+          }
+          continue;
+        }
+        existingOrdersByKey.set(orderKey, { id: null }); // защита от дублей внутри этой же синхронизации
         newOrdersToAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko', items: inv.items || [] });
       }
 
       if (newSuppliersToAdd.length > 0) setSuppliers((prev) => [...prev, ...newSuppliersToAdd]);
-      if (newOrdersToAdd.length > 0) {
-        updateMonth((m) => ({ ...m, supplierOrders: [...(m.supplierOrders || []), ...newOrdersToAdd] }));
+      if (newOrdersToAdd.length > 0 || idsToUpdateItems.size > 0) {
+        updateMonth((m) => ({
+          ...m,
+          supplierOrders: [
+            ...(m.supplierOrders || []).map((o) => idsToUpdateItems.has(o.id) ? { ...o, items: idsToUpdateItems.get(o.id) } : o),
+            ...newOrdersToAdd
+          ]
+        }));
         logAudit({ what: 'Синхронизация накладных с iiko', amount: newOrdersToAdd.reduce((s, o) => s + o.amount, 0) });
       }
 
-      setSyncSummary({ added: newOrdersToAdd.length, newSuppliers: newSuppliersToAdd.length, skipped, total: invoices.length });
+      setSyncSummary({ added: newOrdersToAdd.length, newSuppliers: newSuppliersToAdd.length, skipped, filledIn, total: invoices.length });
     } catch (e) {
       setSyncError(e?.message || 'Не удалось связаться с сервером.');
     } finally {
@@ -2320,7 +2340,7 @@ function SuppliersPage({ ctx }) {
         <div className="rp-cash-check" style={{marginBottom:16}}>
           <Info size={13}/> {syncSummary.total === 0
             ? 'За этот месяц накладных в iiko не найдено.'
-            : <>Готово: добавлено <b>{syncSummary.added}</b> поставок{syncSummary.newSuppliers > 0 && <> (создано {syncSummary.newSuppliers} новых поставщиков)</>}{syncSummary.skipped > 0 && <>, {syncSummary.skipped} уже были загружены раньше</>}.</>}
+            : <>Готово: добавлено <b>{syncSummary.added}</b> поставок{syncSummary.newSuppliers > 0 && <> (создано {syncSummary.newSuppliers} новых поставщиков)</>}{syncSummary.filledIn > 0 && <>, у {syncSummary.filledIn} уже загруженных ранее дозаполнен состав</>}{syncSummary.skipped > 0 && <>, {syncSummary.skipped} уже были загружены раньше (без изменений)</>}.</>}
         </div>
       )}
 
