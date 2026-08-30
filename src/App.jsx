@@ -2654,6 +2654,9 @@ function IikoIntegrationPanel({ ctx }) {
   const [txLoading, setTxLoading] = useState(false);
   const [txResult, setTxResult] = useState(null);
   const [txError, setTxError] = useState('');
+  const [invLoading, setInvLoading] = useState(false);
+  const [invResult, setInvResult] = useState(null);
+  const [invError, setInvError] = useState('');
 
   const testConnection = async () => {
     setLoading(true); setError(''); setResult(null);
@@ -2727,6 +2730,24 @@ function IikoIntegrationPanel({ ctx }) {
     }
   };
 
+  const testInvoices = async () => {
+    setInvLoading(true); setInvError(''); setInvResult(null);
+    try {
+      const resp = await fetch('/api/iiko-invoices-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from: date, to: date })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setInvError(data?.error || 'Не удалось получить накладные.'); setInvResult(data); return; }
+      setInvResult(data);
+    } catch (e) {
+      setInvError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setInvLoading(false);
+    }
+  };
+
   return (
     <>
     <Card>
@@ -2793,6 +2814,22 @@ function IikoIntegrationPanel({ ctx }) {
         <div style={{marginTop:14}}>
           <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> {txResult.connected ? 'Сработало!' : 'Ответ с ошибкой —'} Пришлите этот JSON целиком.</div>
           <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(txResult, null, 2)}</pre>
+        </div>
+      )}
+    </Card>
+    <Card style={{marginTop:16}}>
+      <div className="rp-card-title">Накладные от поставщиков (эксперимент)</div>
+      <p className="rp-muted" style={{marginBottom:14}}>
+        Пробуем получить накладные с разбивкой по поставщику и номеру документа, чтобы в будущем подтягивать их
+        в раздел «Поставщики» автоматически, без ручного ввода. Две попытки разными способами — если обе дадут
+        ошибку, увидим точный текст и подправим запрос.
+      </p>
+      <button className="rp-btn" onClick={testInvoices} disabled={invLoading}>{invLoading ? 'Пробую…' : 'Проверить накладные'}</button>
+      {invError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {invError}</div>}
+      {invResult && (
+        <div style={{marginTop:14}}>
+          <div className="rp-cash-check" style={{marginBottom:10}}><Info size={13}/> {invResult.connected ? 'Запрос прошёл — смотрим, что внутри.' : 'Ответ с ошибкой —'} Пришлите этот JSON целиком.</div>
+          <pre style={{background:'#F4F3EF', border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(invResult, null, 2)}</pre>
         </div>
       )}
     </Card>
