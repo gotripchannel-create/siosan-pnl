@@ -1,11 +1,8 @@
 // Vercel Serverless Function: /api/iiko-invoices-test
-// ЭКСПЕРИМЕНТАЛЬНЫЙ тестовый запрос для проверки, можно ли получить накладные
-// от поставщиков через отчёт по проводкам (TRANSACTIONS). Ранее в этом же отчёте
-// уже встречались проводки типа INVOICE (счёт «Задолженность перед поставщиками»),
-// значит принципиально данные доступны — нужно проверить, можно ли получить их
-// с разбивкой по поставщику, номеру документа и позициям, а не только общей суммой.
-// Поля угаданы по общей структуре iiko OLAP — этот эндпоинт может вернуть ошибку
-// с точным списком того, что сервер ожидает. Изолирован в отдельный файл.
+// ЭКСПЕРИМЕНТАЛЬНЫЙ тестовый запрос. Сумма и количество товара в накладных уже
+// подтверждены рабочими (Sum.Incoming, Amount) — сейчас ищем поле с единицей
+// измерения товара (кг/шт/л), чтобы не гадать по названию, а показывать реальную
+// единицу из справочника номенклатуры iiko.
 
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
@@ -70,9 +67,6 @@ export default async function handler(req, res) {
   }
 
   const { from, to } = req.body || {};
-  // 11.08.2026 точно содержит проводку INVOICE (видели в отчёте по проводкам ранее) —
-  // используем как запасной вариант, если явная дата не передана, чтобы не тестировать
-  // на пустом дне.
   const dateTo = to || '2026-08-11';
   const dateFrom = from || dateTo;
 
@@ -80,14 +74,11 @@ export default async function handler(req, res) {
   try {
     token = await iikoAuth(serverUrl, login, password);
 
-    // Попытка №1: TRANSACTIONS с полями поставщика (сработало ранее, но на пустой
-    // день — теперь на дне с известной накладной).
+    // Попытка №1: «Product.MeasureUnit» как поле группировки.
     const bodyA = {
-      reportType: 'TRANSACTIONS',
-      buildSummary: false,
-      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Account.Name'],
-      groupByColFields: [],
-      aggregateFields: ['Sum.Incoming', 'Sum.Outgoing'],
+      reportType: 'TRANSACTIONS', buildSummary: false,
+      groupByRowFields: ['Counteragent.Name', 'Product.Name', 'Product.MeasureUnit'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Amount'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
         'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
@@ -95,10 +86,10 @@ export default async function handler(req, res) {
     };
     const attemptA = await olapAttempt(serverUrl, token, bodyA);
 
-    // Попытка №2: имя поля количества — «Amount» без суффикса.
+    // Попытка №2: «MeasureUnit» без префикса Product.
     const bodyB = {
       reportType: 'TRANSACTIONS', buildSummary: false,
-      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
+      groupByRowFields: ['Counteragent.Name', 'Product.Name', 'MeasureUnit'], groupByColFields: [],
       aggregateFields: ['Sum.Incoming', 'Amount'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
@@ -107,11 +98,11 @@ export default async function handler(req, res) {
     };
     const attemptB = await olapAttempt(serverUrl, token, bodyB);
 
-    // Попытка №3: «Quantity.Incoming».
+    // Попытка №3: «Product.Unit».
     const bodyC = {
       reportType: 'TRANSACTIONS', buildSummary: false,
-      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
-      aggregateFields: ['Sum.Incoming', 'Quantity.Incoming'],
+      groupByRowFields: ['Counteragent.Name', 'Product.Name', 'Product.Unit'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Amount'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
         'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
@@ -119,11 +110,11 @@ export default async function handler(req, res) {
     };
     const attemptC = await olapAttempt(serverUrl, token, bodyC);
 
-    // Попытка №4: «Weight.Incoming» (вдруг вес — отдельное поле, не количество).
+    // Попытка №4: «Unit.Name».
     const bodyD = {
       reportType: 'TRANSACTIONS', buildSummary: false,
-      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
-      aggregateFields: ['Sum.Incoming', 'Weight.Incoming'],
+      groupByRowFields: ['Counteragent.Name', 'Product.Name', 'Unit.Name'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Amount'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
         'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
@@ -134,10 +125,11 @@ export default async function handler(req, res) {
     res.status(200).json({
       connected: true,
       from: dateFrom, to: dateTo,
-      attempt_qty_field_Amount: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
-      attempt_qty_field_QuantityIncoming: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
-      attempt_qty_field_WeightIncoming: { ok: attemptD.ok, status: attemptD.status, requestBody: bodyD, raw: attemptD.json ?? attemptD.text?.slice(0, 3000) },
-      note: 'Три попытки подобрать имя поля количества/веса. Пришлите весь этот JSON целиком — по нему увидим, какое имя правильное.'
+      attempt_ProductMeasureUnit: { ok: attemptA.ok, status: attemptA.status, requestBody: bodyA, raw: attemptA.json ?? attemptA.text?.slice(0, 3000) },
+      attempt_MeasureUnit: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
+      attempt_ProductUnit: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
+      attempt_UnitName: { ok: attemptD.ok, status: attemptD.status, requestBody: bodyD, raw: attemptD.json ?? attemptD.text?.slice(0, 3000) },
+      note: 'Четыре попытки подобрать поле единицы измерения товара. Пришлите весь этот JSON целиком.'
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
