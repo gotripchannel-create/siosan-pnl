@@ -92,7 +92,7 @@ export default async function handler(req, res) {
     const invoices = rows
       .map(r => ({
         date: (r['DateTime.Typed'] || '').slice(0, 10),
-        supplier: (r['Counteragent.Name'] || '').replace(/^"|"$/g, '').trim() || 'Без названия',
+        supplier: (r['Counteragent.Name'] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim() || 'Без названия',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
       .filter(inv => inv.amount > 0 && inv.date)
@@ -124,7 +124,7 @@ export default async function handler(req, res) {
       if (itemsResp.ok) {
         for (const r of (itemsJson?.data || [])) {
           const date = (r['DateTime.Typed'] || '').slice(0, 10);
-          const supplier = (r['Counteragent.Name'] || '').replace(/^"|"$/g, '').trim() || 'Без названия';
+          const supplier = (r['Counteragent.Name'] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim() || 'Без названия';
           const key = `${date}::${supplier}`;
           (itemsByKey[key] ||= []).push({
             name: r['Product.Name'] || 'Без названия',

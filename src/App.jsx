@@ -2681,6 +2681,35 @@ function PurchaseAnalyticsPage({ ctx }) {
     return avg;
   }, [deliveryHistory]);
 
+  // Сводка по всем поставщикам сразу — этот месяц vs прошлый, сколько поставок, средний
+  // чек. Это главный экран при "Все поставщики": проваливаться в конкретного — через клик.
+  const supplierSummary = useMemo(() => {
+    const ids = new Set(suppliers.filter((s) => !s.archived).map((s) => s.id));
+    const rows = [...ids].map((id) => {
+      const curTotal = ((months[monthKey]?.supplierOrders) || []).filter((o) => o.supplierId === id).reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      const prevTotal = ((months[prevMonthKey]?.supplierOrders) || []).filter((o) => o.supplierId === id).reduce((s, o) => s + (Number(o.amount) || 0), 0);
+      const curCount = ((months[monthKey]?.supplierOrders) || []).filter((o) => o.supplierId === id).length;
+      const deltaPct = prevTotal > 0 ? ((curTotal - prevTotal) / prevTotal) * 100 : (curTotal > 0 ? null : 0);
+      return { id, name: supplierName(id), curTotal, prevTotal, curCount, deltaPct };
+    });
+    return rows.filter((r) => r.curTotal > 0 || r.prevTotal > 0).sort((a, b) => b.curTotal - a.curTotal);
+  }, [suppliers, months, monthKey, prevMonthKey]);
+
+  // Месячный ряд конкретного поставщика (последние 6 месяцев) — для графика при выборе
+  // в фильтре одного поставщика вместо "все".
+  const selectedSupplierMonthly = useMemo(() => {
+    if (supplierFilter === 'all') return [];
+    const keys = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(year, monthIdx - i, 1);
+      keys.push(monthKeyOf(d.getFullYear(), d.getMonth()));
+    }
+    return keys.map((mk) => ({
+      label: `${mk.slice(5)}.${mk.slice(2, 4)}`,
+      Сумма: Math.round((((months[mk]?.supplierOrders) || []).filter((o) => o.supplierId === supplierFilter).reduce((s, o) => s + (Number(o.amount) || 0), 0)) * 100) / 100
+    }));
+  }, [supplierFilter, months, year, monthIdx]);
+
   const comparisonRows = useMemo(() => {
     const keys = new Set([...curMap.keys(), ...prevMap.keys()]);
     const rows = [];
@@ -2813,49 +2842,95 @@ function PurchaseAnalyticsPage({ ctx }) {
       {/* Всё содержимое — в одной карточке, разделено сворачиваемыми секциями,
           чтобы не было "стены" отдельных блоков подряд. */}
       <Card>
-        <Section title="История поставок — сравнение с предыдущей от того же поставщика" count={deliveryHistory.length} defaultOpen={true}>
-          {deliveryHistory.length === 0 ? (
-            <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет ни одной поставки.</div>
-          ) : (
-            <div className="rp-table-wrap">
-              <table className="rp-table">
-                <thead><tr><th>Дата</th><th>Поставщик</th><th>Сумма</th><th>Пред. поставка</th><th>Δ к предыдущей</th><th>Δ к средней</th></tr></thead>
-                <tbody>
-                  {deliveryHistory.slice(0, 40).map((d) => {
-                    const avg = avgBySupplier.get(d.supplierId) || 0;
-                    const avgDeltaPct = avg > 0 ? ((d.amount - avg) / avg) * 100 : null;
-                    const isAnomaly = avgDeltaPct != null && Math.abs(avgDeltaPct) >= 60;
-                    return (
-                      <tr key={d.id} style={isAnomaly ? { background: `${COLORS.accent2}11` } : {}}>
-                        <td>{d.date.split('-').reverse().join('.')}</td>
-                        <td className="rp-strong">{d.supplierName}{!d.hasItems && <span className="rp-muted" title="Без состава — добавлено вручную или ещё не дозаполнено" style={{ marginLeft: 4, fontSize: 10 }}>✎</span>}</td>
-                        <td className="rp-num">{fmtRub(d.amount)}</td>
-                        <td className="rp-num">{d.prevAmount != null ? fmtRub(d.prevAmount) : '—'}</td>
-                        <td className="rp-num">
-                          {d.deltaPct == null ? <span className="rp-muted">первая</span> : (
-                            <span className={`rp-delta ${d.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
-                              {d.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {d.deltaPct > 0 ? '+' : ''}{d.deltaPct.toFixed(0)}%
-                            </span>
-                          )}
-                        </td>
-                        <td className="rp-num">
-                          {avgDeltaPct == null ? '—' : (
-                            <span className={isAnomaly ? 'rp-delta rp-delta-bad' : 'rp-muted'} style={isAnomaly ? {} : { fontSize: 12 }}>
-                              {isAnomaly && <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 2 }} />}
-                              {avgDeltaPct > 0 ? '+' : ''}{avgDeltaPct.toFixed(0)}%
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {deliveryHistory.length > 40 && <div className="rp-muted" style={{ fontSize: 12, marginTop: 8 }}>Показаны последние 40 из {deliveryHistory.length}.</div>}
-              <p className="rp-muted" style={{ fontSize: 11, marginTop: 10 }}>«Δ к средней» — насколько поставка отличается от типичного размера поставки этого поставщика; подсвечены отклонения от 60% — возможно, стоит уточнить, почему заказали заметно больше или меньше обычного.</p>
-            </div>
-          )}
-        </Section>
+        {supplierFilter === 'all' ? (
+          <Section title="Сводка по поставщикам" count={supplierSummary.length} defaultOpen={true}>
+            {supplierSummary.length === 0 ? (
+              <div className="rp-muted" style={{ fontSize: 13 }}>Пока нет ни одной поставки.</div>
+            ) : (
+              <>
+                <p className="rp-muted" style={{ fontSize: 12, marginBottom: 10 }}>Клик по поставщику — детальная история и график только по нему.</p>
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead><tr><th>Поставщик</th><th>Поставок в этом месяце</th><th>Этот месяц</th><th>Прошлый месяц</th><th>Δ</th></tr></thead>
+                    <tbody>
+                      {supplierSummary.map((r) => (
+                        <tr key={r.id} className="rp-clickable" onClick={() => setSupplierFilter(r.id)}>
+                          <td className="rp-strong">{r.name}</td>
+                          <td className="rp-num">{fmt0(r.curCount)}</td>
+                          <td className="rp-num">{fmtRub(r.curTotal)}</td>
+                          <td className="rp-num">{r.prevTotal > 0 ? fmtRub(r.prevTotal) : '—'}</td>
+                          <td className="rp-num">
+                            {r.deltaPct == null ? <span className="rp-badge" style={{ background: `${COLORS.accent}22`, color: COLORS.accent }}>новый</span> : r.prevTotal === 0 && r.curTotal === 0 ? '—' : (
+                              <span className={`rp-delta ${r.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
+                                {r.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {r.deltaPct > 0 ? '+' : ''}{r.deltaPct.toFixed(0)}%
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </Section>
+        ) : (
+          <Section title={`История — ${supplierName(supplierFilter)}`} count={deliveryHistory.length} defaultOpen={true}>
+            <button className="rp-btn-link" style={{ marginBottom: 12 }} onClick={() => setSupplierFilter('all')}>← Ко всем поставщикам</button>
+
+            {selectedSupplierMonthly.some((r) => r.Сумма > 0) && (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={selectedSupplierMonthly}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <Tooltip formatter={(v) => fmtRub(v)} />
+                  <Bar dataKey="Сумма" fill={COLORS.accent} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+
+            {deliveryHistory.length === 0 ? (
+              <div className="rp-muted" style={{ fontSize: 13, marginTop: 12 }}>Пока нет поставок от этого поставщика.</div>
+            ) : (
+              <div className="rp-table-wrap" style={{ marginTop: 12 }}>
+                <table className="rp-table">
+                  <thead><tr><th>Дата</th><th>Сумма</th><th>Пред. поставка</th><th>Δ к предыдущей</th><th>Δ к средней</th></tr></thead>
+                  <tbody>
+                    {deliveryHistory.map((d) => {
+                      const avg = avgBySupplier.get(d.supplierId) || 0;
+                      const avgDeltaPct = avg > 0 ? ((d.amount - avg) / avg) * 100 : null;
+                      const isAnomaly = avgDeltaPct != null && Math.abs(avgDeltaPct) >= 60;
+                      return (
+                        <tr key={d.id} style={isAnomaly ? { background: `${COLORS.accent2}11` } : {}}>
+                          <td>{d.date.split('-').reverse().join('.')}</td>
+                          <td className="rp-num">{fmtRub(d.amount)}</td>
+                          <td className="rp-num">{d.prevAmount != null ? fmtRub(d.prevAmount) : '—'}</td>
+                          <td className="rp-num">
+                            {d.deltaPct == null ? <span className="rp-muted">первая</span> : (
+                              <span className={`rp-delta ${d.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
+                                {d.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {d.deltaPct > 0 ? '+' : ''}{d.deltaPct.toFixed(0)}%
+                              </span>
+                            )}
+                          </td>
+                          <td className="rp-num">
+                            {avgDeltaPct == null ? '—' : (
+                              <span className={isAnomaly ? 'rp-delta rp-delta-bad' : 'rp-muted'} style={isAnomaly ? {} : { fontSize: 12 }}>
+                                {isAnomaly && <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 2 }} />}
+                                {avgDeltaPct > 0 ? '+' : ''}{avgDeltaPct.toFixed(0)}%
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <p className="rp-muted" style={{ fontSize: 11, marginTop: 10 }}>«Δ к средней» — насколько поставка отличается от типичного размера поставки этого поставщика; подсвечены отклонения от 60%.</p>
+              </div>
+            )}
+          </Section>
+        )}
 
         <Section title="Топ закупок в этом месяце" count={topThisMonth.length} defaultOpen={true}>
           {topThisMonth.length === 0 ? (
