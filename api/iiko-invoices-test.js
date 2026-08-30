@@ -70,15 +70,18 @@ export default async function handler(req, res) {
   }
 
   const { from, to } = req.body || {};
-  const dateTo = to || new Date().toISOString().slice(0, 10);
+  // 11.08.2026 точно содержит проводку INVOICE (видели в отчёте по проводкам ранее) —
+  // используем как запасной вариант, если явная дата не передана, чтобы не тестировать
+  // на пустом дне.
+  const dateTo = to || '2026-08-11';
   const dateFrom = from || dateTo;
 
   let token = null;
   try {
     token = await iikoAuth(serverUrl, login, password);
 
-    // Попытка №1: TRANSACTIONS с полями поставщика (без DocumentNumber — сервер сказал,
-    // что такого поля нет).
+    // Попытка №1: TRANSACTIONS с полями поставщика (сработало ранее, но на пустой
+    // день — теперь на дне с известной накладной).
     const bodyA = {
       reportType: 'TRANSACTIONS',
       buildSummary: false,
@@ -92,31 +95,31 @@ export default async function handler(req, res) {
     };
     const attemptA = await olapAttempt(serverUrl, token, bodyA);
 
-    // Попытка №2: reportType STOCK (правильное имя — сервер сам подсказал список типов:
-    // STOCK, SALES, TRANSACTIONS, DELIVERIES) — пробуем минимальный набор полей.
+    // Попытка №2: reportType STOCK — вместо несуществующего DocumentType пробуем
+    // TransactionType (как в TRANSACTIONS — возможно, отчёты используют общую схему полей).
     const bodyB = {
       reportType: 'STOCK',
       buildSummary: false,
-      groupByRowFields: ['DocumentType', 'Counteragent.Name', 'Store.Name'],
+      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Account.Name'],
       groupByColFields: [],
-      aggregateFields: ['Amount', 'Sum'],
+      aggregateFields: ['Sum.Incoming', 'Sum.Outgoing'],
       filters: {
-        'DocumentType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
+        'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
+        'TransactionType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
       }
     };
     const attemptB = await olapAttempt(serverUrl, token, bodyB);
 
-    // Попытка №3: STOCK с составом накладной — по товарам, на случай если попытка №2
-    // сработает и захочется сразу увидеть позиции.
+    // Попытка №3: STOCK с составом накладной — по товарам (если попытка №2 сработает).
     const bodyC = {
       reportType: 'STOCK',
       buildSummary: false,
-      groupByRowFields: ['DocumentType', 'Counteragent.Name', 'Product.Name', 'Date.Typed'],
+      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
       groupByColFields: [],
-      aggregateFields: ['Amount', 'Sum'],
+      aggregateFields: ['Amount.Incoming', 'Sum.Incoming'],
       filters: {
-        'Date.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
-        'DocumentType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
+        'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
+        'TransactionType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
       }
     };
     const attemptC = await olapAttempt(serverUrl, token, bodyC);
