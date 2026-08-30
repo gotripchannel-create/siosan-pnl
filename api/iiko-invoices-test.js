@@ -95,43 +95,35 @@ export default async function handler(req, res) {
     };
     const attemptA = await olapAttempt(serverUrl, token, bodyA);
 
-    // Попытка №2: reportType STOCK — вместо несуществующего DocumentType пробуем
-    // TransactionType (как в TRANSACTIONS — возможно, отчёты используют общую схему полей).
+    // Попытка №2: имя поля количества — «Amount» без суффикса.
     const bodyB = {
-      reportType: 'STOCK',
-      buildSummary: false,
-      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Account.Name'],
-      groupByColFields: [],
-      aggregateFields: ['Sum.Incoming', 'Sum.Outgoing'],
+      reportType: 'TRANSACTIONS', buildSummary: false,
+      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Amount'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
-        'TransactionType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
+        'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
       }
     };
     const attemptB = await olapAttempt(serverUrl, token, bodyB);
 
-    // Попытка №3: STOCK с составом накладной — по товарам (если попытка №2 сработает).
+    // Попытка №3: «Quantity.Incoming».
     const bodyC = {
-      reportType: 'STOCK',
-      buildSummary: false,
-      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
-      groupByColFields: [],
-      aggregateFields: ['Amount.Incoming', 'Sum.Incoming'],
+      reportType: 'TRANSACTIONS', buildSummary: false,
+      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Quantity.Incoming'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
-        'TransactionType': { filterType: 'IncludeValues', values: ['INCOMING_INVOICE'] }
+        'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
       }
     };
     const attemptC = await olapAttempt(serverUrl, token, bodyC);
 
-    // Попытка №4: состав накладной ЧЕРЕЗ УЖЕ РАБОЧИЙ TRANSACTIONS (не STOCK) — добавляем
-    // Product.Name к уже подтверждённым рабочим полям (DateTime.Typed, Counteragent.Name).
+    // Попытка №4: «Weight.Incoming» (вдруг вес — отдельное поле, не количество).
     const bodyD = {
-      reportType: 'TRANSACTIONS',
-      buildSummary: false,
-      groupByRowFields: ['DateTime.Typed', 'Counteragent.Name', 'Product.Name'],
-      groupByColFields: [],
-      aggregateFields: ['Sum.Incoming', 'Amount.Incoming'],
+      reportType: 'TRANSACTIONS', buildSummary: false,
+      groupByRowFields: ['Counteragent.Name', 'Product.Name'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming', 'Weight.Incoming'],
       filters: {
         'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dateFrom, to: dateTo, includeLow: true, includeHigh: true },
         'TransactionType': { filterType: 'IncludeValues', values: ['INVOICE'] }
@@ -142,11 +134,10 @@ export default async function handler(req, res) {
     res.status(200).json({
       connected: true,
       from: dateFrom, to: dateTo,
-      attempt_TRANSACTIONS: { ok: attemptA.ok, status: attemptA.status, requestBody: bodyA, raw: attemptA.json ?? attemptA.text?.slice(0, 3000) },
-      attempt_STOCK_min: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
-      attempt_STOCK_items: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
-      attempt_TRANSACTIONS_items: { ok: attemptD.ok, status: attemptD.status, requestBody: bodyD, raw: attemptD.json ?? attemptD.text?.slice(0, 3000) },
-      note: 'Четыре попытки получить накладные и их состав. Пришлите весь этот JSON целиком — по нему увидим, что реально доступно на вашей версии сервера.'
+      attempt_qty_field_Amount: { ok: attemptB.ok, status: attemptB.status, requestBody: bodyB, raw: attemptB.json ?? attemptB.text?.slice(0, 3000) },
+      attempt_qty_field_QuantityIncoming: { ok: attemptC.ok, status: attemptC.status, requestBody: bodyC, raw: attemptC.json ?? attemptC.text?.slice(0, 3000) },
+      attempt_qty_field_WeightIncoming: { ok: attemptD.ok, status: attemptD.status, requestBody: bodyD, raw: attemptD.json ?? attemptD.text?.slice(0, 3000) },
+      note: 'Три попытки подобрать имя поля количества/веса. Пришлите весь этот JSON целиком — по нему увидим, какое имя правильное.'
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
