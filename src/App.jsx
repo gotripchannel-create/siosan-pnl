@@ -472,6 +472,26 @@ function Card({ children, className = '', style = {} }) {
   return <div className={`rp-card ${className}`} style={style}>{children}</div>;
 }
 
+function Section({ title, count, defaultOpen = true, children, right }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{borderTop: `1px solid ${COLORS.line}`, paddingTop:16, marginTop:16}}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer', userSelect:'none'}}
+      >
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          {open ? <ChevronDown size={16} color={COLORS.inkSoft}/> : <ChevronRight size={16} color={COLORS.inkSoft}/>}
+          <span style={{fontSize:14, fontWeight:700}}>{title}</span>
+          {count != null && <span className="rp-muted" style={{fontSize:12}}>({count})</span>}
+        </div>
+        {right}
+      </div>
+      {open && <div style={{marginTop:14}}>{children}</div>}
+    </div>
+  );
+}
+
 function Stat({ label, value, sub, delta, deltaGood = true, accent, onClick }) {
   return (
     <div className={`rp-stat ${onClick ? 'rp-clickable' : ''}`} onClick={onClick}>
@@ -3130,49 +3150,43 @@ function IikoDashboardPage({ ctx }) {
         {dayError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {dayError}</div>}
 
         {dayReport && (
-          <div style={{marginTop:20}}>
-            {/* === Ключевые цифры === */}
-            <div className="rp-grid-4">
+          <div>
+            {/* === Ключевые цифры — всегда видны === */}
+            <div className="rp-grid-4" style={{marginTop:20}}>
               <Stat label="Выручка" value={fmtRub(dayReport.revenue?.total)} />
               <Stat label="Чеков" value={fmt0(dayReport.revenue?.checks)} />
               <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
               <Stat label="Удаления" value={fmtRub(dayReport.deletions?.total)} accent={COLORS.danger} />
             </div>
 
-            {/* === Способы оплаты + кассовые смены === */}
-            <div className="rp-grid-2" style={{marginTop:24}}>
-              <div>
-                <div className="rp-draft-section">По способам оплаты</div>
-                {dayReport.revenue?.byPayType && Object.keys(dayReport.revenue.byPayType).length > 0 ? (
-                  <div className="rp-list">
-                    {Object.entries(dayReport.revenue.byPayType).map(([name, amt]) => (
-                      <div className="rp-list-row" key={name}><div className="rp-list-main"><div className="rp-list-cat">{name}</div></div><div className="rp-list-amount">{fmtRub(amt)}</div></div>
-                    ))}
-                  </div>
-                ) : <div className="rp-muted" style={{fontSize:13}}>Нет данных.</div>}
-              </div>
-              <div>
-                <div className="rp-draft-section">Кассовые смены</div>
-                {dayReport.cashShifts?.length > 0 ? (
-                  <div className="rp-list">
-                    {dayReport.cashShifts.map((s,i) => (
-                      <div key={i} className="rp-list-row" style={{flexDirection:'column', alignItems:'flex-start', gap:4}}>
-                        <div style={{display:'flex', justifyContent:'space-between', width:'100%'}}>
-                          <b>Смена №{s.sessionNumber}</b>
-                          <span className="rp-muted" style={{fontSize:12}}>{s.status === 'OPEN' ? 'открыта' : 'закрыта'}</span>
-                        </div>
-                        <div className="rp-muted" style={{fontSize:12}}>Внесено {fmtRub(s.payIn)} · Изъято {fmtRub(s.payOut)} · Нал {fmtRub(s.salesCash)} · Карта {fmtRub(s.salesCard)}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : <div className="rp-muted" style={{fontSize:13}}>Кассовых смен за этот день не найдено (или все были фантомными).</div>}
-              </div>
-            </div>
+            <Section title="По способам оплаты" defaultOpen={true}>
+              {dayReport.revenue?.byPayType && Object.keys(dayReport.revenue.byPayType).length > 0 ? (
+                <div className="rp-list">
+                  {Object.entries(dayReport.revenue.byPayType).map(([name, amt]) => (
+                    <div className="rp-list-row" key={name}><div className="rp-list-main"><div className="rp-list-cat">{name}</div></div><div className="rp-list-amount">{fmtRub(amt)}</div></div>
+                  ))}
+                </div>
+              ) : <div className="rp-muted" style={{fontSize:13}}>Нет данных.</div>}
+            </Section>
 
-            {/* === Чеки за день === */}
+            <Section title="Кассовые смены" count={dayReport.cashShifts?.length ?? 0} defaultOpen={true}>
+              {dayReport.cashShifts?.length > 0 ? (
+                <div className="rp-list">
+                  {dayReport.cashShifts.map((s,i) => (
+                    <div key={i} className="rp-list-row" style={{flexDirection:'column', alignItems:'flex-start', gap:4}}>
+                      <div style={{display:'flex', justifyContent:'space-between', width:'100%'}}>
+                        <b>Смена №{s.sessionNumber}</b>
+                        <span className="rp-muted" style={{fontSize:12}}>{s.status === 'OPEN' ? 'открыта' : 'закрыта'}</span>
+                      </div>
+                      <div className="rp-muted" style={{fontSize:12}}>Внесено {fmtRub(s.payIn)} · Изъято {fmtRub(s.payOut)} · Нал {fmtRub(s.salesCash)} · Карта {fmtRub(s.salesCard)}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="rp-muted" style={{fontSize:13}}>Кассовых смен за этот день не найдено (или все были фантомными).</div>}
+            </Section>
+
             {dayReport.checks?.length > 0 && (
-              <div style={{marginTop:24}}>
-                <div className="rp-draft-section">Чеки за день ({dayReport.checks.length})</div>
+              <Section title="Чеки за день" count={dayReport.checks.length} defaultOpen={false}>
                 <div className="rp-table-wrap">
                   <table className="rp-table">
                     <thead><tr><th>Время</th><th>№ заказа</th><th>Оплата</th><th style={{textAlign:'right'}}>Сумма</th></tr></thead>
@@ -3207,49 +3221,42 @@ function IikoDashboardPage({ ctx }) {
                     </tbody>
                   </table>
                 </div>
-              </div>
+              </Section>
             )}
 
-            {/* === Что продавалось + что удаляли === */}
-            <div className="rp-grid-2" style={{marginTop:24}}>
-              {dayReport.topDishes?.length > 0 && (
-                <div>
-                  <div className="rp-draft-section">Что продавалось (топ-20)</div>
-                  <div className="rp-table-wrap">
-                    <table className="rp-table">
-                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
-                      <tbody>
-                        {dayReport.topDishes.map((d,i) => (
-                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+            {dayReport.topDishes?.length > 0 && (
+              <Section title="Что продавалось" count={dayReport.topDishes.length} defaultOpen={false}>
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                    <tbody>
+                      {dayReport.topDishes.map((d,i) => (
+                        <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              )}
+              </Section>
+            )}
 
-              {dayReport.deletions?.items?.length > 0 && (
-                <div>
-                  <div className="rp-draft-section">Что удаляли</div>
-                  <div className="rp-table-wrap">
-                    <table className="rp-table">
-                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
-                      <tbody>
-                        {dayReport.deletions.items.map((d,i) => (
-                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+            {dayReport.deletions?.items?.length > 0 && (
+              <Section title="Что удаляли" count={dayReport.deletions.items.length} defaultOpen={false}>
+                <div className="rp-table-wrap">
+                  <table className="rp-table">
+                    <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                    <tbody>
+                      {dayReport.deletions.items.map((d,i) => (
+                        <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              )}
-            </div>
+              </Section>
+            )}
 
-            {/* === Технические детали и сверка — свёрнуто по умолчанию === */}
             {(dayReport.revenue?.payIncomeAdded > 0 || dayReport.secondBranch || dayReport.secondBranchRawOrders?.length > 0 || Object.keys(dayReport.errors || {}).length > 0) && (
-              <details style={{marginTop:24}}>
-                <summary style={{cursor:'pointer', fontSize:13, color:COLORS.inkSoft, fontWeight:600}}>Технические детали и сверка</summary>
-                <div style={{marginTop:12, display:'flex', flexDirection:'column', gap:10}}>
+              <Section title="Технические детали и сверка" defaultOpen={false}>
+                <div style={{display:'flex', flexDirection:'column', gap:10}}>
                   {dayReport.revenue?.payIncomeAdded > 0 && (
                     <div className="rp-cash-check">
                       <Info size={13}/> В выручку дня включено внесение по заказу: <b>{fmtRub(dayReport.revenue.payIncomeAdded)}</b> — деньги, принятые отдельной кассовой операцией «Внесение наличных» (любой комментарий, кроме «дб» — начального остатка кассы, и «зп» — выплаты зарплаты), не проходят через обычную продажу и не попадают в отчёт по продажам, поэтому добавлены отдельно.
@@ -3285,7 +3292,7 @@ function IikoDashboardPage({ ctx }) {
                     </div>
                   )}
                 </div>
-              </details>
+              </Section>
             )}
           </div>
         )}
@@ -3376,24 +3383,26 @@ function IikoDashboardPage({ ctx }) {
                 </div>
                 <p className="rp-muted" style={{marginTop:10, fontSize:11}}>Внесение по заказу уже учтено в «Выручка за месяц (iiko)» выше. Здесь — общее движение наличных по всем причинам сразу (без разбивки по комментарию). Отдельного поля «инкассация» в API нет — она входит в изъятия.</p>
                 {cashData.shifts?.length > 0 && (
-                  <div className="rp-table-wrap" style={{marginTop:12}}>
-                    <table className="rp-table">
-                      <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
-                      <tbody>
-                        {cashData.shifts.map((s,i) => (
-                          <tr key={i}>
-                            <td>{s.date?.split('-').reverse().join('.')}</td>
-                            <td>№{s.sessionNumber}</td>
-                            <td>{s.status === 'OPEN' ? 'Открыта' : s.status === 'CLOSED' ? 'Закрыта' : s.status}</td>
-                            <td className="rp-num">{fmtRub(s.payIn)}</td>
-                            <td className="rp-num">{fmtRub(s.payOut)}</td>
-                            <td className="rp-num">{fmtRub(s.salesCash)}</td>
-                            <td className="rp-num">{fmtRub(s.salesCard)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <Section title="Смены за месяц" count={cashData.shifts.length} defaultOpen={false}>
+                    <div className="rp-table-wrap">
+                      <table className="rp-table">
+                        <thead><tr><th>Дата</th><th>Смена</th><th>Статус</th><th>Внесено</th><th>Изъято</th><th>Нал. продажи</th><th>Карта</th></tr></thead>
+                        <tbody>
+                          {cashData.shifts.map((s,i) => (
+                            <tr key={i}>
+                              <td>{s.date?.split('-').reverse().join('.')}</td>
+                              <td>№{s.sessionNumber}</td>
+                              <td>{s.status === 'OPEN' ? 'Открыта' : s.status === 'CLOSED' ? 'Закрыта' : s.status}</td>
+                              <td className="rp-num">{fmtRub(s.payIn)}</td>
+                              <td className="rp-num">{fmtRub(s.payOut)}</td>
+                              <td className="rp-num">{fmtRub(s.salesCash)}</td>
+                              <td className="rp-num">{fmtRub(s.salesCard)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Section>
                 )}
               </>
             )}
