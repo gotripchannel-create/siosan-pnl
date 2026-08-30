@@ -2271,6 +2271,29 @@ function SuppliersPage({ ctx }) {
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
   const totalPaid = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.paid || 0), 0);
 
+  // График поставок этого месяца — группируем поставки (supplierOrders) по дню.
+  const deliveriesByDay = useMemo(() => {
+    const map = {};
+    for (const o of (month.supplierOrders || [])) {
+      if (!o.date) continue;
+      const sup = suppliers.find((s) => s.id === o.supplierId);
+      (map[o.date] ||= []).push({ supplierName: sup?.name || '—', amount: Number(o.amount) || 0 });
+    }
+    return map;
+  }, [month.supplierOrders, suppliers]);
+
+  const calendarWeeks = useMemo(() => {
+    const total = daysInMonth(year, monthIdx);
+    const firstWeekday = (new Date(year, monthIdx, 1).getDay() + 6) % 7; // 0=Пн
+    const cells = [];
+    for (let i = 0; i < firstWeekday; i++) cells.push(null);
+    for (let d = 1; d <= total; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+    const weeks = [];
+    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+    return weeks;
+  }, [year, monthIdx]);
+
   return (
     <div className="rp-page">
       <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Заявки, оплаты и задолженность (нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year})</div></div>
@@ -2330,6 +2353,34 @@ function SuppliersPage({ ctx }) {
             {visibleSuppliers.length === 0 && <tr><td colSpan={5}><EmptyState icon={<Truck size={24} color={COLORS.inkSoft} />} title="Поставщиков нет" /></td></tr>}
           </tbody>
         </table></div>
+      </Card>
+
+      <Card style={{marginTop:16}}>
+        <div className="rp-card-title">График поставок — {MONTHS_RU[monthIdx]} {year}</div>
+        <div className="rp-muted" style={{marginBottom:14}}>Что и когда приехало. Только суммы поставок — статус оплаты здесь не отслеживается.</div>
+        <div className="rp-cal-grid">
+          {WEEKDAYS_RU.map((w) => <div key={w} className="rp-cal-weekday">{w}</div>)}
+          {calendarWeeks.flat().map((d, i) => {
+            if (d == null) return <div key={i} className="rp-cal-cell rp-cal-cell-empty" />;
+            const dateKey = dateStr(year, monthIdx, d);
+            const items = deliveriesByDay[dateKey] || [];
+            const dayTotal = items.reduce((s, it) => s + it.amount, 0);
+            const isToday = dateKey === new Date().toISOString().slice(0, 10);
+            return (
+              <div key={i} className={`rp-cal-cell ${items.length > 0 ? 'rp-cal-has-items' : ''} ${isToday ? 'rp-cal-today' : ''}`}>
+                <div className="rp-cal-daynum">{d}</div>
+                {items.length > 0 && (
+                  <div className="rp-cal-items">
+                    {items.map((it, j) => (
+                      <div key={j} className="rp-cal-chip" title={`${it.supplierName}: ${fmtRub(it.amount)}`}>{it.supplierName}</div>
+                    ))}
+                    <div className="rp-cal-daytotal">{fmtRub(dayTotal)}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </Card>
 
       {newSupplier && (
@@ -4610,6 +4661,22 @@ function GlobalStyle() {
       * { box-sizing: border-box; }
       @keyframes rp-spin-kf { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       .rp-spin { animation: rp-spin-kf 0.9s linear infinite; }
+      .rp-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+      .rp-cal-weekday { text-align: center; font-size: 11px; font-weight: 700; color: ${COLORS.inkSoft}; padding-bottom: 4px; text-transform: uppercase; }
+      .rp-cal-cell { min-height: 66px; border: 1px solid ${COLORS.line}; border-radius: 8px; padding: 6px; background: #fff; display: flex; flex-direction: column; gap: 4px; }
+      .rp-cal-cell-empty { border: none; background: transparent; }
+      .rp-cal-cell.rp-cal-has-items { background: ${COLORS.bg}; border-color: ${COLORS.accent}; }
+      .rp-cal-cell.rp-cal-today { box-shadow: inset 0 0 0 2px ${COLORS.accent2}; }
+      .rp-cal-daynum { font-size: 11px; font-weight: 600; color: ${COLORS.inkSoft}; }
+      .rp-cal-items { display: flex; flex-direction: column; gap: 2px; }
+      .rp-cal-chip { font-size: 10.5px; background: ${COLORS.accent}22; color: ${COLORS.accent}; border-radius: 4px; padding: 1px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .rp-cal-daytotal { font-size: 11px; font-weight: 700; margin-top: 2px; }
+      @media (max-width: 720px) {
+        .rp-cal-grid { grid-template-columns: repeat(7, minmax(0,1fr)); gap: 3px; }
+        .rp-cal-cell { min-height: 50px; padding: 3px; }
+        .rp-cal-chip { display: none; }
+        .rp-cal-daytotal { font-size: 9px; }
+      }
       .rp-root { display: flex; min-height: 100vh; background: ${COLORS.bg}; font-family: 'Inter', -apple-system, sans-serif; color: ${COLORS.ink}; font-size: 13.5px; }
       .rp-sidebar { width: 216px; flex-shrink: 0; background: #1B2420; color: #EDEBE3; display: flex; flex-direction: column; padding: 20px 14px; }
       .rp-nav-close, .rp-nav-hamburger { display: none; }
