@@ -2587,9 +2587,10 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
 /* ============================== Аналитика закупок ============================== */
 
 function PurchaseAnalyticsPage({ ctx }) {
-  const { months, suppliers, year, monthIdx } = ctx;
+  const { months, suppliers, year, monthIdx, goMonth } = ctx;
   const [selectedProduct, setSelectedProduct] = useState(null); // normalized key
   const [supplierFilter, setSupplierFilter] = useState('all');
+  const [expandedDelivery, setExpandedDelivery] = useState(null); // id поставки, состав которой показан
 
   const monthKey = monthKeyOf(year, monthIdx);
   const prevDateObj = new Date(year, monthIdx - 1, 1);
@@ -2653,7 +2654,7 @@ function PurchaseAnalyticsPage({ ctx }) {
       for (const o of (m.supplierOrders || [])) {
         if (!o.date) continue;
         if (supplierFilter !== 'all' && o.supplierId !== supplierFilter) continue;
-        all.push({ id: o.id, date: o.date, supplierId: o.supplierId, amount: Number(o.amount) || 0, hasItems: (o.items || []).length > 0 });
+        all.push({ id: o.id, date: o.date, supplierId: o.supplierId, amount: Number(o.amount) || 0, hasItems: (o.items || []).length > 0, items: o.items || [] });
       }
     }
     all.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
@@ -2808,12 +2809,19 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   return (
     <div className="rp-page">
-      <div className="rp-page-head">
-        <h1>Аналитика закупок</h1>
-        <div className="rp-page-sub">
-          {hasComparison
-            ? <>{MONTHS_RU[monthIdx]} {year} против {MONTHS_RU[prevDateObj.getMonth()].toLowerCase()} {prevDateObj.getFullYear()}</>
-            : <>{MONTHS_RU[monthIdx]} {year} — за прошлый месяц данных ещё нет, сравнение появится позже</>}
+      <div className="rp-page-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h1>Аналитика закупок</h1>
+          <div className="rp-page-sub">
+            {hasComparison
+              ? <>{MONTHS_RU[monthIdx]} {year} против {MONTHS_RU[prevDateObj.getMonth()].toLowerCase()} {prevDateObj.getFullYear()}</>
+              : <>{MONTHS_RU[monthIdx]} {year} — за прошлый месяц данных ещё нет, сравнение появится позже</>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button className="rp-icon-btn" onClick={() => goMonth(-1)}><ChevronLeft size={18} /></button>
+          <div style={{ fontWeight: 700, minWidth: 130, textAlign: 'center' }}>{MONTHS_RU[monthIdx]} {year}</div>
+          <button className="rp-icon-btn" onClick={() => goMonth(1)}><ChevronRight size={18} /></button>
         </div>
       </div>
 
@@ -2895,38 +2903,59 @@ function PurchaseAnalyticsPage({ ctx }) {
             ) : (
               <div className="rp-table-wrap" style={{ marginTop: 12 }}>
                 <table className="rp-table">
-                  <thead><tr><th>Дата</th><th>Сумма</th><th>Пред. поставка</th><th>Δ к предыдущей</th><th>Δ к средней</th></tr></thead>
+                  <thead><tr><th></th><th>Дата</th><th>Сумма</th><th>Пред. поставка</th><th>Δ к предыдущей</th><th>Δ к средней</th></tr></thead>
                   <tbody>
                     {deliveryHistory.map((d) => {
                       const avg = avgBySupplier.get(d.supplierId) || 0;
                       const avgDeltaPct = avg > 0 ? ((d.amount - avg) / avg) * 100 : null;
                       const isAnomaly = avgDeltaPct != null && Math.abs(avgDeltaPct) >= 60;
+                      const isOpen = expandedDelivery === d.id;
                       return (
-                        <tr key={d.id} style={isAnomaly ? { background: `${COLORS.accent2}11` } : {}}>
-                          <td>{d.date.split('-').reverse().join('.')}</td>
-                          <td className="rp-num">{fmtRub(d.amount)}</td>
-                          <td className="rp-num">{d.prevAmount != null ? fmtRub(d.prevAmount) : '—'}</td>
-                          <td className="rp-num">
-                            {d.deltaPct == null ? <span className="rp-muted">первая</span> : (
-                              <span className={`rp-delta ${d.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
-                                {d.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {d.deltaPct > 0 ? '+' : ''}{d.deltaPct.toFixed(0)}%
-                              </span>
-                            )}
-                          </td>
-                          <td className="rp-num">
-                            {avgDeltaPct == null ? '—' : (
-                              <span className={isAnomaly ? 'rp-delta rp-delta-bad' : 'rp-muted'} style={isAnomaly ? {} : { fontSize: 12 }}>
-                                {isAnomaly && <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 2 }} />}
-                                {avgDeltaPct > 0 ? '+' : ''}{avgDeltaPct.toFixed(0)}%
-                              </span>
-                            )}
-                          </td>
-                        </tr>
+                        <React.Fragment key={d.id}>
+                          <tr
+                            style={isAnomaly ? { background: `${COLORS.accent2}11`, cursor: 'pointer' } : { cursor: 'pointer' }}
+                            onClick={() => d.hasItems && setExpandedDelivery(isOpen ? null : d.id)}
+                          >
+                            <td style={{ width: 20 }}>{d.hasItems && (isOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}</td>
+                            <td>{d.date.split('-').reverse().join('.')}</td>
+                            <td className="rp-num">{fmtRub(d.amount)}</td>
+                            <td className="rp-num">{d.prevAmount != null ? fmtRub(d.prevAmount) : '—'}</td>
+                            <td className="rp-num">
+                              {d.deltaPct == null ? <span className="rp-muted">первая</span> : (
+                                <span className={`rp-delta ${d.deltaPct > 0 ? 'rp-delta-bad' : 'rp-delta-good'}`}>
+                                  {d.deltaPct > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />} {d.deltaPct > 0 ? '+' : ''}{d.deltaPct.toFixed(0)}%
+                                </span>
+                              )}
+                            </td>
+                            <td className="rp-num">
+                              {avgDeltaPct == null ? '—' : (
+                                <span className={isAnomaly ? 'rp-delta rp-delta-bad' : 'rp-muted'} style={isAnomaly ? {} : { fontSize: 12 }}>
+                                  {isAnomaly && <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 2 }} />}
+                                  {avgDeltaPct > 0 ? '+' : ''}{avgDeltaPct.toFixed(0)}%
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                          {isOpen && d.hasItems && (
+                            <tr>
+                              <td colSpan={6} style={{ padding: 0, background: COLORS.bg }}>
+                                <table className="rp-table" style={{ margin: '4px 0 8px 24px', width: 'calc(100% - 24px)' }}>
+                                  <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                                  <tbody>
+                                    {d.items.map((it, j) => (
+                                      <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ''}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
                 </table>
-                <p className="rp-muted" style={{ fontSize: 11, marginTop: 10 }}>«Δ к средней» — насколько поставка отличается от типичного размера поставки этого поставщика; подсвечены отклонения от 60%.</p>
+                <p className="rp-muted" style={{fontSize:11, marginTop:8}}>Клик по строке — показать/скрыть состав поставки (доступно, если поставка пришла из iiko-синхронизации; у поставок, добавленных вручную, состава нет).</p>
               </div>
             )}
           </Section>
