@@ -3221,12 +3221,18 @@ async function buildAiContext(ctx, session) {
   movers.sort((a, b) => Math.abs(b.impactRub) - Math.abs(a.impactRub));
 
   const supplierTotals = (mk) => {
-    const totals = new Map();
-    for (const o of (months[mk]?.supplierOrders || [])) totals.set(o.supplierId, (totals.get(o.supplierId) || 0) + (Number(o.amount) || 0));
+    const totals = new Map(); // id -> {sum, count}
+    for (const o of (months[mk]?.supplierOrders || [])) {
+      const cur = totals.get(o.supplierId) || { sum: 0, count: 0 };
+      cur.sum += Number(o.amount) || 0;
+      cur.count += 1;
+      totals.set(o.supplierId, cur);
+    }
     return [...totals.entries()]
-      .map(([id, sum]) => ({ name: suppliers.find((s) => s.id === id)?.name || '—', sumRub: Math.round(sum) }))
+      .map(([id, { sum, count }]) => ({ name: suppliers.find((s) => s.id === id)?.name || '—', sumRub: Math.round(sum), количествоНакладных: count }))
       .sort((a, b) => b.sumRub - a.sumRub);
   };
+  const totalInvoiceCount = (mk) => (months[mk]?.supplierOrders || []).length;
 
   // Реальная выручка ресторана — из iiko (касса/продажи), а НЕ из ручного раздела
   // «Кассовая смена (день)» (тот часто пустой или не совпадает с кассой). Это два
@@ -3271,6 +3277,7 @@ async function buildAiContext(ctx, session) {
       постоянные: Math.round(pnl.fixedTotal),
       эквайринг: Math.round(pnl.acquiring.amount),
     },
+    всегоНакладныхЗаЭтотМесяц: totalInvoiceCount(pnl.key),
     топПоставщиковЗаЭтотМесяц: supplierTotals(pnl.key).slice(0, 8),
     заметныеИзмененияЗакупокТоваров: movers.slice(0, 12),
   };
