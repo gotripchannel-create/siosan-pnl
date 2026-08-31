@@ -545,34 +545,8 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
 }
 
 /* ============ тёмная тема ============ */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: oklch(0.18 0.010 250);
-    --surface: oklch(0.22 0.010 250);
-    --surface-2: oklch(0.26 0.010 250);
-    --ink: oklch(0.95 0.004 250);
-    --ink-2: oklch(0.66 0.008 250);
-    --ink-3: oklch(0.55 0.008 250);
-    --line: oklch(0.30 0.010 250);
-    --line-soft: oklch(0.27 0.010 250);
-    --nav: oklch(0.15 0.010 250);
-    --brand: oklch(0.62 0.11 45);
-    --pos: oklch(0.72 0.12 155);
-    --neg: oklch(0.68 0.15 25);
-    --warn: oklch(0.76 0.11 80);
-    --info: oklch(0.68 0.11 250);
-    --pos-bg: oklch(0.26 0.03 155); --pos-line: oklch(0.36 0.05 155); --pos-ink: oklch(0.90 0.04 155);
-    --neg-bg: oklch(0.26 0.03 25);  --neg-line: oklch(0.36 0.06 25);  --neg-ink: oklch(0.90 0.05 25);
-    --warn-bg: oklch(0.26 0.03 80); --warn-line: oklch(0.36 0.05 80); --warn-ink: oklch(0.90 0.04 80);
-    --info-bg: oklch(0.26 0.03 250);--info-line: oklch(0.36 0.05 250);--info-ink: oklch(0.90 0.04 250);
-    --shadow: 0 12px 32px oklch(0 0 0 / 0.45);
-  }
-  .rp-btn { background: oklch(0.95 0.004 250); color: oklch(0.20 0.010 250); }
-  .rp-btn:hover { background: #fff; }
-  .rp-nav-item.active, .rp-brand-mark { color: oklch(0.15 0.02 45); }
-  .rp-nav-badge { color: oklch(0.20 0.03 80); }
-  .rp-view-toggle button.active, .rp-day-chip.active { background: oklch(0.95 0.004 250); color: oklch(0.20 0.010 250); }
-}
+/* Автоматический тёмный режим отключён по просьбе — приложение всегда светлое,
+   независимо от настроек темы на телефоне/компьютере. */
 
 @media print {
   .rp-sidebar, .rp-topbar { display: none !important; }
