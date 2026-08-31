@@ -4192,7 +4192,7 @@ function IikoDashboardPage({ ctx }) {
 
   useEffect(() => { loadCash(); }, [loadCash]);
 
-  const loadDayReport = async () => {
+  const loadDayReport = useCallback(async () => {
     setDayLoading(true); setDayError(''); setDayReport(null);
     try {
       const resp = await fetch('/api/iiko-day-report', {
@@ -4208,7 +4208,15 @@ function IikoDashboardPage({ ctx }) {
     } finally {
       setDayLoading(false);
     }
-  };
+  }, [dayDate, session]);
+
+  // Автозагрузка отчёта при выборе даты — без отдельной кнопки. Небольшая задержка,
+  // чтобы не слать запрос на каждую промежуточную дату при печати вручную в поле.
+  useEffect(() => {
+    if (!dayDate) return;
+    const t = setTimeout(() => { loadDayReport(); }, 300);
+    return () => clearTimeout(t);
+  }, [dayDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dailySeries = (data?.days || []).map(d => ({ day: Number(d.date.slice(8, 10)), Выручка: d.total }));
   const payTypeData = Object.entries(data?.totalsByPayType || {}).map(([name, value]) => ({ name, value }));
@@ -4230,7 +4238,7 @@ function IikoDashboardPage({ ctx }) {
         <div className="rp-muted" style={{marginBottom:12}}>Как при закрытии смены: выручка по оплатам, скидки, удаления, топ проданных блюд, внесения/изъятия.</div>
         <div style={{display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
           <Field label="Дата"><input type="date" value={dayDate} onChange={e=>setDayDate(e.target.value)} /></Field>
-          <button className="rp-btn" onClick={loadDayReport} disabled={dayLoading}>{dayLoading ? 'Загружаю…' : 'Показать отчёт'}</button>
+          {dayLoading && <span className="rp-muted" style={{fontSize:13, paddingBottom:9}}>Загружаю…</span>}
         </div>
         {dayError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {dayError}</div>}
 
