@@ -13,7 +13,7 @@ import {
   Copy as CopyIcon, Check, Minus, Printer, ChevronDown, ChevronUp, Info,
   UserPlus, Truck as TruckIcon, Megaphone, ClipboardList, Banknote,
   History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw,
-  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio
+  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio, Sparkles, Send
 } from 'lucide-react';
 
 
@@ -567,6 +567,7 @@ const NAV = [
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
+  { id: 'ai', label: 'AI-помощник', icon: Sparkles },
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
   { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
   { id: 'history', label: 'История', icon: History },
@@ -632,7 +633,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState('');
-  const VALID_PAGES = ['dashboard', 'day', 'inbox', 'employees', 'payroll', 'suppliers', 'purchases', 'pnl', 'compare', 'history', 'iiko-novo', 'iiko-belaya', 'combined', 'settings'];
+  const VALID_PAGES = ['dashboard', 'day', 'inbox', 'employees', 'payroll', 'suppliers', 'purchases', 'ai', 'pnl', 'compare', 'history', 'iiko-novo', 'iiko-belaya', 'combined', 'settings'];
   const initialPage = (() => {
     const h = (window.location.hash || '').replace('#', '');
     return VALID_PAGES.includes(h) ? h : 'dashboard';
@@ -912,6 +913,7 @@ export default function App() {
           {page === 'payroll' && <PayrollPage ctx={ctx} />}
           {page === 'suppliers' && <SuppliersPage ctx={ctx} />}
           {page === 'purchases' && <PurchaseAnalyticsPage ctx={ctx} />}
+          {page === 'ai' && <AiAssistantPage ctx={ctx} />}
           {page === 'pnl' && <PnLPage ctx={ctx} />}
           {page === 'settings' && <SettingsPage ctx={ctx} />}
           {page === 'compare' && <ComparePage ctx={ctx} />}
@@ -3262,6 +3264,193 @@ function PurchaseAnalyticsPage({ ctx }) {
   );
 }
 
+
+/* ============================== AI-помощник ============================== */
+
+function buildAiContext(ctx) {
+  const { pnl, prevPnl, year, monthIdx, months, suppliers } = ctx;
+  const prevDateObj = new Date(year, monthIdx - 1, 1);
+  const monthLabel = `${MONTHS_RU[monthIdx]} ${year}`;
+  const prevMonthLabel = `${MONTHS_RU[prevDateObj.getMonth()]} ${prevDateObj.getFullYear()}`;
+
+  const productsFor = (mk) => {
+    const bucket = new Map();
+    for (const o of (months[mk]?.supplierOrders || [])) {
+      for (const it of (o.items || [])) {
+        const k = String(it.name || '').trim().toLowerCase();
+        if (!k) continue;
+        if (!bucket.has(k)) bucket.set(k, { name: it.name, unit: it.unit || '', qty: 0, sum: 0 });
+        const e = bucket.get(k);
+        e.qty += Number(it.qty) || 0;
+        e.sum += Number(it.sum) || 0;
+      }
+    }
+    return bucket;
+  };
+  const curP = productsFor(pnl.key);
+  const prevP = productsFor(prevPnl.key);
+  const movers = [];
+  for (const [k, cur] of curP) {
+    const prev = prevP.get(k);
+    if (prev && prev.qty > 0 && cur.qty > 0) {
+      const deltaPct = ((cur.qty - prev.qty) / prev.qty) * 100;
+      if (Math.abs(deltaPct) > 15) {
+        movers.push({
+          name: cur.name, unit: cur.unit,
+          prevQty: Math.round(prev.qty * 100) / 100, curQty: Math.round(cur.qty * 100) / 100,
+          deltaPct: Math.round(deltaPct), impactRub: Math.round(cur.sum - prev.sum)
+        });
+      }
+    }
+  }
+  movers.sort((a, b) => Math.abs(b.impactRub) - Math.abs(a.impactRub));
+
+  const supplierTotals = (mk) => {
+    const totals = new Map();
+    for (const o of (months[mk]?.supplierOrders || [])) totals.set(o.supplierId, (totals.get(o.supplierId) || 0) + (Number(o.amount) || 0));
+    return [...totals.entries()]
+      .map(([id, sum]) => ({ name: suppliers.find((s) => s.id === id)?.name || '—', sumRub: Math.round(sum) }))
+      .sort((a, b) => b.sumRub - a.sumRub);
+  };
+
+  return {
+    месяц: monthLabel,
+    предыдущийМесяц: prevMonthLabel,
+    выручка: { этотМесяц: Math.round(pnl.revenue), прошлыйМесяц: Math.round(prevPnl.revenue) },
+    прибыль: { этотМесяц: Math.round(pnl.profit), прошлыйМесяц: Math.round(prevPnl.profit) },
+    маржаПроцент: { этотМесяц: Math.round(pnl.margin * 10) / 10, прошлыйМесяц: Math.round(prevPnl.margin * 10) / 10 },
+    фудКостПроцент: { этотМесяц: Math.round(pnl.foodCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.foodCostPct * 10) / 10 },
+    зарплатыПроцентОтВыручки: { этотМесяц: Math.round(pnl.laborCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.laborCostPct * 10) / 10 },
+    расходыЗаМесяцРуб: {
+      кухня: Math.round(pnl.kitchen.total),
+      закупкиУПоставщиков: Math.round(pnl.supplierOrd.total),
+      фондОплатыТруда: Math.round(pnl.payroll.totalFot),
+      постоянные: Math.round(pnl.fixedTotal),
+      эквайринг: Math.round(pnl.acquiring.amount),
+    },
+    топПоставщиковЗаЭтотМесяц: supplierTotals(pnl.key).slice(0, 8),
+    заметныеИзмененияЗакупокТоваров: movers.slice(0, 12),
+  };
+}
+
+function AiAssistantPage({ ctx }) {
+  const { pnl, month, updateMonth, session, year, monthIdx } = ctx;
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState('');
+  const [messages, setMessages] = useState([]); // {role, content} — только в рамках сессии, не сохраняется
+  const [input, setInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const chatEndRef = useRef(null);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading]);
+
+  const context = useMemo(() => buildAiContext(ctx), [ctx]);
+  const cachedSummary = month.aiSummary;
+  const cachedSummaryDate = month.aiSummaryGeneratedAt;
+
+  const callAssistant = async (body) => {
+    const resp = await fetch('/api/ai-assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
+    return data.answer;
+  };
+
+  const generateSummary = async () => {
+    setSummaryLoading(true); setSummaryError('');
+    try {
+      const answer = await callAssistant({ mode: 'summary', context });
+      updateMonth((m) => ({ ...m, aiSummary: answer, aiSummaryGeneratedAt: new Date().toISOString() }));
+    } catch (e) {
+      setSummaryError(e.message);
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  const sendQuestion = async () => {
+    const q = input.trim();
+    if (!q || chatLoading) return;
+    setInput(''); setChatError('');
+    const nextMessages = [...messages, { role: 'user', content: q }];
+    setMessages(nextMessages);
+    setChatLoading(true);
+    try {
+      const answer = await callAssistant({
+        mode: 'chat', question: q, context,
+        history: messages.map((m) => ({ role: m.role, content: m.content }))
+      });
+      setMessages((prev) => [...prev, { role: 'assistant', content: answer }]);
+    } catch (e) {
+      setChatError(e.message);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1>AI-помощник</h1>
+        <div className="rp-page-sub">Отвечает на основе цифр за {MONTHS_RU[monthIdx]} {year} — ничего не выдумывает сверх того, что посчитано в приложении.</div>
+      </div>
+
+      <Card>
+        <div className="rp-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span><Sparkles size={16} style={{ verticalAlign: -3, marginRight: 6 }} />Сводка месяца</span>
+          <button className="rp-btn rp-btn-ghost" onClick={generateSummary} disabled={summaryLoading}>
+            <RefreshCw size={14} className={summaryLoading ? 'rp-spin' : ''} /> {summaryLoading ? 'Пишу…' : cachedSummary ? 'Обновить' : 'Сгенерировать'}
+          </button>
+        </div>
+        {summaryError && <div className="rp-inline-warn" style={{ marginTop: 10 }}><AlertTriangle size={13} /> {summaryError}</div>}
+        {cachedSummary ? (
+          <>
+            <p style={{ fontSize: 14, lineHeight: 1.6, marginTop: 12, whiteSpace: 'pre-wrap' }}>{cachedSummary}</p>
+            {cachedSummaryDate && <div className="rp-muted" style={{ fontSize: 11, marginTop: 8 }}>Сгенерировано {new Date(cachedSummaryDate).toLocaleString('ru-RU')}</div>}
+          </>
+        ) : (
+          !summaryLoading && <div className="rp-muted" style={{ fontSize: 13, marginTop: 10 }}>Сводки за этот месяц ещё нет — нажмите «Сгенерировать».</div>
+        )}
+      </Card>
+
+      <Card style={{ marginTop: 16 }}>
+        <div className="rp-card-title">Спросить у данных</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 440, overflowY: 'auto', padding: '4px 2px' }}>
+          {messages.length === 0 && (
+            <div className="rp-muted" style={{ fontSize: 13 }}>
+              Например: «Сколько мы потратили на закупки в этом месяце?», «Какая маржа по сравнению с прошлым месяцем?», «Что подорожало сильнее всего?»
+            </div>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+              <div style={{
+                maxWidth: '82%', borderRadius: 12, padding: '8px 14px', fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap',
+                background: m.role === 'user' ? COLORS.bg : `${COLORS.accent}14`
+              }}>{m.content}</div>
+            </div>
+          ))}
+          {chatLoading && <div className="rp-muted" style={{ fontSize: 13 }}>Думаю…</div>}
+          <div ref={chatEndRef} />
+        </div>
+        {chatError && <div className="rp-inline-warn" style={{ marginTop: 10 }}><AlertTriangle size={13} /> {chatError}</div>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <input
+            style={{ flex: 1 }}
+            placeholder="Спросите что-нибудь про этот месяц…"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); } }}
+          />
+          <button className="rp-btn" onClick={sendQuestion} disabled={chatLoading || !input.trim()}><Send size={15} /></button>
+        </div>
+      </Card>
+    </div>
+  );
+}
 
 /* ============================== P&L ============================== */
 
