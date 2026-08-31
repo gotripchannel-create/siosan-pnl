@@ -553,3 +553,40 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
   .rp-content { padding: 0; max-width: none; }
   .rp-card { break-inside: avoid; box-shadow: none; }
 }
+
+/* ============ AI-чат (плавающий виджет на всех страницах) ============ */
+.rp-ai-fab {
+  position: fixed; right: 22px; bottom: 22px; z-index: 80;
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--brand); color: #fff; border: none;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: var(--shadow);
+  transition: transform 0.15s ease;
+}
+.rp-ai-fab:hover { transform: scale(1.06); }
+.rp-ai-panel {
+  position: fixed; right: 22px; bottom: 86px; z-index: 80;
+  width: 380px; max-width: calc(100vw - 32px); height: 520px; max-height: calc(100vh - 130px);
+  background: var(--surface); border: 0.5px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden;
+}
+.rp-ai-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 0.5px solid var(--line); font-weight: 600; font-size: 13px; flex-shrink: 0;
+}
+.rp-ai-panel-body {
+  flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+}
+.rp-ai-bubble {
+  max-width: 84%; border-radius: 12px; padding: 8px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+}
+.rp-ai-bubble-user { background: var(--surface-2); }
+.rp-ai-bubble-assistant { background: var(--pos-bg); color: var(--pos-ink); }
+.rp-ai-panel-input {
+  display: flex; gap: 8px; padding: 12px 14px; border-top: 0.5px solid var(--line); flex-shrink: 0;
+}
+.rp-ai-panel-input input { flex: 1; }
+@media (max-width: 480px) {
+  .rp-ai-panel { right: 12px; left: 12px; width: auto; bottom: 78px; height: calc(100vh - 160px); }
+  .rp-ai-fab { right: 16px; bottom: 16px; }
+}

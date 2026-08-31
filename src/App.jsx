@@ -910,6 +910,7 @@ export default function App() {
           {page === 'combined' && <CombinedReportPage ctx={ctx} />}
         </main>
       </div>
+      <AiChatWidget ctx={ctx} />
     </div>
   );
 }
@@ -3251,34 +3252,22 @@ function AiAssistantPage({ ctx }) {
   const { pnl, month, updateMonth, session, year, monthIdx } = ctx;
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
-  const [messages, setMessages] = useState([]); // {role, content} — только в рамках сессии, не сохраняется
-  const [input, setInput] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
-  const [chatError, setChatError] = useState('');
-  const chatEndRef = useRef(null);
-
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading]);
 
   const context = useMemo(() => buildAiContext(ctx), [ctx]);
   const cachedSummary = month.aiSummary;
   const cachedSummaryDate = month.aiSummaryGeneratedAt;
 
-  const callAssistant = async (body) => {
-    const resp = await fetch('/api/ai-assistant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-      body: JSON.stringify(body)
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
-    return data.answer;
-  };
-
   const generateSummary = async () => {
     setSummaryLoading(true); setSummaryError('');
     try {
-      const answer = await callAssistant({ mode: 'summary', context });
-      updateMonth((m) => ({ ...m, aiSummary: answer, aiSummaryGeneratedAt: new Date().toISOString() }));
+      const resp = await fetch('/api/ai-assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ mode: 'summary', context })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
+      updateMonth((m) => ({ ...m, aiSummary: data.answer, aiSummaryGeneratedAt: new Date().toISOString() }));
     } catch (e) {
       setSummaryError(e.message);
     } finally {
@@ -3286,31 +3275,11 @@ function AiAssistantPage({ ctx }) {
     }
   };
 
-  const sendQuestion = async () => {
-    const q = input.trim();
-    if (!q || chatLoading) return;
-    setInput(''); setChatError('');
-    const nextMessages = [...messages, { role: 'user', content: q }];
-    setMessages(nextMessages);
-    setChatLoading(true);
-    try {
-      const answer = await callAssistant({
-        mode: 'chat', question: q, context,
-        history: messages.map((m) => ({ role: m.role, content: m.content }))
-      });
-      setMessages((prev) => [...prev, { role: 'assistant', content: answer }]);
-    } catch (e) {
-      setChatError(e.message);
-    } finally {
-      setChatLoading(false);
-    }
-  };
-
   return (
     <div className="rp-page">
       <div className="rp-page-head">
         <h1>AI-помощник</h1>
-        <div className="rp-page-sub">Отвечает на основе цифр за {MONTHS_RU[monthIdx]} {year} — ничего не выдумывает сверх того, что посчитано в приложении.</div>
+        <div className="rp-page-sub">Отвечает на основе цифр за {MONTHS_RU[monthIdx]} {year} — ничего не выдумывает сверх того, что посчитано в приложении. Задать вопрос можно с любой страницы — кнопка со звёздочкой в правом нижнем углу.</div>
       </div>
 
       <Card>
@@ -3330,39 +3299,89 @@ function AiAssistantPage({ ctx }) {
           !summaryLoading && <div className="rp-muted" style={{ fontSize: 13, marginTop: 10 }}>Сводки за этот месяц ещё нет — нажмите «Сгенерировать».</div>
         )}
       </Card>
-
-      <Card style={{ marginTop: 16 }}>
-        <div className="rp-card-title">Спросить у данных</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 440, overflowY: 'auto', padding: '4px 2px' }}>
-          {messages.length === 0 && (
-            <div className="rp-muted" style={{ fontSize: 13 }}>
-              Например: «Сколько мы потратили на закупки в этом месяце?», «Какая маржа по сравнению с прошлым месяцем?», «Что подорожало сильнее всего?»
-            </div>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-              <div style={{
-                maxWidth: '82%', borderRadius: 12, padding: '8px 14px', fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap',
-                background: m.role === 'user' ? COLORS.bg : `${COLORS.accent}14`
-              }}>{m.content}</div>
-            </div>
-          ))}
-          {chatLoading && <div className="rp-muted" style={{ fontSize: 13 }}>Думаю…</div>}
-          <div ref={chatEndRef} />
-        </div>
-        {chatError && <div className="rp-inline-warn" style={{ marginTop: 10 }}><AlertTriangle size={13} /> {chatError}</div>}
-        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-          <input
-            style={{ flex: 1 }}
-            placeholder="Спросите что-нибудь про этот месяц…"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); } }}
-          />
-          <button className="rp-btn" onClick={sendQuestion} disabled={chatLoading || !input.trim()}><Send size={15} /></button>
-        </div>
-      </Card>
     </div>
+  );
+}
+
+// Плавающий чат-виджет — доступен на любой странице приложения (рендерится один раз в
+// корне App, поэтому переписка не сбрасывается при переходах между страницами, только
+// при полной перезагрузке вкладки). Контекст (P&L, закупки) всегда актуален для
+// текущего выбранного вверху месяца, независимо от того, какая страница открыта.
+function AiChatWidget({ ctx }) {
+  const { session } = ctx;
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const chatEndRef = useRef(null);
+
+  useEffect(() => { if (open) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading, open]);
+
+  const context = useMemo(() => buildAiContext(ctx), [ctx]);
+
+  const sendQuestion = async () => {
+    const q = input.trim();
+    if (!q || chatLoading) return;
+    setInput(''); setChatError('');
+    const historyForRequest = messages.map((m) => ({ role: m.role, content: m.content }));
+    setMessages((prev) => [...prev, { role: 'user', content: q }]);
+    setChatLoading(true);
+    try {
+      const resp = await fetch('/api/ai-assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ mode: 'chat', question: q, context, history: historyForRequest })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+    } catch (e) {
+      setChatError(e.message);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button className="rp-ai-fab" onClick={() => setOpen((o) => !o)} aria-label="AI-помощник" title="AI-помощник">
+        {open ? <X size={22} /> : <Sparkles size={22} />}
+      </button>
+
+      {open && (
+        <div className="rp-ai-panel">
+          <div className="rp-ai-panel-head">
+            <span><Sparkles size={15} style={{ verticalAlign: -2, marginRight: 6 }} />AI-помощник</span>
+            <button className="rp-icon-btn" onClick={() => setOpen(false)}><X size={16} /></button>
+          </div>
+          <div className="rp-ai-panel-body">
+            {messages.length === 0 && (
+              <div className="rp-muted" style={{ fontSize: 13 }}>
+                Например: «Сколько мы потратили на закупки в этом месяце?», «Какая маржа по сравнению с прошлым месяцем?», «Что подорожало сильнее всего?»
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                <div className={`rp-ai-bubble ${m.role === 'user' ? 'rp-ai-bubble-user' : 'rp-ai-bubble-assistant'}`}>{m.content}</div>
+              </div>
+            ))}
+            {chatLoading && <div className="rp-muted" style={{ fontSize: 13 }}>Думаю…</div>}
+            <div ref={chatEndRef} />
+          </div>
+          {chatError && <div className="rp-inline-warn" style={{ margin: '0 14px 10px' }}><AlertTriangle size={13} /> {chatError}</div>}
+          <div className="rp-ai-panel-input">
+            <input
+              placeholder="Спросите что-нибудь…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); } }}
+            />
+            <button className="rp-btn" onClick={sendQuestion} disabled={chatLoading || !input.trim()}><Send size={15} /></button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
