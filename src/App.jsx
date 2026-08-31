@@ -3253,6 +3253,7 @@ async function buildAiContext(ctx, session) {
     if (curResp.ok) {
       iikoRevenue.этотМесяц = Math.round(curData.grandTotal);
       iikoRevenue.поДнямЭтотМесяц = (curData.days || []).map((d) => ({ дата: d.date, выручка: Math.round(d.total * 100) / 100 }));
+      iikoRevenue.выручкаПоБлюдамЭтотМесяц = (curData.topDishesMonth || []).slice(0, 40).map((d) => ({ блюдо: d.name, выручка: d.sum, количество: d.qty }));
     }
     if (prevResp.ok) iikoRevenue.прошлыйМесяц = Math.round(prevData.grandTotal);
     if (!curResp.ok) iikoRevenue.ошибка = curData?.error || 'Не удалось получить выручку из iiko за текущий месяц.';

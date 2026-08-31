@@ -218,6 +218,51 @@ export default async function handler(req, res) {
       deletionsError = 'Не удалось получить отчёт по удалениям: ' + (e?.message || 'неизвестная ошибка');
     }
 
+    // Топ блюд за весь месяц (не только за один день, как в дневном отчёте) — нужно,
+    // например, для AI-помощника, чтобы отвечать на вопросы вроде «сколько выручки с
+    // бургеров». Исключаем «Блюдо от Шефа» (это выручка второго филиала, не блюдо) и
+    // строки без оплаты.
+    let topDishesMonth = [];
+    let topDishesError = null;
+    try {
+      const dishResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'SALES',
+          buildSummary: false,
+          groupByRowFields: ['DishName', 'PayTypes'],
+          groupByColFields: [],
+          aggregateFields: ['DishDiscountSumInt', 'DishAmountInt'],
+          filters: {
+            'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true }
+          }
+        })
+      });
+      const dishText = await dishResp.text();
+      const dishJson = JSON.parse(dishText);
+      if (dishResp.ok) {
+        const byDish = new Map();
+        for (const r of (dishJson?.data || [])) {
+          const name = r['DishName'];
+          const payType = r['PayTypes'] || 'Не указано';
+          if (!name || name === SECOND_BRANCH_DISH_NAME || /без оплаты/i.test(payType)) continue;
+          const sum = Number(r['DishDiscountSumInt']) || 0;
+          const qty = Number(r['DishAmountInt']) || 0;
+          const cur = byDish.get(name) || { name, sum: 0, qty: 0 };
+          cur.sum += sum; cur.qty += qty;
+          byDish.set(name, cur);
+        }
+        topDishesMonth = [...byDish.values()]
+          .map((d) => ({ name: d.name, sum: Math.round(d.sum * 100) / 100, qty: Math.round(d.qty * 100) / 100 }))
+          .sort((a, b) => b.sum - a.sum);
+      } else {
+        topDishesError = `Отчёт по блюдам вернул ошибку (${dishResp.status}).`;
+      }
+    } catch (e) {
+      topDishesError = 'Не удалось получить отчёт по блюдам: ' + (e?.message || 'неизвестная ошибка');
+    }
+
     // Внесения по заказу — из отчёта ПО ПРОВОДКАМ (TRANSACTIONS), не из сводки по
     // кассовым сменам: сводка суммирует ВСЕ внесения без разбора, включая перенос
     // остатка в кассу (комментарий «дб») и выплату зарплаты («зп») наличными через
@@ -286,7 +331,9 @@ export default async function handler(req, res) {
         avgCheck: secondBranchChecks ? Math.round((secondBranchTotal / secondBranchChecks) * 100) / 100 : 0,
         days: Object.entries(secondBranchByDay).map(([date, total]) => ({ date, total: Math.round(total * 100) / 100 })).sort((a, b) => a.date.localeCompare(b.date))
       } : null,
-      secondBranchError
+      secondBranchError,
+      topDishesMonth,
+      topDishesError
     });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
