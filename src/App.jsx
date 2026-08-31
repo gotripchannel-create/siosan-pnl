@@ -3182,7 +3182,7 @@ function PurchaseAnalyticsPage({ ctx }) {
 
 /* ============================== AI-помощник ============================== */
 
-function buildAiContext(ctx) {
+async function buildAiContext(ctx, session) {
   const { pnl, prevPnl, year, monthIdx, months, suppliers } = ctx;
   const prevDateObj = new Date(year, monthIdx - 1, 1);
   const monthLabel = `${MONTHS_RU[monthIdx]} ${year}`;
@@ -3228,14 +3228,42 @@ function buildAiContext(ctx) {
       .sort((a, b) => b.sumRub - a.sumRub);
   };
 
+  // Реальная выручка ресторана — из iiko (касса/продажи), а НЕ из ручного раздела
+  // «Кассовая смена (день)» (тот часто пустой или не совпадает с кассой). Это два
+  // независимых источника в приложении — для AI-контекста используем именно iiko,
+  // так как это то, что человек имеет в виду под «выручкой» в первую очередь.
+  let iikoRevenue = { этотМесяц: null, прошлыйМесяц: null, ошибка: null };
+  try {
+    const from = dateStr(year, monthIdx, 1);
+    const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+    const pFrom = dateStr(prevDateObj.getFullYear(), prevDateObj.getMonth(), 1);
+    const pTo = dateStr(prevDateObj.getFullYear(), prevDateObj.getMonth(), daysInMonth(prevDateObj.getFullYear(), prevDateObj.getMonth()));
+    const headers = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+    const [curResp, prevResp] = await Promise.all([
+      fetch('/api/iiko-dashboard', { method: 'POST', headers, body: JSON.stringify({ from, to }) }),
+      fetch('/api/iiko-dashboard', { method: 'POST', headers, body: JSON.stringify({ from: pFrom, to: pTo }) })
+    ]);
+    const [curData, prevData] = await Promise.all([curResp.json(), prevResp.json()]);
+    if (curResp.ok) {
+      iikoRevenue.этотМесяц = Math.round(curData.grandTotal);
+      iikoRevenue.поДнямЭтотМесяц = (curData.days || []).map((d) => ({ дата: d.date, выручка: Math.round(d.total * 100) / 100 }));
+    }
+    if (prevResp.ok) iikoRevenue.прошлыйМесяц = Math.round(prevData.grandTotal);
+    if (!curResp.ok) iikoRevenue.ошибка = curData?.error || 'Не удалось получить выручку из iiko за текущий месяц.';
+  } catch (e) {
+    iikoRevenue.ошибка = 'Не удалось связаться с iiko: ' + (e?.message || 'неизвестная ошибка');
+  }
+
   return {
     месяц: monthLabel,
     предыдущийМесяц: prevMonthLabel,
-    выручка: { этотМесяц: Math.round(pnl.revenue), прошлыйМесяц: Math.round(prevPnl.revenue) },
-    прибыль: { этотМесяц: Math.round(pnl.profit), прошлыйМесяц: Math.round(prevPnl.profit) },
-    маржаПроцент: { этотМесяц: Math.round(pnl.margin * 10) / 10, прошлыйМесяц: Math.round(prevPnl.margin * 10) / 10 },
-    фудКостПроцент: { этотМесяц: Math.round(pnl.foodCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.foodCostPct * 10) / 10 },
-    зарплатыПроцентОтВыручки: { этотМесяц: Math.round(pnl.laborCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.laborCostPct * 10) / 10 },
+    выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА: iikoRevenue,
+    прибыльПоРучномуУчётуРасходов: { этотМесяц: Math.round(pnl.profit), прошлыйМесяц: Math.round(prevPnl.profit) },
+    примечаниеПроПрибыльИМаржу: 'Прибыль и маржа посчитаны в приложении на основе ручного ввода выручки в разделе «Кассовая смена (день)», который отдельный от кассы iiko и часто не заполняется — если он пустой, прибыль/маржа ниже будут некорректны. Для реальной выручки используй поле выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА.',
+    выручкаПоРучномуУчётуОбычноНеЗаполнена: { этотМесяц: Math.round(pnl.revenue), прошлыйМесяц: Math.round(prevPnl.revenue) },
+    маржаПроцентПоРучномуУчёту: { этотМесяц: Math.round(pnl.margin * 10) / 10, прошлыйМесяц: Math.round(prevPnl.margin * 10) / 10 },
+    фудКостПроцентПоРучномуУчёту: { этотМесяц: Math.round(pnl.foodCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.foodCostPct * 10) / 10 },
+    зарплатыПроцентОтВыручкиПоРучномуУчёту: { этотМесяц: Math.round(pnl.laborCostPct * 10) / 10, прошлыйМесяц: Math.round(prevPnl.laborCostPct * 10) / 10 },
     расходыЗаМесяцРуб: {
       кухня: Math.round(pnl.kitchen.total),
       закупкиУПоставщиков: Math.round(pnl.supplierOrd.total),
@@ -3253,13 +3281,13 @@ function AiAssistantPage({ ctx }) {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
 
-  const context = useMemo(() => buildAiContext(ctx), [ctx]);
   const cachedSummary = month.aiSummary;
   const cachedSummaryDate = month.aiSummaryGeneratedAt;
 
   const generateSummary = async () => {
     setSummaryLoading(true); setSummaryError('');
     try {
+      const context = await buildAiContext(ctx, session);
       const resp = await fetch('/api/ai-assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
@@ -3318,8 +3346,6 @@ function AiChatWidget({ ctx }) {
 
   useEffect(() => { if (open) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading, open]);
 
-  const context = useMemo(() => buildAiContext(ctx), [ctx]);
-
   const sendQuestion = async () => {
     const q = input.trim();
     if (!q || chatLoading) return;
@@ -3328,6 +3354,7 @@ function AiChatWidget({ ctx }) {
     setMessages((prev) => [...prev, { role: 'user', content: q }]);
     setChatLoading(true);
     try {
+      const context = await buildAiContext(ctx, session);
       const resp = await fetch('/api/ai-assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
