@@ -16,6 +16,8 @@ import {
   RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio
 } from 'lucide-react';
 
+// ===== НОВАЯ ДИЗАЙН-СИСТЕМА =====
+import './siosan-theme.css';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -34,9 +36,9 @@ const COLORS = {
   ink: '#1C2321',
   inkSoft: '#5B645F',
   line: '#E4E1D8',
-  accent: '#1F6F54',      // deep pine green - revenue / positive
-  accent2: '#B5652A',     // burnt clay - warning / expense highlight
-  accent3: '#8A6BAE',     // muted plum - secondary
+  accent: '#1F6F54',
+  accent2: '#B5652A',
+  accent3: '#8A6BAE',
   danger: '#B33F3F',
   warn: '#C9832E',
   chartPalette: ['#1F6F54','#B5652A','#8A6BAE','#3A6EA5','#C9832E','#5B645F','#B33F3F','#4C8577'],
@@ -100,8 +102,6 @@ const DASHBOARD_WIDGET_LABELS = {
   revenueByChannel: 'Выручка по каналам (диаграмма)',
 };
 
-// Seeded demo data derived from the uploaded reference workbook (real staff names & rates)
-// so the app is immediately explorable. All numeric daily entries below are illustrative.
 function seedEmployees() {
   const mk = (name, position, payType, rate) => ({
     id: uid(), name, position, payType, rate, status: 'active',
@@ -156,8 +156,6 @@ function emptyMonth(settings, prevMonth) {
     monthExpenses: src.map((f) => ({ id: uid(), sourceId: f.sourceId || f.id, name: f.name, amount: f.amount, group: f.group, paymentMethod: f.paymentMethod })),
   };
 }
-
-/* ============================== CALC ENGINE ============================== */
 
 function getDay(month, ds) {
   return (month && month.days && month.days[ds]) || emptyDay();
@@ -288,7 +286,6 @@ function monthPayroll(employees, month, settings, y, mIdx) {
   return { rows, totalFot };
 }
 
-// suppliers: aggregate orders/payments across ALL months up to (and including) target, chronologically
 function allMonthKeysUpTo(monthsObj, y, mIdx) {
   const target = monthKeyOf(y, mIdx);
   return Object.keys(monthsObj).filter((k) => k <= target).sort();
@@ -329,8 +326,6 @@ function computeAcquiring(month, settings, y, mIdx) {
   return { amount: base * (settings.acquiringPercent / 100), base, byChannel };
 }
 
-// Compares today's value against the average of the last 7 days that have data
-// (looking back across month boundaries), and flags a deviation past threshold.
 function computeAnomaly(monthsObj, selectedDate, valueGetter, { minPoints = 3, thresholdPct = 60 } = {}) {
   const priors = [];
   const d0 = new Date(selectedDate);
@@ -361,8 +356,6 @@ function swapRevert(r) {
   return undefined;
 }
 
-// Applies the stored "revert" payload of a history entry back onto app state,
-// and logs a new (itself revertible) entry so undo/redo both work.
 function applyRevertEntry(entry, { setMonths, setSuppliers, logAudit }) {
   const r = entry.revert;
   if (!r) return;
@@ -439,7 +432,6 @@ function computePnL(data, y, mIdx) {
   const fixedTotal = fixedItems.reduce((s, f) => s + (Number(f.amount) || 0), 0) + otherFixed.reduce((s, f) => s + (Number(f.amount) || 0), 0);
   const fotTaxTotal = fotTaxItems.reduce((s, f) => s + (Number(f.amount) || 0), 0);
 
-  // courier.total = ставка (pay) + бензин (km * тариф). Included exactly once in expenses below.
   const variableTotal = kitchen.total + supplierPay.total + courier.total + acquiring.amount + otherVar.total;
   const fotTotal = payroll.totalFot + courier.pay + promo.total + fotTaxTotal;
   const totalExpenses = kitchen.total + supplierPay.total + acquiring.amount + otherVar.total
@@ -466,7 +458,7 @@ function computePnL(data, y, mIdx) {
   };
 }
 
-/* ============================== SMALL UI PRIMITIVES ============================== */
+/* ============================== UI COMPONENTS ============================== */
 
 function Card({ children, className = '', style = {} }) {
   return <div className={`rp-card ${className}`} style={style}>{children}</div>;
@@ -557,7 +549,7 @@ function EmptyState({ icon, title, sub }) {
   );
 }
 
-/* ============================== APP SHELL ============================== */
+/* ============================== NAVIGATION ============================== */
 
 const NAV = [
   { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
@@ -576,7 +568,7 @@ const NAV = [
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
-
+/* ============================== AUTH ============================== */
 
 function AuthScreen({ onReady }) {
   const [email, setEmail] = useState('');
@@ -626,6 +618,8 @@ function AuthScreen({ onReady }) {
   );
 }
 
+/* ============================== MAIN APP ============================== */
+
 export default function App() {
   const t = todayObj();
   const [session, setSession] = useState(undefined);
@@ -667,7 +661,6 @@ export default function App() {
   const cloudRowId = useRef(null);
   const hydrated = useRef(false);
 
-  // ---- auth ----
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
@@ -675,7 +668,6 @@ export default function App() {
     return () => sub?.subscription?.unsubscribe();
   }, []);
 
-  // ---- cloud load ----
   useEffect(() => {
     if (!session || !supabase) { setLoaded(false); hydrated.current = false; return; }
     let cancelled = false;
@@ -692,7 +684,6 @@ export default function App() {
         let row = rows?.[0] || null;
         let parsed = row?.data && Object.keys(row.data).length ? row.data : null;
 
-        // First cloud launch: migrate this browser's existing local data, if any.
         if (!parsed) {
           try {
             const raw = window.localStorage.getItem('restaurant-pnl-data');
@@ -734,7 +725,6 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session?.user?.id]);
 
-  // ---- cloud autosave (debounced) ----
   useEffect(() => {
     if (!loaded || !hydrated.current || !session || !supabase || !cloudRowId.current) return;
     setSaving(true);
@@ -747,7 +737,6 @@ export default function App() {
           .update({ data: payload, updated_at: new Date().toISOString() })
           .eq('id', cloudRowId.current);
         if (error) throw error;
-        // Local backup only; cloud is the source of truth.
         window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
         setSyncError('');
       } catch (e) {
@@ -779,7 +768,6 @@ export default function App() {
       const nd = daysInMonth(year, monthIdx);
       setSelectedDate(dateStr(year, monthIdx, Math.min(dd || 1, nd)));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year, monthIdx, loaded]);
 
   const month = months[monthKey] || emptyMonth(settings, null);
@@ -829,7 +817,7 @@ export default function App() {
         .eq('restaurant_id', RESTAURANT_ID)
         .eq('status', 'pending');
       setPendingReportsCount(count || 0);
-    } catch (e) { /* table may not exist yet if the VK bot isn't set up — ignore */ }
+    } catch (e) {}
   }, []);
 
   useEffect(() => { if (loaded) refreshPendingReportsCount(); }, [loaded, refreshPendingReportsCount]);
@@ -854,7 +842,6 @@ export default function App() {
 
   return (
     <div className="rp-root">
-      <GlobalStyle />
       {mobileNavOpen && <div className="rp-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
       <aside className={`rp-sidebar ${mobileNavOpen ? 'open' : ''}`}>
         <div className="rp-brand">
@@ -924,17 +911,16 @@ export default function App() {
     </div>
   );
 }
-
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
   const { pnl, prevPnl, month, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey } = ctx;
   const [drill, setDrill] = useState(null);
-  const [insights, setInsights] = useState(null); // { insights: [...], generatedAt }
+  const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
   const [insightsLoaded, setInsightsLoaded] = useState(false);
-  const [viewMode, setViewMode] = useState('month'); // 'month' | 'day'
+  const [viewMode, setViewMode] = useState('month');
   const [dayDate, setDayDate] = useState(selectedDate);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
@@ -969,10 +955,6 @@ function Dashboard({ ctx, setPage }) {
 
   const delta = (a, b) => (b ? ((a - b) / b) * 100 : 0);
 
-  // --- Данные по одному конкретному дню (для переключателя Месяц/День). Считаем только то,
-  // что реально привязано к дню в самих данных (выручка, закупки, курьер, промо) — ФОТ и
-  // постоянные расходы это месячные суммы, которые не разбиваются корректно по дням, поэтому
-  // в дневном виде их не показываем, чтобы не выдумывать точность, которой нет.
   const dayObj = getDay(month, dayDate);
   const dayRevByChannel = settings.revenueChannels.map(c => ({ name: c.name, id: c.id, value: Number(dayObj.revenue?.[c.id]) || 0 }));
   const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
@@ -989,12 +971,7 @@ function Dashboard({ ctx, setPage }) {
     { name: 'Промо', value: dayPromo },
     { name: 'Прочие', value: dayOther },
   ].filter(d => d.value > 0);
-  const dayIndexInMonth = dailySeries.findIndex(d => dateStr(year, monthIdx, d.day) === dayDate);
 
-  // --- Прогноз на конец месяца: чистая математика, без ИИ, считается мгновенно и бесплатно.
-  // Постоянные расходы и налоги ФОТ обычно вносятся как сумма за весь месяц сразу, поэтому
-  // их не масштабируем по дням — линейно растягиваем только то, что реально накапливается
-  // день за днём (выручка, закупки, курьер, промо и т.п.).
   const daysWithData = dailySeries.filter(d => d['Выручка'] > 0 || d['Расходы'] > 0).length;
   const forecast = useMemo(() => {
     if (daysWithData === 0 || daysWithData >= pnl.nd) return null;
@@ -1010,8 +987,6 @@ function Dashboard({ ctx, setPage }) {
     };
   }, [pnl, daysWithData]);
 
-  // --- Наблюдения ИИ: подгружаем последний сохранённый кеш за этот месяц при открытии,
-  // пересчитываем только по явному нажатию кнопки (чтобы не тратить деньги при каждом заходе).
   useEffect(() => {
     let cancelled = false;
     setInsights(null); setInsightsLoaded(false); setInsightsError('');
@@ -1335,7 +1310,11 @@ function DayEntry({ ctx }) {
   const dayClosed = !!day.closed;
   const monthClosed = month.closed;
   const locked = monthClosed || dayClosed;
-  const [expenseModal, setExpenseModal] = useState(null); // { kind: 'kitchen'|'other', editItem: null|item }
+  const [expenseModal, setExpenseModal] = useState(null);
+  const [rosterModal, setRosterModal] = useState(null);
+  const [advanceModal, setAdvanceModal] = useState(null);
+  const [dismissed, setDismissed] = useState({});
+  const focusValuesRef = useRef({});
 
   const toggleDayClosed = () => {
     updateMonth((m) => {
@@ -1356,9 +1335,6 @@ function DayEntry({ ctx }) {
     });
   };
 
-  // Track focus->blur value changes so we can log a single, meaningful history
-  // entry (with a revert payload) per edit instead of one per keystroke.
-  const focusValuesRef = useRef({});
   const trackFocus = (key, val) => { focusValuesRef.current[key] = Number(val) || 0; };
   const trackRevenueBlur = (channelId) => {
     const key = `rev:${channelId}`;
@@ -1398,10 +1374,6 @@ function DayEntry({ ctx }) {
     delete focusValuesRef.current[key];
   };
 
-  // "Кто работал сегодня" — quick shift roster, writes straight into month.shifts
-  // (the same store the Employees→shift-grid and Payroll page already read from),
-  // so nothing needs to be duplicated or reconciled.
-  const [rosterModal, setRosterModal] = useState(null); // true (add) | employeeId (edit existing)
   const todaysShifts = (ctx.employees || [])
     .map((e) => ({ emp: e, hours: month.shifts?.[e.id]?.[selectedDate] }))
     .filter((x) => x.hours !== undefined && x.hours !== null && Number(x.hours) > 0);
@@ -1424,7 +1396,6 @@ function DayEntry({ ctx }) {
   const kitchenTotal = (day.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const otherTotal = (day.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-  const [dismissed, setDismissed] = useState({});
   const anomOpts = { thresholdPct: settings.anomalyThresholdPct || 60 };
   const revenueAnomaly = useMemo(
     () => computeAnomaly(ctx.months, selectedDate, (d) => dayRevenueTotal(d, settings.revenueChannels), anomOpts),
@@ -1448,7 +1419,6 @@ function DayEntry({ ctx }) {
   const dismissKey = (kind) => `${selectedDate}:${kind}`;
   const dismiss = (kind) => setDismissed((p) => ({ ...p, [dismissKey(kind)]: true }));
 
-  const [advanceModal, setAdvanceModal] = useState(null); // true (new) | advance object (edit)
   const dayAdvances = (month.adjustments || []).filter((a) => a.type === 'advance' && a.date === selectedDate);
   const dayAdvanceTotal = dayAdvances.reduce((s, a) => s + (Number(a.amount) || 0), 0);
   const saveAdvance = (employeeId, amount, comment, editId) => {
@@ -1831,7 +1801,7 @@ function RosterModal({ mode, employees, availableForRoster, editingEmployee, edi
     const h = Number(hours) || 0;
     if (emp.payType === 'shift') return emp.rate * (h / standard);
     if (emp.payType === 'hour') return emp.rate * h;
-    return null; // oklad — not day-based
+    return null;
   };
   const preview = dayPayPreview();
 
@@ -1866,13 +1836,12 @@ function RosterModal({ mode, employees, availableForRoster, editingEmployee, edi
     </Modal>
   );
 }
-
 /* ============================== EMPLOYEES ============================== */
 
 function EmployeesPage({ ctx }) {
   const { employees, setEmployees, month, updateMonth, settings, year, monthIdx, monthKey, logAudit } = ctx;
-  const [editing, setEditing] = useState(null); // employee obj or 'new'
-  const [shiftsFor, setShiftsFor] = useState(null); // employee id
+  const [editing, setEditing] = useState(null);
+  const [shiftsFor, setShiftsFor] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
@@ -2193,17 +2162,17 @@ function PayrollPage({ ctx }) {
 
 function SuppliersPage({ ctx }) {
   const { suppliers, setSuppliers, months, setMonths, month, updateMonth, year, monthIdx, logAudit, session, settings } = ctx;
-  const [opModal, setOpModal] = useState(null); // {supplierId, kind:'order'|'payment'}
+  const [opModal, setOpModal] = useState(null);
   const [newSupplier, setNewSupplier] = useState(false);
   const [name, setName] = useState('');
   const [historyFor, setHistoryFor] = useState(null);
-  const [renaming, setRenaming] = useState(null); // supplier obj
-  const [deleting, setDeleting] = useState(null); // supplier obj
+  const [renaming, setRenaming] = useState(null);
+  const [deleting, setDeleting] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncError, setSyncError] = useState('');
   const [syncSummary, setSyncSummary] = useState(null);
-  const [itemsFor, setItemsFor] = useState(null); // {supplierName, date, amount, items}
+  const [itemsFor, setItemsFor] = useState(null);
 
   const ledger = useMemo(() => supplierLedger(months, suppliers, year, monthIdx), [months, suppliers, year, monthIdx]);
   const activeSuppliers = suppliers.filter((s) => !s.archived);
@@ -2223,10 +2192,6 @@ function SuppliersPage({ ctx }) {
   };
   const removeForever = (id, supplierName) => { setSuppliers((p) => p.filter((s) => s.id !== id)); logAudit({ what: 'Удалён поставщик', supplier: supplierName }); setDeleting(null); };
 
-  // Поиск дублей поставщиков — одна и та же компания могла попасть в справочник дважды
-  // из-за разного написания имени в разных синхронизациях (например, лишняя кавычка
-  // в старых данных до исправления парсинга). Сравниваем по имени без кавычек/лишних
-  // пробелов/регистра — если совпало, считаем дублем.
   const normalizeForDupe = (s) => String(s || '').replace(/["«»]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
   const duplicateGroups = useMemo(() => {
     const byNorm = new Map();
@@ -2240,9 +2205,7 @@ function SuppliersPage({ ctx }) {
 
   const mergeDuplicates = () => {
     if (duplicateGroups.length === 0) return;
-    // В каждой группе оставляем поставщика с самым коротким/чистым именем (без кавычек),
-    // остальных переносим в него и удаляем.
-    const idRemap = new Map(); // старый id -> оставшийся id
+    const idRemap = new Map();
     let keptSuppliers = [...suppliers];
     for (const group of duplicateGroups) {
       const sorted = [...group].sort((a, b) => a.name.length - b.name.length);
@@ -2255,9 +2218,6 @@ function SuppliersPage({ ctx }) {
       const next = {};
       for (const [mk, m] of Object.entries(prev)) {
         const remappedOrders = (m.supplierOrders || []).map((o) => idRemap.has(o.supplierId) ? { ...o, supplierId: idRemap.get(o.supplierId) } : o);
-        // После переноса ID у одного и того же поставщика могли оказаться две записи
-        // об одной и той же накладной (одна из-под старого имени, другая — из-под нового).
-        // Убираем дубли по (поставщик+дата+сумма), оставляя ту, где уже есть состав.
         const seen = new Map();
         for (const o of remappedOrders) {
           const key = `${o.supplierId}::${o.date}::${o.amount}`;
@@ -2276,12 +2236,6 @@ function SuppliersPage({ ctx }) {
     logAudit({ what: `Объединены дубли поставщиков (${duplicateGroups.length})`, });
   };
 
-  // Синхронизация с iiko: подтягиваем накладные от поставщиков за текущий месяц
-  // (Отчёт по проводкам, TransactionType=INVOICE) и превращаем их в записи "Поставка".
-  // Поставщик ищется по названию (без учёта регистра/пробелов) среди уже существующих —
-  // если не найден, создаётся новый. Повторный запуск не создаёт дублей: каждая запись
-  // помечается source:'iiko', и мы проверяем по паре (поставщик+дата+сумма), нет ли уже
-  // такой же импортированной записи.
   const syncFromIiko = async (customFrom, customTo) => {
     setSyncLoading(true); setSyncError(''); setSyncSummary(null);
     try {
@@ -2298,15 +2252,10 @@ function SuppliersPage({ ctx }) {
       const invoices = data?.invoices || [];
       if (invoices.length === 0) { setSyncSummary({ added: 0, newSuppliers: 0, skipped: 0, filledIn: 0, total: 0 }); return; }
 
-      // Работаем сразу по ВСЕМ месяцам, а не только по текущему выбранному — иначе при
-      // синхронизации широкого диапазона дат (несколько месяцев разом) записи из чужих
-      // месяцев не находились бы для дедупликации и задваивались, плюс новые попадали
-      // бы не в свой месяц, а в текущий открытый. Каждая накладная кладётся в тот месяц,
-      // к которому реально относится её дата.
       const normalize = (s) => String(s || '').trim().toLowerCase();
       const existingByName = new Map(suppliers.map((s) => [normalize(s.name), s]));
       const newSuppliersToAdd = [];
-      const monthPatches = {}; // monthKey -> { updateItemsById: Map, toAdd: [] }
+      const monthPatches = {};
       let skipped = 0;
       let filledIn = 0;
       let added = 0;
@@ -2323,7 +2272,7 @@ function SuppliersPage({ ctx }) {
         } else {
           const created = { id: uid(), name: inv.supplier, archived: false };
           newSuppliersToAdd.push(created);
-          existingByName.set(key, created); // на случай нескольких накладных от нового поставщика в одной синхронизации
+          existingByName.set(key, created);
           supplierId = created.id;
         }
 
@@ -2338,8 +2287,6 @@ function SuppliersPage({ ctx }) {
           }
           continue;
         }
-        // Защита от дублей внутри этой же синхронизации (если одна и та же накладная
-        // почему-то встретилась дважды в ответе iiko).
         const alreadyQueued = monthPatches[invMonthKey].toAdd.some((o) => o.supplierId === supplierId && o.date === inv.date && o.amount === inv.amount);
         if (alreadyQueued) { skipped += 1; continue; }
         monthPatches[invMonthKey].toAdd.push({ id: uid(), supplierId, date: inv.date, amount: inv.amount, invoice: '', comment: 'Импортировано из iiko', source: 'iiko', items: inv.items || [] });
@@ -2389,7 +2336,6 @@ function SuppliersPage({ ctx }) {
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
   const totalPaid = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.paid || 0), 0);
 
-  // График поставок этого месяца — группируем поставки (supplierOrders) по дню.
   const deliveriesByDay = useMemo(() => {
     const map = {};
     for (const o of (month.supplierOrders || [])) {
@@ -2402,7 +2348,7 @@ function SuppliersPage({ ctx }) {
 
   const calendarWeeks = useMemo(() => {
     const total = daysInMonth(year, monthIdx);
-    const firstWeekday = (new Date(year, monthIdx, 1).getDay() + 6) % 7; // 0=Пн
+    const firstWeekday = (new Date(year, monthIdx, 1).getDay() + 6) % 7;
     const cells = [];
     for (let i = 0; i < firstWeekday; i++) cells.push(null);
     for (let d = 1; d <= total; d++) cells.push(d);
@@ -2600,10 +2546,6 @@ function RenameForm({ initial, onSave }) {
   );
 }
 
-function pnlSupplierPayThisMonth(month, suppliers) {
-  return (month.supplierPayments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
-}
-
 function SupplierOpModal({ supplier, kind, onClose, onSave, history, thresholdPct = 60 }) {
   const [amount, setAmount] = useState(''); const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [invoice, setInvoice] = useState(''); const [method, setMethod] = useState('cashless'); const [comment, setComment] = useState('');
@@ -2691,14 +2633,13 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
     </Modal>
   );
 }
-
-/* ============================== Аналитика закупок ============================== */
+/* ============================== PURCHASE ANALYTICS ============================== */
 
 function PurchaseAnalyticsPage({ ctx }) {
   const { months, suppliers, year, monthIdx, goMonth } = ctx;
-  const [selectedProduct, setSelectedProduct] = useState(null); // normalized key
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [supplierFilter, setSupplierFilter] = useState('all');
-  const [expandedDelivery, setExpandedDelivery] = useState(null); // id поставки, состав которой показан
+  const [expandedDelivery, setExpandedDelivery] = useState(null);
 
   const monthKey = monthKeyOf(year, monthIdx);
   const prevDateObj = new Date(year, monthIdx - 1, 1);
@@ -2706,9 +2647,6 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || '—';
 
-  // Округление количества — на весовые/объёмные товары (кг, л) до 3 знаков, на штучные
-  // до целого. Без этого сумма нескольких поставок даёт "28.116999999999997" из-за
-  // погрешности плавающей точки в JS.
   const roundQty = (v, unit) => {
     const n = Number(v) || 0;
     const isPieces = /^шт/i.test(String(unit || ''));
@@ -2718,9 +2656,6 @@ function PurchaseAnalyticsPage({ ctx }) {
   };
   const fmtQty = (v, unit) => `${roundQty(v, unit)}${unit ? ` ${unit}` : ''}`;
 
-  // Товары по месяцам — берём ТОЛЬКО поставки с составом (пришли из iiko-синхронизации).
-  // Поставки, добавленные вручную кнопкой «+ Поставка», состава не имеют и в разбивку
-  // по товарам не попадают — только в общую сумму по поставщику.
   const productsByMonth = useMemo(() => {
     const byMonth = {};
     for (const [mk, m] of Object.entries(months)) {
@@ -2738,7 +2673,6 @@ function PurchaseAnalyticsPage({ ctx }) {
           entry.suppliers.add(supplierName(o.supplierId));
         }
       }
-      // Округляем сразу при сборке, чтобы погрешность не накапливалась и не утекала дальше.
       for (const entry of bucket.values()) {
         entry.qty = roundQty(entry.qty, entry.unit);
         entry.sum = Math.round(entry.sum * 100) / 100;
@@ -2750,12 +2684,8 @@ function PurchaseAnalyticsPage({ ctx }) {
 
   const curMap = productsByMonth[monthKey] || new Map();
   const prevMap = productsByMonth[prevMonthKey] || new Map();
-  const hasComparison = prevMap.size > 0; // есть ли вообще с чем сравнивать этот месяц
+  const hasComparison = prevMap.size > 0;
 
-  // Все поставки по всем месяцам (не только с составом — сюда попадают и введённые
-  // вручную, раз речь про суммы, а не про товары), отсортированные по дате, с дельтой
-  // к ПРЕДЫДУЩЕЙ поставке ТОГО ЖЕ поставщика. Это и есть "сколько закупали в прошлый
-  // раз" — работает уже с двумя поставками, месяцы можно вообще не набирать.
   const deliveryHistory = useMemo(() => {
     const all = [];
     for (const m of Object.values(months)) {
@@ -2773,13 +2703,11 @@ function PurchaseAnalyticsPage({ ctx }) {
       const deltaPct = prevAmount != null && prevAmount > 0 ? ((d.amount - prevAmount) / prevAmount) * 100 : null;
       return { ...d, supplierName: supplierName(d.supplierId), prevAmount: prevAmount ?? null, deltaPct };
     });
-    return rows.reverse(); // новые сверху
+    return rows.reverse();
   }, [months, suppliers, supplierFilter]);
 
-  // Средняя поставка по каждому поставщику — чтобы подсветить аномально крупную/мелкую
-  // поставку, даже если предыдущая всего одна и сравнение "к предыдущей" неустойчиво.
   const avgBySupplier = useMemo(() => {
-    const sums = new Map(); // id -> {total, count}
+    const sums = new Map();
     for (const d of deliveryHistory) {
       const cur = sums.get(d.supplierId) || { total: 0, count: 0 };
       cur.total += d.amount; cur.count += 1;
@@ -2790,8 +2718,6 @@ function PurchaseAnalyticsPage({ ctx }) {
     return avg;
   }, [deliveryHistory]);
 
-  // Сводка по всем поставщикам сразу — этот месяц vs прошлый, сколько поставок, средний
-  // чек. Это главный экран при "Все поставщики": проваливаться в конкретного — через клик.
   const supplierSummary = useMemo(() => {
     const ids = new Set(suppliers.filter((s) => !s.archived).map((s) => s.id));
     const rows = [...ids].map((id) => {
@@ -2804,8 +2730,6 @@ function PurchaseAnalyticsPage({ ctx }) {
     return rows.filter((r) => r.curTotal > 0 || r.prevTotal > 0).sort((a, b) => b.curTotal - a.curTotal);
   }, [suppliers, months, monthKey, prevMonthKey]);
 
-  // Месячный ряд конкретного поставщика (последние 6 месяцев) — для графика при выборе
-  // в фильтре одного поставщика вместо "все".
   const selectedSupplierMonthly = useMemo(() => {
     if (supplierFilter === 'all') return [];
     const keys = [];
@@ -2828,7 +2752,7 @@ function PurchaseAnalyticsPage({ ctx }) {
       const curQty = cur?.qty || 0;
       const prevQty = prev?.qty || 0;
       const deltaQty = curQty - prevQty;
-      const deltaPct = prevQty > 0 ? (deltaQty / prevQty) * 100 : (curQty > 0 ? null : 0); // null = "новый товар"
+      const deltaPct = prevQty > 0 ? (deltaQty / prevQty) * 100 : (curQty > 0 ? null : 0);
       rows.push({
         key,
         name: cur?.name || prev?.name,
@@ -2844,9 +2768,6 @@ function PurchaseAnalyticsPage({ ctx }) {
   const topThisMonth = [...curMap.values()].sort((a, b) => b.sum - a.sum);
 
   const movers = comparisonRows.filter((r) => r.prevQty > 0 && r.curQty > 0 && r.deltaPct != null).map((r) => ({ ...r, impact: r.curSum - r.prevSum }));
-  // Сортируем по РЕАЛЬНОМУ денежному эффекту, а не по проценту — рост на 300% у товара
-  // за 200 ₽ не так важен, как рост на 20% у товара за 40 000 ₽. Порог >5% отсекает шум
-  // от копеечных колебаний цены/веса.
   const growing = [...movers].filter((r) => r.deltaPct > 5 && r.impact > 0).sort((a, b) => b.impact - a.impact).slice(0, 12);
   const declining = [...movers].filter((r) => r.deltaPct < -5 && r.impact < 0).sort((a, b) => a.impact - b.impact).slice(0, 12);
   const newProducts = hasComparison ? comparisonRows.filter((r) => r.prevQty === 0 && r.curQty > 0).sort((a, b) => b.curSum - a.curSum) : [];
@@ -2860,7 +2781,6 @@ function PurchaseAnalyticsPage({ ctx }) {
   const prevTotalSpend = [...prevMap.values()].reduce((s, r) => s + r.sum, 0);
   const totalDeltaPct = prevTotalSpend > 0 ? ((curTotalSpend - prevTotalSpend) / prevTotalSpend) * 100 : 0;
 
-  // Последние 6 месяцев — тренд трат по поставщикам.
   const last6MonthKeys = useMemo(() => {
     const keys = [];
     for (let i = 5; i >= 0; i--) {
@@ -2890,8 +2810,6 @@ function PurchaseAnalyticsPage({ ctx }) {
     });
   }, [last6MonthKeys, months, topSuppliersThisMonth, suppliers]);
 
-  // Хронология конкретного товара — все поставки этого товара по всем месяцам,
-  // отсортированные по дате: это и есть сравнение "от поставки к поставке".
   const productTimeline = useMemo(() => {
     if (!selectedProduct) return [];
     const points = [];
@@ -2962,8 +2880,6 @@ function PurchaseAnalyticsPage({ ctx }) {
         </Field>
       </div>
 
-      {/* Всё содержимое — в одной карточке, разделено сворачиваемыми секциями,
-          чтобы не было "стены" отдельных блоков подряд. */}
       <Card>
         {supplierFilter === 'all' ? (
           <Section title="Сводка по поставщикам" count={supplierSummary.length} defaultOpen={true}>
@@ -3149,7 +3065,6 @@ function PurchaseAnalyticsPage({ ctx }) {
           </Section>
         )}
 
-
         {hasComparison && (newProducts.length > 0 || droppedProducts.length > 0) && (
           <Section title="Новое и переставшее заказываться" count={newProducts.length + droppedProducts.length} defaultOpen={false}>
             <p className="rp-muted" style={{ fontSize: 12, marginBottom: 14 }}>
@@ -3185,7 +3100,6 @@ function PurchaseAnalyticsPage({ ctx }) {
             </div>
           </Section>
         )}
-
 
         {supplierTrendData.length > 0 && topSuppliersThisMonth.length > 0 && (
           <Section title="Траты по поставщикам — последние 6 месяцев" defaultOpen={false}>
@@ -3261,7 +3175,6 @@ function PurchaseAnalyticsPage({ ctx }) {
     </div>
   );
 }
-
 
 /* ============================== P&L ============================== */
 
@@ -3732,7 +3645,7 @@ function IikoIntegrationPanel({ ctx }) {
 function BackupPanel({ ctx }) {
   const { settings, employees, suppliers, months, auditLog, setSettings, setEmployees, setSuppliers, setMonths, setAuditLog, logAudit } = ctx;
   const fileInputRef = useRef(null);
-  const [pendingImport, setPendingImport] = useState(null); // parsed object awaiting confirm
+  const [pendingImport, setPendingImport] = useState(null);
   const [error, setError] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
 
@@ -3979,7 +3892,117 @@ const historyFieldLabel = {
   category: 'категория', from: 'было', to: 'стало',
 };
 
-/* ============================== IIKO DASHBOARD (отдельный, независимый от ручного P&L) ============================== */
+/* ============================== COMPARE ============================== */
+
+function MonthPicker({ year, monthIdx, onChange, yearOptions }) {
+  return (
+    <div className="rp-compare-picker">
+      <select className="rp-period-select" value={monthIdx} onChange={(e) => onChange(Number(e.target.value), year)}>
+        {MONTHS_RU.map((m, i) => <option key={m} value={i}>{m}</option>)}
+      </select>
+      <select className="rp-period-select" value={year} onChange={(e) => onChange(monthIdx, Number(e.target.value))}>
+        {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ComparePage({ ctx }) {
+  const { settings, employees, suppliers, months, year, monthIdx } = ctx;
+  const prevD = new Date(year, monthIdx - 1, 1);
+  const [a, setA] = useState({ year: prevD.getFullYear(), monthIdx: prevD.getMonth() });
+  const [b, setB] = useState({ year, monthIdx });
+
+  const yearOptions = useMemo(() => {
+    const base = todayObj().y;
+    const set = new Set();
+    for (let y2 = base - 3; y2 <= base + 3; y2++) set.add(y2);
+    Object.keys(months).forEach((k) => set.add(Number(k.split('-')[0])));
+    return Array.from(set).sort((x, y2) => x - y2);
+  }, [months]);
+
+  const dataCtx = { settings, employees, suppliers, months };
+  const pnlA = useMemo(() => computePnL(dataCtx, a.year, a.monthIdx), [settings, employees, suppliers, months, a.year, a.monthIdx]);
+  const pnlB = useMemo(() => computePnL(dataCtx, b.year, b.monthIdx), [settings, employees, suppliers, months, b.year, b.monthIdx]);
+
+  const rows = [
+    ['Выручка', pnlA.revenue, pnlB.revenue],
+    ['Закупки (кухня + поставщики)', pnlA.kitchen.total + pnlA.supplierPay.total, pnlB.kitchen.total + pnlB.supplierPay.total],
+    ['Доставка (курьеры + бензин)', pnlA.courier.total, pnlB.courier.total],
+    ['Эквайринг', pnlA.acquiring.amount, pnlB.acquiring.amount],
+    ['Прочие переменные', pnlA.otherVar.total, pnlB.otherVar.total],
+    ['ФОТ', pnlA.payroll.totalFot, pnlB.payroll.totalFot],
+    ['Промо', pnlA.promo.total, pnlB.promo.total],
+    ['Постоянные расходы', pnlA.fixedTotal, pnlB.fixedTotal],
+    ['Итого расходов', pnlA.totalExpenses, pnlB.totalExpenses],
+    ['Прибыль', pnlA.profit, pnlB.profit],
+  ];
+
+  const chartData = rows.slice(0, 9).map(([name, va, vb]) => ({ name, [labelA(a)]: va, [labelB(b)]: vb }));
+
+  function labelA(x) { return `${MONTHS_RU_SHORT[x.monthIdx]} ${x.year}`; }
+  function labelB(x) { return `${MONTHS_RU_SHORT[x.monthIdx]} ${x.year}`; }
+
+  return (
+    <div className="rp-page">
+      <div className="rp-page-head">
+        <h1>Сравнение месяцев</h1>
+        <div className="rp-page-sub">Выберите любые два месяца, чтобы сопоставить показатели</div>
+      </div>
+
+      <div className="rp-compare-heads">
+        <Card className="rp-compare-head-card">
+          <div className="rp-card-title">Период А</div>
+          <MonthPicker year={a.year} monthIdx={a.monthIdx} yearOptions={yearOptions} onChange={(mi, y) => setA({ year: y, monthIdx: mi })} />
+        </Card>
+        <Card className="rp-compare-head-card">
+          <div className="rp-card-title">Период Б</div>
+          <MonthPicker year={b.year} monthIdx={b.monthIdx} yearOptions={yearOptions} onChange={(mi, y) => setB({ year: y, monthIdx: mi })} />
+        </Card>
+      </div>
+
+      <Card>
+        <div className="rp-card-title">Динамика по статьям</div>
+        <ResponsiveContainer width="100%" height={320}>
+          <BarChart data={chartData} margin={{ left: 0, right: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
+            <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+            <Tooltip formatter={(v) => fmtRub(v)} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey={labelA(a)} fill={COLORS.accent3} radius={[3, 3, 0, 0]} />
+            <Bar dataKey={labelB(b)} fill={COLORS.accent} radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Card>
+
+      <Card>
+        <div className="rp-table-wrap"><table className="rp-table">
+          <thead><tr><th>Показатель</th><th>{labelA(a)}</th><th>{labelB(b)}</th><th>Δ</th><th>Δ %</th></tr></thead>
+          <tbody>
+            {rows.map(([name, va, vb]) => {
+              const delta = vb - va;
+              const deltaPct = va ? (delta / Math.abs(va)) * 100 : 0;
+              const isProfitRow = name === 'Прибыль';
+              const good = isProfitRow ? delta >= 0 : delta <= 0;
+              return (
+                <tr key={name} className={name === 'Итого расходов' || name === 'Прибыль' ? 'rp-total-row' : ''}>
+                  <td>{name}</td>
+                  <td className="rp-num">{fmtRub(va)}</td>
+                  <td className="rp-num">{fmtRub(vb)}</td>
+                  <td className="rp-num" style={{ color: delta === 0 ? COLORS.inkSoft : good ? COLORS.accent : COLORS.danger }}>{delta >= 0 ? '+' : ''}{fmtRub(delta)}</td>
+                  <td className="rp-num" style={{ color: delta === 0 ? COLORS.inkSoft : good ? COLORS.accent : COLORS.danger }}>{va ? `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%` : '—'}</td>
+                </tr>
+              );
+            })}
+            <tr><td>Рентабельность</td><td className="rp-num">{fmtPct(pnlA.margin)}</td><td className="rp-num">{fmtPct(pnlB.margin)}</td><td className="rp-num">{(pnlB.margin - pnlA.margin) >= 0 ? '+' : ''}{(pnlB.margin - pnlA.margin).toFixed(1)} п.п.</td><td /></tr>
+          </tbody>
+        </table></div>
+      </Card>
+    </div>
+  );
+}
+/* ============================== IIKO DASHBOARD ============================== */
 
 function IikoDashboardPage({ ctx }) {
   const { settings, session, year, monthIdx } = ctx;
@@ -4080,7 +4103,6 @@ function IikoDashboardPage({ ctx }) {
 
         {dayReport && (
           <div>
-            {/* === Ключевые цифры — всегда видны === */}
             <div className="rp-grid-4" style={{marginTop:20}}>
               <Stat label="Выручка" value={fmtRub(dayReport.revenue?.total)} />
               <Stat label="Чеков" value={fmt0(dayReport.revenue?.checks)} />
@@ -4498,123 +4520,12 @@ function CombinedReportPage({ ctx }) {
   );
 }
 
-function MonthPicker({ year, monthIdx, onChange, yearOptions }) {
-  return (
-    <div className="rp-compare-picker">
-      <select className="rp-period-select" value={monthIdx} onChange={(e) => onChange(Number(e.target.value), year)}>
-        {MONTHS_RU.map((m, i) => <option key={m} value={i}>{m}</option>)}
-      </select>
-      <select className="rp-period-select" value={year} onChange={(e) => onChange(monthIdx, Number(e.target.value))}>
-        {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function ComparePage({ ctx }) {
-  const { settings, employees, suppliers, months, year, monthIdx } = ctx;
-  const prevD = new Date(year, monthIdx - 1, 1);
-  const [a, setA] = useState({ year: prevD.getFullYear(), monthIdx: prevD.getMonth() });
-  const [b, setB] = useState({ year, monthIdx });
-
-  const yearOptions = useMemo(() => {
-    const base = todayObj().y;
-    const set = new Set();
-    for (let y2 = base - 3; y2 <= base + 3; y2++) set.add(y2);
-    Object.keys(months).forEach((k) => set.add(Number(k.split('-')[0])));
-    return Array.from(set).sort((x, y2) => x - y2);
-  }, [months]);
-
-  const dataCtx = { settings, employees, suppliers, months };
-  const pnlA = useMemo(() => computePnL(dataCtx, a.year, a.monthIdx), [settings, employees, suppliers, months, a.year, a.monthIdx]);
-  const pnlB = useMemo(() => computePnL(dataCtx, b.year, b.monthIdx), [settings, employees, suppliers, months, b.year, b.monthIdx]);
-
-  const rows = [
-    ['Выручка', pnlA.revenue, pnlB.revenue],
-    ['Закупки (кухня + поставщики)', pnlA.kitchen.total + pnlA.supplierPay.total, pnlB.kitchen.total + pnlB.supplierPay.total],
-    ['Доставка (курьеры + бензин)', pnlA.courier.total, pnlB.courier.total],
-    ['Эквайринг', pnlA.acquiring.amount, pnlB.acquiring.amount],
-    ['Прочие переменные', pnlA.otherVar.total, pnlB.otherVar.total],
-    ['ФОТ', pnlA.payroll.totalFot, pnlB.payroll.totalFot],
-    ['Промо', pnlA.promo.total, pnlB.promo.total],
-    ['Постоянные расходы', pnlA.fixedTotal, pnlB.fixedTotal],
-    ['Итого расходов', pnlA.totalExpenses, pnlB.totalExpenses],
-    ['Прибыль', pnlA.profit, pnlB.profit],
-  ];
-
-  const chartData = rows.slice(0, 9).map(([name, va, vb]) => ({ name, [labelA(a)]: va, [labelB(b)]: vb }));
-
-  function labelA(x) { return `${MONTHS_RU_SHORT[x.monthIdx]} ${x.year}`; }
-  function labelB(x) { return `${MONTHS_RU_SHORT[x.monthIdx]} ${x.year}`; }
-
-  return (
-    <div className="rp-page">
-      <div className="rp-page-head">
-        <h1>Сравнение месяцев</h1>
-        <div className="rp-page-sub">Выберите любые два месяца, чтобы сопоставить показатели</div>
-      </div>
-
-      <div className="rp-compare-heads">
-        <Card className="rp-compare-head-card">
-          <div className="rp-card-title">Период А</div>
-          <MonthPicker year={a.year} monthIdx={a.monthIdx} yearOptions={yearOptions} onChange={(mi, y) => setA({ year: y, monthIdx: mi })} />
-        </Card>
-        <Card className="rp-compare-head-card">
-          <div className="rp-card-title">Период Б</div>
-          <MonthPicker year={b.year} monthIdx={b.monthIdx} yearOptions={yearOptions} onChange={(mi, y) => setB({ year: y, monthIdx: mi })} />
-        </Card>
-      </div>
-
-      <Card>
-        <div className="rp-card-title">Динамика по статьям</div>
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={chartData} margin={{ left: 0, right: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} />
-            <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={70} />
-            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-            <Tooltip formatter={(v) => fmtRub(v)} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey={labelA(a)} fill={COLORS.accent3} radius={[3, 3, 0, 0]} />
-            <Bar dataKey={labelB(b)} fill={COLORS.accent} radius={[3, 3, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <Card>
-        <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Показатель</th><th>{labelA(a)}</th><th>{labelB(b)}</th><th>Δ</th><th>Δ %</th></tr></thead>
-          <tbody>
-            {rows.map(([name, va, vb]) => {
-              const delta = vb - va;
-              const deltaPct = va ? (delta / Math.abs(va)) * 100 : 0;
-              const isProfitRow = name === 'Прибыль';
-              const good = isProfitRow ? delta >= 0 : delta <= 0;
-              return (
-                <tr key={name} className={name === 'Итого расходов' || name === 'Прибыль' ? 'rp-total-row' : ''}>
-                  <td>{name}</td>
-                  <td className="rp-num">{fmtRub(va)}</td>
-                  <td className="rp-num">{fmtRub(vb)}</td>
-                  <td className="rp-num" style={{ color: delta === 0 ? COLORS.inkSoft : good ? COLORS.accent : COLORS.danger }}>{delta >= 0 ? '+' : ''}{fmtRub(delta)}</td>
-                  <td className="rp-num" style={{ color: delta === 0 ? COLORS.inkSoft : good ? COLORS.accent : COLORS.danger }}>{va ? `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%` : '—'}</td>
-                </tr>
-              );
-            })}
-            <tr><td>Рентабельность</td><td className="rp-num">{fmtPct(pnlA.margin)}</td><td className="rp-num">{fmtPct(pnlB.margin)}</td><td className="rp-num">{(pnlB.margin - pnlA.margin) >= 0 ? '+' : ''}{(pnlB.margin - pnlA.margin).toFixed(1)} п.п.</td><td /></tr>
-          </tbody>
-        </table></div>
-      </Card>
-    </div>
-  );
-}
-
 /* ============================== INCOMING VK REPORTS ============================== */
-// Manual VK import: employee copies the full report from the existing VK chat,
-// pastes it here, reviews the parsed fields, then explicitly applies it to P&L.
 
 function IncomingReportsPage({ ctx }) {
   const { settings, employees, months, setMonths, logAudit, refreshPendingReportsCount, session } = ctx;
   const [text, setText] = useState('');
-  const [parsedList, setParsedList] = useState([]); // [{ parsed, key }]
+  const [parsedList, setParsedList] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [loadWarning, setLoadWarning] = useState('');
   const [saving, setSaving] = useState(false);
@@ -4684,7 +4595,6 @@ function IncomingReportsPage({ ctx }) {
     try {
       let data;
       let lastErr = null;
-      // Пробуем ИИ, при временной ошибке (сеть/5xx) — один повтор через паузу.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           data = await callAiOnce(fallbackDate);
@@ -4699,8 +4609,6 @@ function IncomingReportsPage({ ctx }) {
       }
 
       if (lastErr) {
-        // ИИ недоступен (сеть, перегрузка, кончился баланс, невалидный ключ и т.п.) —
-        // честно откатываемся на проверенный локальный разбор, а не молчим и не виснем.
         const results = runRegexParse();
         setResultMeta({ usedAi: false, usedFallback: true });
         setParsedList(results.map((p, i) => ({ parsed: p, key: `fallback-${i}-${Date.now()}` })));
@@ -4845,13 +4753,6 @@ function DraftCard({ draft, settings, employees, months, onApply, onDismiss }) {
 
 /* ============================== EXPORT ============================== */
 
-/* ---------- Excel two-way sync (raw editable data ⇄ app state) ----------
-   Different from the P&L export above: this workbook exposes the RAW entered
-   records (not aggregates) for the currently viewed month, with a hidden ID
-   column on list-type sheets so edits/adds/deletes made in Excel can be
-   matched back up on import. See the in-app "Синхронизация" modal for the
-   confirm-before-apply flow. */
-
 const PAYTYPE_LABEL = { shift: 'руб/смена', hour: 'руб/час', oklad: 'оклад' };
 const PAYTYPE_FROM_LABEL = { 'руб/смена': 'shift', 'руб/час': 'hour', 'оклад': 'oklad' };
 const ADJTYPE_LABEL = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', manual: 'Ручная корректировка' };
@@ -4862,7 +4763,6 @@ function normalizeSyncDate(v) {
   if (v instanceof Date) return v.toISOString().slice(0, 10);
   const s = String(v).trim();
   if (/^\d+(\.\d+)?$/.test(s) && Number(s) > 20000) {
-    // Excel serial date number (in case the cell got auto-formatted as a number)
     const epoch = new Date(Date.UTC(1899, 11, 30));
     const dt = new Date(epoch.getTime() + Number(s) * 86400000);
     return dt.toISOString().slice(0, 10);
@@ -5163,7 +5063,7 @@ function SyncModal({ ctx, onClose }) {
   const fileInputRef = useRef(null);
   const [error, setError] = useState('');
   const [exportFile, setExportFile] = useState(null);
-  const [parsed, setParsed] = useState(null); // result of parseSyncWorkbook, awaiting confirm
+  const [parsed, setParsed] = useState(null);
   const [applied, setApplied] = useState(false);
 
   const handleExport = () => {
@@ -5175,7 +5075,7 @@ function SyncModal({ ctx, onClose }) {
         const a = document.createElement('a');
         a.href = result.url; a.download = result.filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      } catch (e) { /* fall back to the manual link rendered below */ }
+      } catch (e) {}
     } catch (e) {
       setError('Не удалось сформировать файл: ' + (e?.message || 'неизвестная ошибка'));
     }
@@ -5301,14 +5201,11 @@ function ExportMenu({ ctx }) {
     try {
       const result = buildExcelFile(ctx);
       setFile(result);
-      // attempt an automatic download; browsers/sandboxes vary in whether a
-      // script-triggered click is allowed, so the manual link below is the
-      // guaranteed way to get the file regardless.
       try {
         const a = document.createElement('a');
         a.href = result.url; a.download = result.filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      } catch (clickErr) { /* fall through to manual link */ }
+      } catch (clickErr) {}
     } catch (e) {
       setError('Не удалось сформировать файл: ' + (e?.message || 'неизвестная ошибка'));
     }
@@ -5337,7 +5234,6 @@ function buildExcelFile(ctx) {
   const { settings, suppliers, month, pnl, year, monthIdx } = ctx;
   const wb = XLSX.utils.book_new();
 
-  // P&L sheet
   const pnlRows = [
     ['P&L СИОСАН', `${MONTHS_RU[monthIdx]} ${year}`],
     [],
@@ -5369,7 +5265,6 @@ function buildExcelFile(ctx) {
   wsPnl['!cols'] = [{ wch: 32 }, { wch: 16 }];
   XLSX.utils.book_append_sheet(wb, wsPnl, 'P&L');
 
-  // Revenue by day
   const revHeader = ['День', ...settings.revenueChannels.map((c) => c.name), 'Итого'];
   const revRows = [revHeader];
   for (let d = 1; d <= pnl.nd; d++) {
@@ -5381,26 +5276,22 @@ function buildExcelFile(ctx) {
   const wsRev = XLSX.utils.aoa_to_sheet(revRows);
   XLSX.utils.book_append_sheet(wb, wsRev, 'Выручка');
 
-  // Payroll
   const payHeader = ['Сотрудник', 'Должность', 'Тип оплаты', 'Ставка', 'Часы 1-я пол.', 'Часы 2-я пол.', 'Начислено', 'Бонус', 'Удержано', 'Аванс', 'К выплате'];
   const payRows = [payHeader, ...pnl.payroll.rows.map((r) => [r.name, r.position, r.payType, r.rate, r.h1, r.h2, r.base, r.bonus, r.deduct, r.advance, r.payout])];
   const wsPay = XLSX.utils.aoa_to_sheet(payRows);
   XLSX.utils.book_append_sheet(wb, wsPay, 'ФОТ');
 
-  // Couriers detail
   const courHeader = ['Дата', 'Доставок', 'Ставка', 'Км', 'Бензин', 'Итого'];
   const courRows = [courHeader, ...pnl.courier.items.map((c) => [c.date, c.deliveries, c.pay, c.km, c.fuel, c.pay + c.fuel])];
   const wsCour = XLSX.utils.aoa_to_sheet(courRows);
   XLSX.utils.book_append_sheet(wb, wsCour, 'Курьеры');
 
-  // Suppliers
   const ledger = supplierLedger(ctx.months, suppliers, year, monthIdx);
   const supHeader = ['Поставщик', 'Поставлено (всего)', 'Оплачено (всего)', 'Долг'];
   const supRows = [supHeader, ...suppliers.filter((s) => !s.archived).map((s) => { const l = ledger[s.id] || { ordered: 0, paid: 0 }; return [s.name, l.ordered, l.paid, l.ordered - l.paid]; })];
   const wsSup = XLSX.utils.aoa_to_sheet(supRows);
   XLSX.utils.book_append_sheet(wb, wsSup, 'Поставщики');
 
-  // Expenses detail
   const expHeader = ['Дата', 'Блок', 'Категория', 'Сумма', 'Комментарий'];
   const expRows = [expHeader,
     ...pnl.kitchen.items.map((e) => [e.date, 'Кухня/бар', e.category, e.amount, e.comment || '']),
@@ -5413,270 +5304,4 @@ function buildExcelFile(ctx) {
   const url = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
   const filename = `P&L_СИОСАН_${MONTHS_RU[monthIdx]}_${year}.xlsx`;
   return { url, filename };
-}
-
-/* ============================== STYLES ============================== */
-
-function GlobalStyle() {
-  return (
-    <style>{`
-      * { box-sizing: border-box; }
-      @keyframes rp-spin-kf { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      .rp-spin { animation: rp-spin-kf 0.9s linear infinite; }
-      .rp-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
-      .rp-cal-weekday { text-align: center; font-size: 11px; font-weight: 700; color: ${COLORS.inkSoft}; padding-bottom: 4px; text-transform: uppercase; }
-      .rp-cal-cell { min-height: 66px; border: 1px solid ${COLORS.line}; border-radius: 8px; padding: 6px; background: #fff; display: flex; flex-direction: column; gap: 4px; }
-      .rp-cal-cell-empty { border: none; background: transparent; }
-      .rp-cal-cell.rp-cal-has-items { background: ${COLORS.bg}; border-color: ${COLORS.accent}; }
-      .rp-cal-cell.rp-cal-today { box-shadow: inset 0 0 0 2px ${COLORS.accent2}; }
-      .rp-cal-daynum { font-size: 11px; font-weight: 600; color: ${COLORS.inkSoft}; }
-      .rp-cal-items { display: flex; flex-direction: column; gap: 2px; }
-      .rp-cal-chip { font-size: 10.5px; background: ${COLORS.accent}22; color: ${COLORS.accent}; border-radius: 4px; padding: 1px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .rp-cal-chip-clickable { cursor: pointer; font-weight: 700; }
-      .rp-cal-chip-clickable:hover { background: ${COLORS.accent}44; }
-      .rp-cal-daytotal { font-size: 11px; font-weight: 700; margin-top: 2px; }
-      @media (max-width: 720px) {
-        .rp-cal-grid { grid-template-columns: repeat(7, minmax(0,1fr)); gap: 3px; }
-        .rp-cal-cell { min-height: 50px; padding: 3px; }
-        .rp-cal-chip { display: none; }
-        .rp-cal-daytotal { font-size: 9px; }
-      }
-      .rp-root { display: flex; min-height: 100vh; background: ${COLORS.bg}; font-family: 'Inter', -apple-system, sans-serif; color: ${COLORS.ink}; font-size: 13.5px; }
-      .rp-sidebar { width: 216px; flex-shrink: 0; background: #1B2420; color: #EDEBE3; display: flex; flex-direction: column; padding: 20px 14px; }
-      .rp-nav-close, .rp-nav-hamburger { display: none; }
-      .rp-nav-backdrop { display: none; }
-      .rp-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px; }
-      .rp-brand-mark { width: 34px; height: 34px; border-radius: 9px; background: ${COLORS.accent}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: white; }
-      .rp-brand-name { font-weight: 700; font-size: 14.5px; letter-spacing: 0.02em; }
-      .rp-brand-sub { font-size: 10.5px; color: #9BA69C; }
-      .rp-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
-      .rp-nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; background: none; border: none; color: #C7CDC4; font-size: 13px; text-align: left; cursor: pointer; }
-      .rp-nav-item:hover { background: #24302A; color: #fff; }
-      .rp-nav-item.active { background: ${COLORS.accent}; color: #fff; font-weight: 600; }
-      .rp-nav-badge { margin-left: auto; background: ${COLORS.accent2}; color: #fff; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 20px; }
-      .rp-sidebar-foot { font-size: 11px; color: #8B968C; display: flex; align-items: center; gap: 6px; padding: 8px; }
-      .rp-save-dot { width: 6px; height: 6px; border-radius: 50%; background: #4C8577; }
-      .rp-save-dot.busy { background: ${COLORS.warn}; }
-      .rp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-      .rp-topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 26px; padding-top: calc(14px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid ${COLORS.line}; background: ${COLORS.panel}; position: sticky; top: 0; z-index: 5; }
-      .rp-month-switch { display: flex; align-items: center; gap: 10px; }
-      .rp-month-label { font-weight: 700; font-size: 15px; min-width: 130px; text-align: center; }
-      .rp-period-select {
-        font-weight: 700; font-size: 13.5px; border: 1px solid ${COLORS.line}; border-radius: 8px;
-        padding: 6px 26px 6px 10px; background: ${COLORS.panel}; cursor: pointer;
-        -webkit-appearance: none; -moz-appearance: none; appearance: none;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23555' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-        background-repeat: no-repeat; background-position: right 9px center;
-      }
-      .rp-content { padding: 24px 26px 60px; overflow-y: auto; }
-      .rp-page-head { margin-bottom: 18px; }
-      .rp-page-head h1 { font-size: 21px; margin: 0 0 3px; font-weight: 700; }
-      .rp-page-sub { color: ${COLORS.inkSoft}; font-size: 12.5px; }
-      .rp-card { background: ${COLORS.panel}; border: 1px solid ${COLORS.line}; border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
-      .rp-card-title { font-weight: 700; font-size: 13px; margin-bottom: 10px; }
-      .rp-card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-      .rp-muted { color: ${COLORS.inkSoft}; font-weight: 400; font-size: 12px; }
-      .rp-muted-sm { color: ${COLORS.inkSoft}; font-size: 11px; }
-      .rp-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-      .rp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
-      @media (max-width: 980px) { .rp-grid-4 { grid-template-columns: repeat(2,1fr); } .rp-grid-2 { grid-template-columns: 1fr; } }
-      @media (max-width: 760px) {
-        .rp-nav-hamburger { display: inline-flex; }
-        .rp-nav-close { display: inline-flex; margin-left: auto; color: #C7CDC4; }
-        .rp-sidebar {
-          position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: 250px;
-          padding-top: calc(20px + env(safe-area-inset-top, 0px));
-          padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
-          transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 4px 0 24px rgba(0,0,0,0.25);
-        }
-        .rp-sidebar.open { transform: translateX(0); }
-        .rp-nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,18,15,0.45); z-index: 55; }
-        .rp-topbar { padding: 12px 14px; padding-top: calc(12px + env(safe-area-inset-top, 0px)); gap: 10px; flex-wrap: wrap; }
-        .rp-month-switch { flex-wrap: wrap; gap: 6px; }
-        .rp-content { padding: 16px 14px calc(50px + env(safe-area-inset-bottom, 0px)); }
-        .rp-grid-4 { grid-template-columns: 1fr 1fr; }
-        .rp-day-header { flex-wrap: wrap; gap: 8px; }
-        .rp-shift-grid { grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); }
-        .rp-icon-btn { padding: 8px; }
-        .rp-modal-body, .rp-modal-head { padding-left: 14px; padding-right: 14px; }
-        .rp-day-strip { gap: 4px; }
-        .rp-day-chip { width: 30px; height: 30px; font-size: 11px; }
-        .rp-toolbar { flex-wrap: wrap; }
-        .rp-list-row { flex-wrap: wrap; }
-        .rp-list-amount { margin-left: auto; }
-        .rp-forecast-grid { grid-template-columns: 1fr 1fr; }
-      }
-      @media (max-width: 520px) {
-        .rp-grid-4 { grid-template-columns: 1fr; }
-        .rp-form-grid { grid-template-columns: 1fr; }
-        .rp-payslip { grid-template-columns: 1fr; }
-        .rp-payslip-total { grid-column: span 1; }
-        .rp-pnl-row { grid-template-columns: 1fr 88px 46px; font-size: 11.5px; }
-        .rp-compare-picker { flex-wrap: wrap; }
-        .rp-history-row { flex-direction: column; align-items: flex-start; gap: 6px; }
-        .rp-history-ts { min-width: 0; }
-        .rp-history-revert { align-self: flex-end; }
-        .rp-export-menu { max-width: calc(100vw - 28px); }
-        .rp-brand-sub { display: none; }
-        .rp-page-head h1 { font-size: 18px; }
-      }
-      .rp-stat { background: ${COLORS.panel}; border: 1px solid ${COLORS.line}; border-radius: 12px; padding: 13px 15px; }
-      .rp-clickable { cursor: pointer; transition: box-shadow .15s, transform .15s; }
-      .rp-clickable:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.07); transform: translateY(-1px); }
-      .rp-stat-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
-      .rp-stat-value { font-size: 19px; font-weight: 700; }
-      .rp-stat-sub { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: 11.5px; color: ${COLORS.inkSoft}; }
-      .rp-delta { display: inline-flex; align-items: center; gap: 2px; font-weight: 600; }
-      .rp-delta-good { color: ${COLORS.accent}; }
-      .rp-delta-bad { color: ${COLORS.danger}; }
-      .rp-alert { display: flex; align-items: center; gap: 8px; background: #FBEAEA; border: 1px solid #E7C6C6; color: #8A3232; padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: 12.5px; }
-      .rp-alert-info { background: #EEF1EE; border-color: ${COLORS.line}; color: ${COLORS.inkSoft}; }
-      .rp-alert-warn { background: #FBF3E3; border-color: #EAD9A8; color: #7A5A17; align-items: flex-start; }
-      .rp-alert-warn span { flex: 1; }
-      .rp-alert-dismiss { background: none; border: 1px solid #D8C48C; color: #7A5A17; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
-      .rp-inline-warn { display: flex; align-items: flex-start; gap: 6px; background: #FBF3E3; border: 1px solid #EAD9A8; color: #7A5A17; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; margin-top: 6px; }
-
-      .rp-page-head-row { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; }
-      .rp-view-toggle { display: inline-flex; border: 1px solid ${COLORS.line}; border-radius: 9px; overflow: hidden; }
-      .rp-view-toggle button { background: ${COLORS.panel}; border: none; padding: 7px 16px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: ${COLORS.inkSoft}; }
-      .rp-view-toggle button.active { background: ${COLORS.ink}; color: white; }
-      .rp-hero { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 20px; border-radius: 12px; margin-bottom: 16px; cursor: pointer; transition: transform 0.1s ease; }
-      .rp-hero:hover { transform: translateY(-1px); }
-      .rp-hero-pos { background: linear-gradient(135deg, #EAF3EE, #F4F3EF); border: 1px solid #CFE3D6; }
-      .rp-hero-neg { background: linear-gradient(135deg, #FBEAEA, #F4F3EF); border: 1px solid #E7C6C6; }
-      .rp-hero-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.inkSoft}; margin-bottom: 2px; }
-      .rp-hero-value { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; color: ${COLORS.ink}; line-height: 1.15; }
-      .rp-hero-meta { display: flex; align-items: center; gap: 12px; margin-top: 4px; font-size: 11.5px; color: ${COLORS.inkSoft}; flex-wrap: wrap; }
-      .rp-hero-margin { font-weight: 600; }
-      .rp-hero-warning { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: ${COLORS.danger}; font-weight: 600; }
-      .rp-hero-side { display: flex; gap: 22px; flex-shrink: 0; }
-      .rp-hero-side-label { font-size: 10.5px; color: ${COLORS.inkSoft}; margin-bottom: 2px; }
-      .rp-hero-side-value { font-size: 15px; font-weight: 700; color: ${COLORS.ink}; }
-      @media (max-width: 760px) { .rp-hero { flex-direction: column; align-items: flex-start; padding: 14px 16px; } .rp-hero-side { gap: 18px; } }
-      .rp-forecast-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-      .rp-forecast-label { font-size: 11px; color: ${COLORS.inkSoft}; margin-bottom: 3px; }
-      .rp-forecast-value { font-size: 17px; font-weight: 700; color: ${COLORS.ink}; }
-      .rp-insights-list { display: flex; flex-direction: column; gap: 10px; }
-      .rp-insight { border-radius: 10px; padding: 10px 12px; border: 1px solid; }
-      .rp-insight-title { font-weight: 700; font-size: 12.5px; margin-bottom: 3px; }
-      .rp-insight-detail { font-size: 12px; line-height: 1.4; opacity: 0.9; }
-      .rp-insight-warning { background: #FBF3E3; border-color: #EAD9A8; color: #7A5A17; }
-      .rp-insight-info { background: #EEF1EE; border-color: ${COLORS.line}; color: ${COLORS.inkSoft}; }
-      .rp-insight-positive { background: #E9F5EF; border-color: #BFE0CF; color: #1F6F54; }
-      .rp-cash-check { display: flex; align-items: center; gap: 6px; background: #EEF3FA; border: 1px solid #CFE0F2; color: #33587A; padding: 9px 13px; border-radius: 10px; font-size: 12.5px; }
-      .rp-ai-badge { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; background: linear-gradient(135deg,#7c5cff,#5b8def); color: white; padding: 2px 7px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
-      .rp-draft-balance { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-top: 3px; }
-      .rp-draft-balance.ok { color: ${COLORS.accent}; }
-      .rp-draft-balance.bad { color: ${COLORS.danger}; }
-      .rp-draft-section { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: ${COLORS.inkSoft}; font-weight: 700; margin: 14px 0 6px; }
-      .rp-draft-raw { background: ${COLORS.bg}; border-radius: 8px; padding: 10px 12px; font-size: 11.5px; white-space: pre-wrap; color: ${COLORS.inkSoft}; margin-top: 6px; }
-      .rp-btn-link { background: none; border: none; color: ${COLORS.accent}; font-size: 11.5px; cursor: pointer; padding: 0; text-decoration: underline; }
-      .rp-btn { display: inline-flex; align-items: center; gap: 6px; background: ${COLORS.ink}; color: white; border: none; padding: 8px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-      .rp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-      .rp-btn-sm { padding: 6px 11px; font-size: 12px; }
-      .rp-btn-xs { padding: 4px 8px; font-size: 11px; margin-right: 4px; background: ${COLORS.accent}; }
-      .rp-btn-ghost { background: transparent; color: ${COLORS.ink}; border: 1px solid ${COLORS.line}; }
-      .rp-icon-btn { background: none; border: none; cursor: pointer; padding: 5px; border-radius: 6px; color: ${COLORS.inkSoft}; display: inline-flex; }
-      .rp-icon-btn:hover { background: ${COLORS.bg}; }
-      .rp-icon-btn-danger:hover { color: ${COLORS.danger}; }
-      .rp-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid ${COLORS.line}; background: #F1F4F1; padding: 5px 10px; border-radius: 20px; font-size: 11.5px; cursor: pointer; color: ${COLORS.inkSoft}; }
-      .rp-chip-locked { background: #FBF3E7; border-color: #EAD9BB; color: ${COLORS.warn}; }
-      .rp-table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      .rp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-      .rp-table td, .rp-table th { white-space: nowrap; }
-      .rp-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: ${COLORS.inkSoft}; border-bottom: 1px solid ${COLORS.line}; padding: 8px 8px; position: sticky; top: 0; background: ${COLORS.panel}; }
-      .rp-table td { padding: 9px 8px; border-bottom: 1px solid #F0EFEA; }
-      .rp-table .rp-num { text-align: right; font-variant-numeric: tabular-nums; }
-      .rp-strong { font-weight: 600; }
-      .rp-link { cursor: pointer; text-decoration: underline; text-decoration-color: ${COLORS.line}; }
-      .rp-total-row td { font-weight: 700; border-top: 2px solid ${COLORS.ink}; }
-      .rp-badge { padding: 2px 8px; border-radius: 20px; font-size: 10.5px; font-weight: 600; }
-      .rp-badge.ok { background: #E4F0EA; color: ${COLORS.accent}; }
-      .rp-badge.off { background: #F1EEEA; color: ${COLORS.inkSoft}; }
-      .rp-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
-      .rp-search { display: flex; align-items: center; gap: 6px; border: 1px solid ${COLORS.line}; border-radius: 8px; padding: 6px 10px; background: ${COLORS.panel}; flex: 1; max-width: 260px; color: ${COLORS.inkSoft}; }
-      .rp-search input { border: none; outline: none; font-size: 12.5px; flex: 1; background: transparent; }
-      .rp-toggle-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: ${COLORS.inkSoft}; cursor: pointer; }
-      input, select { font-family: inherit; font-size: 12.5px; padding: 7px 9px; border: 1px solid ${COLORS.line}; border-radius: 7px; background: ${COLORS.panel}; color: ${COLORS.ink}; outline: none; }
-      input:focus, select:focus { border-color: ${COLORS.accent}; }
-      .rp-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: ${COLORS.inkSoft}; font-weight: 600; }
-      .rp-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
-      .rp-modal-backdrop { position: fixed; inset: 0; background: rgba(20,24,20,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
-      .rp-modal { background: ${COLORS.panel}; border-radius: 14px; width: 480px; max-width: 100%; max-height: 88vh; overflow-y: auto; }
-      .rp-modal-wide { width: 720px; }
-      .rp-modal-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid ${COLORS.line}; }
-      .rp-modal-head h3 { margin: 0; font-size: 15px; }
-      .rp-modal-body { padding: 16px 18px; }
-      .rp-modal-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
-      .rp-day-strip { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
-      .rp-day-chip { width: 34px; height: 34px; border-radius: 8px; border: 1px solid ${COLORS.line}; background: ${COLORS.panel}; font-size: 12px; cursor: pointer; color: ${COLORS.inkSoft}; }
-      .rp-day-chip.weekend { background: #FBF6EF; }
-      .rp-day-chip.has-data { border-color: ${COLORS.accent}; color: ${COLORS.accent}; font-weight: 700; }
-      .rp-day-chip.active { background: ${COLORS.ink}; color: white; border-color: ${COLORS.ink}; }
-      .rp-day-chip.day-closed { position: relative; border-style: dashed; }
-      .rp-day-chip-lock { position: absolute; top: 2px; right: 2px; opacity: 0.7; }
-      .rp-day-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-      .rp-day-title { font-size: 15px; font-weight: 700; text-transform: capitalize; }
-      .rp-day-total { margin-top: 10px; font-size: 13px; padding-top: 10px; border-top: 1px dashed ${COLORS.line}; display: flex; justify-content: space-between; }
-      .rp-list { display: flex; flex-direction: column; gap: 6px; }
-      .rp-list-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: ${COLORS.bg}; border-radius: 8px; }
-      .rp-list-row-editing { outline: 2px solid ${COLORS.accent}; outline-offset: -2px; }
-      .rp-list-main { flex: 1; }
-      .rp-list-cat { font-weight: 600; font-size: 12.5px; }
-      .rp-list-comment { font-size: 11px; color: ${COLORS.inkSoft}; }
-      .rp-list-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
-      .rp-inline-input { border: 1px solid transparent; background: transparent; flex: 1; padding: 4px 6px; }
-      .rp-inline-input:hover, .rp-inline-input:focus { border-color: ${COLORS.line}; background: ${COLORS.panel}; }
-      .rp-empty { text-align: center; padding: 26px 10px; color: ${COLORS.inkSoft}; }
-      .rp-empty-title { font-weight: 600; margin-top: 8px; font-size: 12.5px; }
-      .rp-empty-sub { font-size: 11px; margin-top: 2px; }
-      .rp-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid ${COLORS.line}; }
-      .rp-tabs button { background: none; border: none; padding: 8px 12px; font-size: 12.5px; font-weight: 600; color: ${COLORS.inkSoft}; cursor: pointer; border-bottom: 2px solid transparent; }
-      .rp-tabs button.active { color: ${COLORS.ink}; border-color: ${COLORS.accent}; }
-      .rp-shift-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; margin-bottom: 14px; }
-      .rp-shift-cell { text-align: center; background: ${COLORS.bg}; border-radius: 8px; padding: 5px 3px; }
-      .rp-shift-cell.half-start { border-left: 2px solid ${COLORS.accent2}; }
-      .rp-shift-day { font-size: 10px; color: ${COLORS.inkSoft}; margin-bottom: 3px; font-weight: 600; }
-      .rp-shift-cell input { width: 100%; padding: 4px; text-align: center; font-size: 11.5px; margin-bottom: 3px; }
-      .rp-shift-full { width: 100%; font-size: 9.5px; background: #EAF0EB; border: none; border-radius: 5px; padding: 2px; cursor: pointer; color: ${COLORS.accent}; }
-      .rp-payslip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background: ${COLORS.bg}; border-radius: 10px; padding: 12px; }
-      .rp-payslip > div { display: flex; flex-direction: column; font-size: 11.5px; color: ${COLORS.inkSoft}; gap: 3px; }
-      .rp-payslip > div b { font-size: 13.5px; color: ${COLORS.ink}; }
-      .rp-payslip-total { grid-column: span 3; border-top: 1px dashed ${COLORS.line}; padding-top: 8px !important; }
-      .rp-payslip-total b { color: ${COLORS.accent} !important; font-size: 16px !important; }
-      .rp-checklist { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
-      .rp-checklist label { display: flex; align-items: center; gap: 8px; }
-      .rp-pnl-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: ${COLORS.inkSoft}; font-weight: 700; margin: 16px 0 6px; padding-bottom: 4px; border-bottom: 1px solid ${COLORS.line}; }
-      .rp-pnl-row { display: grid; grid-template-columns: 1fr 130px 70px; padding: 6px 4px; font-size: 12.5px; border-radius: 6px; }
-      .rp-pnl-row.bold { font-weight: 700; }
-      .rp-pnl-row .rp-num { text-align: right; font-variant-numeric: tabular-nums; }
-      .rp-pnl-divider { height: 1px; background: ${COLORS.ink}; margin: 12px 0; }
-      .rp-pnl-margin { text-align: right; font-weight: 700; font-size: 13px; margin-top: 4px; }
-      .rp-export-wrap { position: relative; }
-      .rp-export-menu { position: absolute; right: 0; top: 42px; background: ${COLORS.panel}; border: 1px solid ${COLORS.line}; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); overflow: hidden; z-index: 20; min-width: 180px; }
-      .rp-export-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: none; border: none; text-align: left; font-size: 12.5px; cursor: pointer; }
-      .rp-export-menu button:hover { background: ${COLORS.bg}; }
-      .rp-export-fallback { display: flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 11px; color: ${COLORS.accent}; text-decoration: none; border-top: 1px solid ${COLORS.line}; }
-      .rp-export-fallback-primary { font-weight: 700; background: #EAF3EE; font-size: 11.5px; }
-      .rp-sync-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-      .rp-sync-applied { display: flex; align-items: center; gap: 6px; background: #EAF3EE; color: ${COLORS.accent}; padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-top: 10px; }
-      .rp-sync-diff { margin-top: 16px; padding-top: 14px; border-top: 1px solid ${COLORS.line}; }
-      .rp-sync-diff-list { margin: 8px 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
-      .rp-export-fallback:hover { background: ${COLORS.bg}; }
-      .rp-export-error { padding: 8px 14px; font-size: 11px; color: ${COLORS.danger}; border-top: 1px solid ${COLORS.line}; }
-      .rp-divider-line { height: 1px; background: ${COLORS.line}; margin: 18px 0; }
-      .rp-history-list { display: flex; flex-direction: column; gap: 2px; max-height: 640px; overflow-y: auto; }
-      .rp-history-row { display: flex; gap: 14px; padding: 9px 6px; border-bottom: 1px solid #F0EFEA; align-items: center; }
-      .rp-history-revert { flex-shrink: 0; }
-      .rp-history-ts { font-size: 11px; color: ${COLORS.inkSoft}; white-space: nowrap; padding-top: 1px; min-width: 118px; font-variant-numeric: tabular-nums; }
-      .rp-history-body { flex: 1; }
-      .rp-history-what { font-weight: 600; font-size: 12.5px; }
-      .rp-history-detail { font-size: 11.5px; color: ${COLORS.inkSoft}; margin-top: 1px; }
-      .rp-compare-heads { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
-      .rp-compare-head-card { margin-bottom: 0; }
-      .rp-compare-picker { display: flex; gap: 8px; }
-      @media (max-width: 980px) { .rp-compare-heads { grid-template-columns: 1fr; } }
-      @media print { .rp-sidebar, .rp-topbar { display: none !important; } .rp-content { padding: 0; } }
-    `}</style>
-  );
 }
