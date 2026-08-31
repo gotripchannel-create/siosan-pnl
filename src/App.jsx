@@ -41,7 +41,7 @@ const COLORS = {
   accent3: '#8A6BAE',
   danger: '#B33F3F',
   warn: '#C9832E',
-  chartPalette: ['#1F6F54','#B5652A','#8A6BAE','#3A6EA5','#C9832E','#5B645F','#B33F3F','#4C8577'],
+  chartPalette: ['#3D4A5C','#4F5D70','#657485','#7C8B9B','#96A3B1','#B0BBC6'],
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
