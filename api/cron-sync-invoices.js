@@ -169,8 +169,18 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
   return data.reports || [];
 }
 
+// Разбивает одну выплату курьеру («ЗП КУРЬЕР 3500») на фиксированную ставку и бензин
+// (остаток сверху) — та же логика, что и на клиенте (src/App.jsx, splitCourierPayout).
+function splitCourierPayout(totalPay, fixedRate) {
+  const total = Number(totalPay) || 0;
+  const fixed = Number(fixedRate) || 2500;
+  return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
+}
+
 function mergeExpensesIntoData(data, reports) {
   data.months = data.months || {};
+  data.settings = data.settings || {};
+  const fixedRate = data.settings.courierFixedRate || 2500;
   let added = 0;
   for (const report of reports) {
     if (!report.date) continue;
@@ -178,11 +188,18 @@ function mergeExpensesIntoData(data, reports) {
     if (!data.months[mk]) data.months[mk] = {};
     const month = data.months[mk];
     month.days = month.days || {};
-    const existing = month.days[report.date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, comment: '' }, promo: { pay: 0, comment: '' } };
+    const existing = month.days[report.date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
     const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    let courierUpdate = existing.courier;
+    if (report.courier?.pay) {
+      const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, fixedRate);
+      const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
+      courierUpdate = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+    }
     month.days[report.date] = {
       ...existing,
+      courier: courierUpdate,
       kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
       otherExpenses: [...(existing.otherExpenses || []), ...newOther]
     };

@@ -59,6 +59,7 @@ function defaultSettings() {
   return {
     standardShiftHours: 13,
     courierFuelRatePerKm: 7,
+    courierFixedRate: 2500,
     anomalyThresholdPct: 60,
     acquiringPercent: 2,
     acquiringChannels: ['card', 'yandex'],
@@ -182,6 +183,16 @@ async function fetchWithTimeout(url, options, timeoutMs = 25000) {
 
 // Сопоставляет имя кассира из iiko (например "Вероника В.М.") с сотрудником в
 // приложении — по вхождению имени сотрудника в строку кассира (без учёта регистра).
+// Разбивает одну выплату курьеру из iiko («ЗП КУРЬЕР 3500») на фиксированную ставку
+// и бензин (остаток сверху). Ставка сотрудника не меняется день ото дня — курьер
+// получает фиксированную сумму, а всё, что курьеру выдали сверху, это компенсация
+// бензина.
+function splitCourierPayout(totalPay, fixedRate) {
+  const total = Number(totalPay) || 0;
+  const fixed = Number(fixedRate) || 2500;
+  return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
+}
+
 function matchIikoCashierToEmployee(iikoName, employees) {
   if (!iikoName) return null;
   const normalized = String(iikoName).toLowerCase().trim();
@@ -242,20 +253,23 @@ function monthOtherExpenseTotal(month, y, mIdx) {
 }
 
 function monthCourierStats(month, y, mIdx, fuelRate) {
-  const nd = daysInMonth(y, mIdx); let pay = 0, deliveries = 0, km = 0; const items = [];
+  const nd = daysInMonth(y, mIdx); let pay = 0, deliveries = 0, km = 0, fuelSum = 0; const items = [];
   for (let d = 1; d <= nd; d++) {
     const ds = dateStr(y, mIdx, d);
     const day = getDay(month, ds);
     const c = day.courier || {};
     const dayPay = Number(c.pay) || 0;
     const dayKm = Number(c.km) || 0;
-    const dayFuel = dayKm * fuelRate;
+    // Если бензин известен напрямую (например, из авторазбора iiko: сумма изъятия
+    // минус фиксированная ставка) — используем его, а не расчёт по километрам.
+    const dayFuel = c.fuel != null ? (Number(c.fuel) || 0) : dayKm * fuelRate;
     pay += dayPay;
     km += dayKm;
+    fuelSum += dayFuel;
     deliveries += Number(c.deliveries) || 0;
-    if (dayPay || dayKm || c.deliveries) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
+    if (dayPay || dayKm || c.deliveries || c.fuel) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
   }
-  const fuelTotal = km * fuelRate;
+  const fuelTotal = fuelSum;
   return { pay, km, fuelTotal, total: pay + fuelTotal, deliveries, items, avgPerDelivery: deliveries ? (pay + fuelTotal) / deliveries : 0 };
 }
 
@@ -969,7 +983,7 @@ function Dashboard({ ctx, setPage }) {
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
   const [insightsLoaded, setInsightsLoaded] = useState(false);
-  const [viewMode, setViewMode] = useState('month');
+  const [viewMode, setViewMode] = useState('day');
   const [dayDate, setDayDate] = useState(selectedDate);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [revSyncLoading, setRevSyncLoading] = useState(false);
@@ -1131,7 +1145,13 @@ function Dashboard({ ctx, setPage }) {
             const existing = getDay(curMonth, dayDate);
             const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
             const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
+            let courierPatch = {};
+            if (report.courier?.pay) {
+              const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
+              const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
+              courierPatch = { courier: { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel } };
+            }
+            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, ...courierPatch, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
           });
           setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
           setExpenseDebug({ step: 'success', report, newExpCount: newExp.length, forDate: dayDate });
@@ -1200,6 +1220,11 @@ function Dashboard({ ctx, setPage }) {
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
           day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          if (report.courier?.pay) {
+            const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
+            const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
+            day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+          }
           addedCount += newKitchen.length + newOther.length;
           next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
         }
@@ -1241,9 +1266,10 @@ function Dashboard({ ctx, setPage }) {
       const ds = dateStr(year, monthIdx, d);
       const day = getDay(month, ds);
       const rev = dayRevenueTotal(day, settings.revenueChannels);
+      const dayCourierFuelCalc = day.courier?.fuel != null ? (Number(day.courier.fuel) || 0) : (Number(day.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
       const exp = (day.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0)
         + (day.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0)
-        + (Number(day.courier?.pay) || 0) + (Number(day.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7) + (Number(day.promo?.pay) || 0);
+        + (Number(day.courier?.pay) || 0) + dayCourierFuelCalc + (Number(day.promo?.pay) || 0);
       arr.push({ day: d, Выручка: rev, Расходы: exp, Прибыль: rev - exp });
     }
     return arr;
@@ -1273,7 +1299,7 @@ function Dashboard({ ctx, setPage }) {
   const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const dayOther = (dayObj.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const dayCourierPay = Number(dayObj.courier?.pay) || 0;
-  const dayCourierFuel = (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
+  const dayCourierFuel = dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
   const dayPromo = Number(dayObj.promo?.pay) || 0;
   const dayExpensesSel = dayKitchen + dayOther + dayCourierPay + dayCourierFuel + dayPromo;
   const dayProfitSel = dayRevenueSel - dayExpensesSel;
@@ -1482,6 +1508,23 @@ function Dashboard({ ctx, setPage }) {
                 </ResponsiveContainer>
               )}
               <p className="rp-muted" style={{fontSize:11, marginTop:8}}>ФОТ и постоянные расходы считаются за месяц целиком и здесь не разбиваются по дням.</p>
+
+              {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayCourierPay > 0 || dayCourierFuel > 0 || dayPromo > 0) && (
+                <div style={{marginTop:14}}>
+                  <div className="rp-muted" style={{fontSize:11, fontWeight:700, marginBottom:6, textTransform:'uppercase'}}>Что именно</div>
+                  <div className="rp-list">
+                    {(dayObj.kitchenExpenses || []).map((e, i) => (
+                      <div key={`k${i}`} className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">{e.category}</div>{e.comment && <div className="rp-muted" style={{fontSize:11}}>{e.comment}</div>}</div><div className="rp-list-amount">{fmtRub(e.amount)}</div></div>
+                    ))}
+                    {(dayObj.otherExpenses || []).map((e, i) => (
+                      <div key={`o${i}`} className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">{e.category}</div>{e.comment && <div className="rp-muted" style={{fontSize:11}}>{e.comment}</div>}</div><div className="rp-list-amount">{fmtRub(e.amount)}</div></div>
+                    ))}
+                    {dayCourierPay > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — ставка</div></div><div className="rp-list-amount">{fmtRub(dayCourierPay)}</div></div>}
+                    {dayCourierFuel > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — бензин</div></div><div className="rp-list-amount">{fmtRub(dayCourierFuel)}</div></div>}
+                    {dayPromo > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Промо</div></div><div className="rp-list-amount">{fmtRub(dayPromo)}</div></div>}
+                  </div>
+                </div>
+              )}
             </Card>
           </div>
 
@@ -2018,8 +2061,11 @@ function DayEntry({ ctx }) {
             </Field>
           </div>
           <div className="rp-day-total">
-            Бензин курьера ({fmt0(day.courier?.km || 0)} км × {settings.courierFuelRatePerKm || 7} ₽/км)
-            <b>{fmtRub((Number(day.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7))}</b>
+            {day.courier?.fuel != null ? (
+              <>Бензин курьера (из iiko: сумма изъятия минус ставка {settings.courierFixedRate || 2500} ₽) <b>{fmtRub(Number(day.courier.fuel) || 0)}</b></>
+            ) : (
+              <>Бензин курьера ({fmt0(day.courier?.km || 0)} км × {settings.courierFuelRatePerKm || 7} ₽/км) <b>{fmtRub((Number(day.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7))}</b></>
+            )}
           </div>
         </Card>
       </div>
@@ -4124,11 +4170,14 @@ function SettingsPage({ ctx }) {
       {tab === 'courier' && (
         <Card>
           <div className="rp-form-grid">
+            <Field label="Фиксированная ставка курьера, ₽/смена">
+              <input type="number" value={settings.courierFixedRate} onChange={(e) => update((s) => { s.courierFixedRate = Number(e.target.value); return s; })} />
+            </Field>
             <Field label="Тариф бензина, ₽/км">
               <input type="number" step="0.1" value={settings.courierFuelRatePerKm} onChange={(e) => update((s) => { s.courierFuelRatePerKm = Number(e.target.value); return s; })} />
             </Field>
           </div>
-          <p className="rp-muted">Курьер получает фиксированную ставку за день (вносится на странице «День») + компенсацию бензина = километраж за день × этот тариф. Расход на бензин считается автоматически и попадает в P&L отдельной строкой.</p>
+          <p className="rp-muted">Курьер получает фиксированную ставку за день (вносится на странице «День», либо автоматически из iiko — вся выплата курьеру сверх фиксированной ставки считается бензином) + компенсацию бензина = километраж за день × тариф (для ручного ввода). Расход на бензин попадает в P&L отдельной строкой.</p>
         </Card>
       )}
 
@@ -5250,6 +5299,11 @@ function IncomingReportsPage({ ctx }) {
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
           day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          if (report.courier?.pay) {
+            const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
+            const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
+            day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+          }
           addedCount += newKitchen.length + newOther.length;
           next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
         }
