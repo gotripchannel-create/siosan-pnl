@@ -956,6 +956,7 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncTo, setRevSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
   const [iikoDayDetails, setIikoDayDetails] = useState(null);
+  const [expenseDebug, setExpenseDebug] = useState(null);
   const [expSyncLoading, setExpSyncLoading] = useState(false);
   const [expSyncError, setExpSyncError] = useState('');
   const [expSyncSummary, setExpSyncSummary] = useState(null);
@@ -1045,17 +1046,18 @@ function Dashboard({ ctx, setPage }) {
         // Расходы (изъятия наличных) за этот же день — тоже сами, без кнопки. Берём
         // только то, что ещё не обрабатывали раньше (settings.iikoExpensesSyncedKeys —
         // общий список дедупликации для всех путей синхронизации: cron, Дашборд,
-        // «Входящие отчёты»).
+        // «Входящие отчёты»). Сохраняем диагностику каждого шага в expenseDebug, чтобы
+        // было видно, где именно застревает цепочка, если снова не сработает.
         try {
           const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
           const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
           const expData = await expResp.json();
-          if (!expResp.ok || cancelled) return;
+          if (!expResp.ok || cancelled) { setExpenseDebug({ step: 'iiko-expenses', ok: false, expData }); return; }
           const dayExpenses = expData.expenses || [];
           const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
           const syncedKeysSet = new Set(settings.iikoExpensesSyncedKeys || []);
           const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
-          if (newExp.length === 0) return;
+          if (newExp.length === 0) { setExpenseDebug({ step: 'no-new', dayExpenses, syncedKeysCount: syncedKeysSet.size }); return; }
           const syntheticText = `Расходы за ${dayDate}:\n` + newExp.map((i) => `${i.comment} ${i.amount}`).join('\n');
           const catResp = await fetch('/api/parse-report', {
             method: 'POST', headers: authHeaders,
@@ -1065,20 +1067,23 @@ function Dashboard({ ctx, setPage }) {
             })
           });
           const catData = await catResp.json();
-          if (!catResp.ok || cancelled) return;
+          if (!catResp.ok || cancelled) { setExpenseDebug({ step: 'parse-report-failed', ok: catResp.ok, catData, syntheticText }); return; }
+          // Не полагаемся на то, что ИИ правильно распознал дату из текста — мы и так
+          // её точно знаем (это dayDate), поэтому берём отчёт независимо от того, что
+          // именно вернулось в поле date, лишь бы reports был непустым.
           const report = (catData.reports || [])[0];
-          if (report) {
-            setMonths((prev) => {
-              const curMonth = prev[mk] || emptyMonth(settings, null);
-              const existing = getDay(curMonth, dayDate);
-              const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-              const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-              return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
-            });
-            setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
-          }
-        } catch (_) {
-          // Тихая фоновая подгрузка расходов — не мешаем основному потоку выручки.
+          if (!report) { setExpenseDebug({ step: 'empty-reports', catData, syntheticText }); return; }
+          setMonths((prev) => {
+            const curMonth = prev[mk] || emptyMonth(settings, null);
+            const existing = getDay(curMonth, dayDate);
+            const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+            const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
+          });
+          setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
+          setExpenseDebug({ step: 'success', report, newExpCount: newExp.length });
+        } catch (err) {
+          setExpenseDebug({ step: 'exception', message: err?.message });
         }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
@@ -1426,6 +1431,14 @@ function Dashboard({ ctx, setPage }) {
               <p className="rp-muted" style={{fontSize:11, marginTop:8}}>ФОТ и постоянные расходы считаются за месяц целиком и здесь не разбиваются по дням.</p>
             </Card>
           </div>
+
+          {expenseDebug && (
+            <Card style={{marginTop:16}}>
+              <div className="rp-card-title">Диагностика загрузки расходов (временно)</div>
+              <p className="rp-muted" style={{fontSize:12, marginBottom:8}}>Шаг: <b>{expenseDebug.step}</b></p>
+              <pre style={{background:COLORS.bg, border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(expenseDebug, null, 2)}</pre>
+            </Card>
+          )}
 
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
