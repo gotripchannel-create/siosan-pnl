@@ -165,6 +165,28 @@ function dayRevenueTotal(day, channels) {
   return channels.reduce((s, c) => s + (Number(day.revenue?.[c.id]) || 0), 0);
 }
 
+// Сопоставляет название способа оплаты из iiko (например "Банковские карты",
+// "Нетмонет безналичный расчет") с настроенным каналом выручки в приложении —
+// по алиасам для типовых случаев, и по вхождению подстроки как запасной вариант.
+function matchIikoPayTypeToChannel(payType, channels) {
+  const pt = String(payType || '').toLowerCase();
+  const aliases = {
+    cash: ['наличн'],
+    card: ['банковск', 'карт'],
+    yandex: ['яндекс'],
+    netmonet: ['нетмонет', 'нет монет'],
+  };
+  for (const ch of channels) {
+    const al = aliases[ch.id];
+    if (al && al.some((a) => pt.includes(a))) return ch;
+  }
+  for (const ch of channels) {
+    const cn = String(ch.name || '').toLowerCase();
+    if (cn && (pt.includes(cn) || cn.includes(pt))) return ch;
+  }
+  return null;
+}
+
 function monthRevenueByChannel(month, y, mIdx, channels) {
   const nd = daysInMonth(y, mIdx);
   const res = {}; channels.forEach((c) => (res[c.id] = 0));
@@ -917,7 +939,7 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey } = ctx;
+  const { pnl, prevPnl, month, updateMonth, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -926,7 +948,54 @@ function Dashboard({ ctx, setPage }) {
   const [viewMode, setViewMode] = useState('month');
   const [dayDate, setDayDate] = useState(selectedDate);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [revSyncLoading, setRevSyncLoading] = useState(false);
+  const [revSyncError, setRevSyncError] = useState('');
+  const [revSyncSummary, setRevSyncSummary] = useState(null);
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
+
+  // Автоматическая выручка из iiko — заменяет ручной ввод в «Кассовая смена (день)».
+  // Тянем весь месяц разом и раскладываем по дням/каналам; повторный запуск просто
+  // перезаписывает актуальными цифрами (iiko — источник истины, дублей тут не бывает).
+  const syncRevenueFromIiko = async () => {
+    setRevSyncLoading(true); setRevSyncError(''); setRevSyncSummary(null);
+    try {
+      const from = dateStr(year, monthIdx, 1);
+      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const resp = await fetch('/api/iiko-dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ from, to })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setRevSyncError(data?.error || 'Не удалось получить выручку из iiko.'); return; }
+
+      const days = data.days || [];
+      if (days.length === 0) { setRevSyncSummary({ days: 0, unmatched: [] }); return; }
+
+      const unmatchedSet = new Set();
+      updateMonth((m) => {
+        const nextDays = { ...m.days };
+        for (const d of days) {
+          const revenue = {};
+          for (const [payType, amount] of Object.entries(d.byPayType || {})) {
+            const channel = matchIikoPayTypeToChannel(payType, settings.revenueChannels);
+            if (channel) revenue[channel.id] = (revenue[channel.id] || 0) + (Number(amount) || 0);
+            else unmatchedSet.add(payType);
+          }
+          const existing = getDay(m, d.date);
+          nextDays[d.date] = { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' };
+        }
+        return { ...m, days: nextDays };
+      });
+
+      logAudit({ what: 'Синхронизация выручки с iiko', amount: days.reduce((s, d) => s + (d.total || 0), 0) });
+      setRevSyncSummary({ days: days.length, unmatched: [...unmatchedSet] });
+    } catch (e) {
+      setRevSyncError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setRevSyncLoading(false);
+    }
+  };
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
@@ -1062,9 +1131,22 @@ function Dashboard({ ctx, setPage }) {
             <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>Месяц</button>
             <button className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>День</button>
           </div>
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={syncRevenueFromIiko} disabled={revSyncLoading}>
+            <RefreshCw size={13} className={revSyncLoading ? 'rp-spin' : ''}/> {revSyncLoading ? 'Синхронизирую…' : 'Синхронизировать выручку с iiko'}
+          </button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
+
+      {revSyncError && <div className="rp-inline-warn" style={{marginBottom:16}}><AlertTriangle size={13}/> {revSyncError}</div>}
+      {revSyncSummary && (
+        <div className="rp-cash-check" style={{marginBottom:16}}>
+          <Info size={13}/> {revSyncSummary.days === 0
+            ? 'За этот месяц данных в iiko не найдено.'
+            : <>Готово: обновлена выручка за <b>{revSyncSummary.days}</b> {revSyncSummary.days === 1 ? 'день' : 'дней'}.</>}
+          {revSyncSummary.unmatched.length > 0 && <> Не удалось сопоставить способ(ы) оплаты: {revSyncSummary.unmatched.join(', ')} — добавьте похожий канал выручки в Настройках, иначе эти суммы не попадут в дашборд.</>}
+        </div>
+      )}
 
       {viewMode === 'month' ? (
         <>
@@ -1514,7 +1596,19 @@ function DayEntry({ ctx }) {
 
       <div className="rp-grid-2">
         <Card>
-          <div className="rp-card-title">Выручка</div>
+          <div className="rp-card-title" style={{display:'flex', alignItems:'center', gap:8}}>
+            Выручка
+            {day.revenueSource === 'iiko' && (
+              <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:11, fontWeight:600}}>
+                <RefreshCw size={10} style={{verticalAlign:-1, marginRight:3}}/>синхронизировано с iiko
+              </span>
+            )}
+          </div>
+          {day.revenueSource === 'iiko' && (
+            <p className="rp-muted" style={{fontSize:11, marginTop:-4, marginBottom:10}}>
+              Эти цифры подтянуты автоматически из кассы iiko (Дашборд → «Синхронизировать выручку»). Менять вручную не обязательно — при следующей синхронизации значения обновятся актуальными.
+            </p>
+          )}
           <div className="rp-form-grid">
             {settings.revenueChannels.map((c) => (
               <Field key={c.id} label={c.name}>

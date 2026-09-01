@@ -101,6 +101,70 @@ function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }
 
+// Та же логика сопоставления, что и на клиенте (src/App.jsx, matchIikoPayTypeToChannel) —
+// продублирована здесь, так как cron выполняется отдельно от фронтенда.
+function matchPayTypeToChannel(payType, channels) {
+  const pt = String(payType || '').toLowerCase();
+  const aliases = { cash: ['наличн'], card: ['банковск', 'карт'], yandex: ['яндекс'], netmonet: ['нетмонет', 'нет монет'] };
+  for (const ch of channels) {
+    const al = aliases[ch.id];
+    if (al && al.some((a) => pt.includes(a))) return ch;
+  }
+  for (const ch of channels) {
+    const cn = String(ch.name || '').toLowerCase();
+    if (cn && (pt.includes(cn) || cn.includes(pt))) return ch;
+  }
+  return null;
+}
+
+async function fetchRevenueByDay(serverUrl, token, from, to) {
+  const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      reportType: 'SALES', buildSummary: false,
+      groupByRowFields: ['OpenDate.Typed', 'PayTypes'], groupByColFields: [],
+      aggregateFields: ['DishDiscountSumInt'],
+      filters: { 'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true } }
+    })
+  });
+  const json = JSON.parse(await resp.text());
+  if (!resp.ok) throw new Error(`Отчёт по продажам вернул ошибку (${resp.status}).`);
+  const byDay = {}; // date -> { payType: amount }
+  for (const r of (json?.data || [])) {
+    const date = r['OpenDate.Typed'];
+    const payType = r['PayTypes'] || 'Не указано';
+    if (/без оплаты/i.test(payType) || !date) continue;
+    (byDay[date] ||= {})[payType] = (byDay[date][payType] || 0) + (Number(r['DishDiscountSumInt']) || 0);
+  }
+  return byDay;
+}
+
+function mergeRevenueIntoData(data, revenueByDay) {
+  data.months = data.months || {};
+  data.settings = data.settings || {};
+  const channels = data.settings.revenueChannels || [];
+  const unmatched = new Set();
+  let daysUpdated = 0;
+
+  for (const [date, byPayType] of Object.entries(revenueByDay)) {
+    const monthKey = date.slice(0, 7);
+    if (!data.months[monthKey]) data.months[monthKey] = {};
+    const month = data.months[monthKey];
+    month.days = month.days || {};
+    const existingDay = month.days[date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, comment: '' }, promo: { pay: 0, comment: '' } };
+    const revenue = { ...existingDay.revenue };
+    for (const [payType, amount] of Object.entries(byPayType)) {
+      const channel = matchPayTypeToChannel(payType, channels);
+      if (channel) revenue[channel.id] = (revenue[channel.id] || 0) + amount;
+      else unmatched.add(payType);
+    }
+    month.days[date] = { ...existingDay, revenue, revenueSource: 'iiko' };
+    daysUpdated += 1;
+  }
+  return { data, daysUpdated, unmatched: [...unmatched] };
+}
+
 // Та же логика слияния, что в ручной синхронизации: найти/создать поставщика по имени,
 // не задвоить уже загруженную поставку, дозаполнить составом то, что грузили раньше без него.
 function mergeInvoicesIntoData(data, invoices) {
@@ -182,6 +246,7 @@ export default async function handler(req, res) {
 
     token = await iikoAuth(serverUrl, login, password);
     const invoices = await fetchInvoices(serverUrl, token, from, to);
+    const revenueByDay = await fetchRevenueByDay(serverUrl, token, from, to);
 
     // Читаем текущие данные напрямую из Supabase (service-role — в обход RLS).
     const getResp = await fetch(`${supabaseUrl}/rest/v1/restaurant_data?restaurant_id=eq.${RESTAURANT_ID}&select=id,data`, {
@@ -192,9 +257,10 @@ export default async function handler(req, res) {
     const row = rows?.[0];
     if (!row) throw new Error('Строка restaurant_data не найдена — сначала откройте приложение хотя бы раз, чтобы она создалась.');
 
-    const { data: merged, added, filledIn, newSuppliers } = mergeInvoicesIntoData(row.data || {}, invoices);
+    const { data: withInvoices, added, filledIn, newSuppliers } = mergeInvoicesIntoData(row.data || {}, invoices);
+    const { data: merged, daysUpdated, unmatched } = mergeRevenueIntoData(withInvoices, revenueByDay);
 
-    if (added > 0 || filledIn > 0 || newSuppliers > 0) {
+    if (added > 0 || filledIn > 0 || newSuppliers > 0 || daysUpdated > 0) {
       const patchResp = await fetch(`${supabaseUrl}/rest/v1/restaurant_data?id=eq.${row.id}`, {
         method: 'PATCH',
         headers: {
@@ -206,7 +272,7 @@ export default async function handler(req, res) {
       if (!patchResp.ok) throw new Error(`Не удалось сохранить данные в Supabase (${patchResp.status}).`);
     }
 
-    res.status(200).json({ ok: true, from, to, invoicesFound: invoices.length, added, filledIn, newSuppliers });
+    res.status(200).json({ ok: true, from, to, invoicesFound: invoices.length, added, filledIn, newSuppliers, daysUpdated, unmatchedPayTypes: unmatched });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось выполнить автоматическую синхронизацию.' });
   } finally {
