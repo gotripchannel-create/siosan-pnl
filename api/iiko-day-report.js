@@ -299,6 +299,35 @@ export default async function handler(req, res) {
       }
     } catch (e) { result.errors.payIncome = e.message; }
 
+    // 6. Явки сотрудников (кто реально приходил/уходил по терминалу) — отдельный
+    // источник от кассовых смен: показывает ВСЕХ работавших, не только кассира.
+    // Пока в диагностическом режиме (attendanceDebug) — сопоставляем сырой ответ,
+    // чтобы увидеть реальные имена полей на этой версии сервера, затем зафиксируем.
+    try {
+      const attResp = await fetch(
+        `${serverUrl.replace(/\/$/, '')}/resto/api/employees/attendance?from=${date}&to=${date}&key=${encodeURIComponent(token)}`,
+        { headers: { Accept: 'application/json' } }
+      );
+      const attText = await attResp.text();
+      let attJson = null;
+      try { attJson = JSON.parse(attText); } catch (_) {}
+
+      let employeesJson = null;
+      try {
+        const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`, { headers: { Accept: 'application/json' } });
+        const empText = await empResp.text();
+        try { employeesJson = JSON.parse(empText); } catch (_) { employeesJson = empText.slice(0, 500); }
+      } catch (e2) { employeesJson = { error: e2.message }; }
+
+      result.attendanceDebug = {
+        ok: attResp.ok, status: attResp.status,
+        raw: attJson ?? attText.slice(0, 3000),
+        employeesSample: Array.isArray(employeesJson) ? employeesJson.slice(0, 5) : employeesJson
+      };
+    } catch (e) {
+      result.attendanceDebug = { ok: false, error: e.message };
+    }
+
     res.status(200).json(result);
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });

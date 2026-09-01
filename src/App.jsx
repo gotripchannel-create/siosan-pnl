@@ -1492,6 +1492,14 @@ function Dashboard({ ctx, setPage }) {
             </Card>
           )}
 
+          {iikoDayDetails?.attendanceDebug && (
+            <Card style={{marginTop:16}}>
+              <div className="rp-card-title">Диагностика явок сотрудников (временно)</div>
+              <p className="rp-muted" style={{fontSize:12, marginBottom:8}}>Пришлите этот блок целиком — по нему подберём правильные имена полей.</p>
+              <pre style={{background:COLORS.bg, border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(iikoDayDetails.attendanceDebug, null, 2)}</pre>
+            </Card>
+          )}
+
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
