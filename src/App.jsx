@@ -13,7 +13,7 @@ import {
   Copy as CopyIcon, Check, Minus, Printer, ChevronDown, ChevronUp, Info,
   UserPlus, Truck as TruckIcon, Megaphone, ClipboardList, Banknote,
   History, ArrowLeftRight, UploadCloud, DatabaseBackup, Menu, RotateCcw,
-  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio, Sparkles, Send
+  RefreshCw, Link2, Unlink, FileSpreadsheet, Inbox, Radio, Sparkles, Send, Calendar
 } from 'lucide-react';
 
 // ===== НОВАЯ ДИЗАЙН-СИСТЕМА =====
@@ -939,7 +939,7 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, updateMonth, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
+  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -951,16 +951,21 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncLoading, setRevSyncLoading] = useState(false);
   const [revSyncError, setRevSyncError] = useState('');
   const [revSyncSummary, setRevSyncSummary] = useState(null);
+  const [revSyncRangeOpen, setRevSyncRangeOpen] = useState(false);
+  const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
+  const [revSyncTo, setRevSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
 
   // Автоматическая выручка из iiko — заменяет ручной ввод в «Кассовая смена (день)».
-  // Тянем весь месяц разом и раскладываем по дням/каналам; повторный запуск просто
-  // перезаписывает актуальными цифрами (iiko — источник истины, дублей тут не бывает).
-  const syncRevenueFromIiko = async () => {
+  // Раскладываем по дням/каналам, работаем сразу по ВСЕМ затронутым месяцам (не только
+  // текущему открытому) — иначе при диапазоне дат шире одного месяца часть данных
+  // просто терялась бы. Повторный запуск перезаписывает актуальными цифрами (iiko —
+  // источник истины, дублей тут не бывает, старое значение просто заменяется).
+  const syncRevenueFromIiko = async (customFrom, customTo) => {
     setRevSyncLoading(true); setRevSyncError(''); setRevSyncSummary(null);
     try {
-      const from = dateStr(year, monthIdx, 1);
-      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const from = customFrom || dateStr(year, monthIdx, 1);
+      const to = customTo || dateStr(year, monthIdx, daysInMonth(year, monthIdx));
       const resp = await fetch('/api/iiko-dashboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
@@ -973,19 +978,21 @@ function Dashboard({ ctx, setPage }) {
       if (days.length === 0) { setRevSyncSummary({ days: 0, unmatched: [] }); return; }
 
       const unmatchedSet = new Set();
-      updateMonth((m) => {
-        const nextDays = { ...m.days };
+      setMonths((prevMonths) => {
+        const next = { ...prevMonths };
         for (const d of days) {
+          const mk = d.date.slice(0, 7);
+          const curMonth = next[mk] || emptyMonth(settings, null);
           const revenue = {};
           for (const [payType, amount] of Object.entries(d.byPayType || {})) {
             const channel = matchIikoPayTypeToChannel(payType, settings.revenueChannels);
             if (channel) revenue[channel.id] = (revenue[channel.id] || 0) + (Number(amount) || 0);
             else unmatchedSet.add(payType);
           }
-          const existing = getDay(m, d.date);
-          nextDays[d.date] = { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' };
+          const existing = getDay(curMonth, d.date);
+          next[mk] = { ...curMonth, days: { ...curMonth.days, [d.date]: { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' } } };
         }
-        return { ...m, days: nextDays };
+        return next;
       });
 
       logAudit({ what: 'Синхронизация выручки с iiko', amount: days.reduce((s, d) => s + (d.total || 0), 0) });
@@ -1131,8 +1138,11 @@ function Dashboard({ ctx, setPage }) {
             <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>Месяц</button>
             <button className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>День</button>
           </div>
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={syncRevenueFromIiko} disabled={revSyncLoading}>
-            <RefreshCw size={13} className={revSyncLoading ? 'rp-spin' : ''}/> {revSyncLoading ? 'Синхронизирую…' : 'Синхронизировать выручку с iiko'}
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => syncRevenueFromIiko()} disabled={revSyncLoading}>
+            <RefreshCw size={13} className={revSyncLoading ? 'rp-spin' : ''}/> {revSyncLoading ? 'Синхронизирую…' : 'Синхронизировать выручку'}
+          </button>
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setRevSyncRangeOpen(true)} disabled={revSyncLoading} title="Выбрать конкретную дату, месяц или период">
+            <Calendar size={13}/> За период…
           </button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
@@ -1328,6 +1338,28 @@ function Dashboard({ ctx, setPage }) {
       {drill === 'expenses' && (
         <Modal title="Детализация расходов месяца" onClose={() => setDrill(null)} wide>
           <ExpenseBreakdownTable pnl={pnl} />
+        </Modal>
+      )}
+
+      {revSyncRangeOpen && (
+        <Modal title="Синхронизировать выручку за период" onClose={() => setRevSyncRangeOpen(false)}>
+          <p className="rp-muted" style={{marginBottom:14}}>Можно указать один день (одинаковые даты «С» и «По»), любой месяц целиком, или произвольный период. Уже засинхронизированные дни просто перезапишутся актуальными цифрами.</p>
+          <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:14}}>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date().toISOString().slice(0,10); setRevSyncFrom(d); setRevSyncTo(d); }}>Сегодня</button>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); const s = d.toISOString().slice(0,10); setRevSyncFrom(s); setRevSyncTo(s); }}>Вчера</button>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { setRevSyncFrom(dateStr(year, monthIdx, 1)); setRevSyncTo(dateStr(year, monthIdx, daysInMonth(year, monthIdx))); }}>Этот месяц</button>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(year, monthIdx-1, 1); setRevSyncFrom(dateStr(d.getFullYear(), d.getMonth(), 1)); setRevSyncTo(dateStr(d.getFullYear(), d.getMonth(), daysInMonth(d.getFullYear(), d.getMonth()))); }}>Прошлый месяц</button>
+          </div>
+          <div className="rp-form-grid">
+            <Field label="С"><input type="date" value={revSyncFrom} onChange={(e) => setRevSyncFrom(e.target.value)} /></Field>
+            <Field label="По"><input type="date" value={revSyncTo} onChange={(e) => setRevSyncTo(e.target.value)} /></Field>
+          </div>
+          <div className="rp-modal-actions">
+            <button className="rp-btn rp-btn-ghost" onClick={() => setRevSyncRangeOpen(false)}>Отмена</button>
+            <button className="rp-btn" disabled={revSyncLoading} onClick={async () => { setRevSyncRangeOpen(false); await syncRevenueFromIiko(revSyncFrom, revSyncTo); }}>
+              {revSyncLoading ? 'Синхронизирую…' : 'Начать'}
+            </button>
+          </div>
         </Modal>
       )}
 
