@@ -4665,7 +4665,7 @@ function CombinedReportPage({ ctx }) {
 /* ============================== INCOMING VK REPORTS ============================== */
 
 function IncomingReportsPage({ ctx }) {
-  const { settings, employees, months, setMonths, logAudit, refreshPendingReportsCount, session } = ctx;
+  const { settings, setSettings, employees, months, setMonths, year, monthIdx, logAudit, refreshPendingReportsCount, session } = ctx;
   const [text, setText] = useState('');
   const [parsedList, setParsedList] = useState([]);
   const [loadError, setLoadError] = useState('');
@@ -4674,6 +4674,9 @@ function IncomingReportsPage({ ctx }) {
   const [drafts, setDrafts] = useState([]);
   const [aiLoading, setAiLoading] = useState(false);
   const [resultMeta, setResultMeta] = useState({ usedAi: false, usedFallback: false });
+  const [expSyncLoading, setExpSyncLoading] = useState(false);
+  const [expSyncError, setExpSyncError] = useState('');
+  const [expSyncSummary, setExpSyncSummary] = useState(null);
 
   const loadDrafts = useCallback(async () => {
     if (!supabase) return;
@@ -4702,6 +4705,81 @@ function IncomingReportsPage({ ctx }) {
   };
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // Синхронизация расходов из iiko: тянем изъятия наличных (закуп, курьер, калик и
+  // т.п. — "дб" и "зп" уже отфильтрованы на сервере), скармливаем их тому же
+  // ИИ-парсеру, что и текст из ВК (он уже умеет раскладывать по категориям), и сразу
+  // применяем к P&L. Чтобы не задваивать при повторном запуске, помним, какие именно
+  // операции (дата+комментарий+сумма) уже обработаны — список хранится в settings.
+  const syncExpensesFromIiko = async () => {
+    setExpSyncLoading(true); setExpSyncError(''); setExpSyncSummary(null);
+    try {
+      const from = dateStr(year, monthIdx, 1);
+      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+
+      const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const expData = await expResp.json();
+      if (!expResp.ok) { setExpSyncError(expData?.error || 'Не удалось получить расходы из iiko.'); return; }
+
+      const allExpenses = expData.expenses || [];
+      if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
+
+      const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
+      const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+      const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
+      if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
+
+      // Группируем по дню и формируем синтетический текст в формате, который уже
+      // умеет читать парсер (несколько дней подряд, с заголовками-датами).
+      const byDay = new Map();
+      for (const e of newExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
+      const syntheticText = [...byDay.entries()]
+        .map(([date, items]) => `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n'))
+        .join('\n\n');
+
+      const resp = await fetch('/api/parse-report', {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({
+          text: syntheticText,
+          revenueChannels: settings.revenueChannels || [], employees,
+          expenseCategories: settings.expenseCategories || [], fallbackDate: to,
+          glossary: settings.reportGlossary || ''
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setExpSyncError(data?.error || 'Не удалось категоризировать расходы.'); return; }
+
+      const reports = data.reports || [];
+      let addedCount = 0;
+      setMonths((prev) => {
+        const next = { ...prev };
+        for (const report of reports) {
+          if (!report.date) continue;
+          const mk = report.date.slice(0, 7);
+          const curMonth = next[mk] || emptyMonth(settings, null);
+          const day = { ...getDay(curMonth, report.date) };
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          addedCount += newKitchen.length + newOther.length;
+          next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
+        }
+        return next;
+      });
+
+      // Помечаем обработанные исходные операции, чтобы повторный запуск их не задвоил.
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExpenses.map(keyOf)] }));
+      logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
+
+      setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });
+    } catch (e) {
+      setExpSyncError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setExpSyncLoading(false);
+    }
+  };
 
   const callAiOnce = async (fallbackDate) => {
     const resp = await fetch('/api/parse-report', {
@@ -4819,6 +4897,22 @@ function IncomingReportsPage({ ctx }) {
         <h1>Входящие отчёты</h1>
         <div className="rp-page-sub">Вставьте одно сообщение или целиком кусок чата «СиоСан отчеты» за несколько дней — ИИ сам найдёт отчёты и разложит по датам.</div>
       </div>
+
+      <Card style={{marginBottom:16}}>
+        <div className="rp-card-title-row"><div><div className="rp-card-title"><Sparkles size={15} style={{verticalAlign:-2, marginRight:6}}/>Расходы из iiko</div><div className="rp-muted">Изъятия наличных из кассы (закуп, курьер и т.п.) — ИИ сам раскладывает по категориям и сразу применяет к P&L за {MONTHS_RU[monthIdx]} {year}. Повторный запуск не задваивает уже обработанное.</div></div>
+          <button className="rp-btn" onClick={syncExpensesFromIiko} disabled={expSyncLoading}>
+            <RefreshCw size={14} className={expSyncLoading ? 'rp-spin' : ''} style={{verticalAlign:-2, marginRight:6}}/>{expSyncLoading ? 'Синхронизирую…' : 'Синхронизировать'}
+          </button>
+        </div>
+        {expSyncError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {expSyncError}</div>}
+        {expSyncSummary && (
+          <div className="rp-cash-check" style={{marginTop:12}}>
+            <Info size={13}/> {expSyncSummary.total === 0
+              ? 'За этот месяц изъятий наличных в iiko не найдено.'
+              : <>Готово: добавлено <b>{expSyncSummary.added}</b> расходов{expSyncSummary.skipped > 0 && <>, {expSyncSummary.skipped} уже были обработаны раньше</>}.</>}
+          </div>
+        )}
+      </Card>
 
       <Card>
         <div className="rp-card-title-row"><div><div className="rp-card-title">Вставить из ВК</div><div className="rp-muted">Можно вставлять весь отчёт целиком — с переносами строк, можно сразу за несколько дней.</div></div></div>

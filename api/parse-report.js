@@ -6,8 +6,10 @@
 // (src/vk-report-parser.js), чтобы фронтенду не нужно было меняться.
 
 export const config = { runtime: 'nodejs' };
+export const maxDuration = 60;
 
-const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей
+const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей из текста
+const MODEL_VISION = 'claude-sonnet-4-6'; // для фото Z-отчётов — нужнее точность распознавания мелкого текста на чеке, чем скорость
 
 // Базовый словарь терминов, собранный из реальных отчётов сотрудников СиоСан.
 // Настройки могут добавить свои термины поверх этого (settings.reportGlossary),
@@ -113,11 +115,11 @@ function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fall
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
 
-  return `Ты разбираешь текст, скопированный из рабочего чата ВК кафе/службы доставки. Текст может быть:
-(а) одним чистым сообщением с отчётом за один день, ИЛИ
-(б) целиком скопированным куском истории чата за несколько дней, где вперемешку идут реальные отчёты, обычная переписка, приветствия, вопросы сотрудников, имена отправителей сообщений и т.п.
+  return `Ты разбираешь либо (а) текст, скопированный из рабочего чата ВК кафе/службы доставки, либо (б) фото бумажного Z-отчёта (отчёт о закрытии смены) из кассы iiko.
 
-Твоя задача — найти ВСЕ настоящие финансовые отчёты в тексте (обычно это сообщения, где явно посчитана выручка: есть «наличные», «карта/карты» и «итого выручка» с числами) и вернуть их списком через submit_parsed_reports. Всё остальное — приветствия, вопросы не про деньги, имена отправителей сообщений, реакции — полностью игнорируй, НЕ добавляй в unmatchedLines (unmatchedLines — только для строк ВНУТРИ найденного отчёта, которые ты не смог классифицировать).
+Если это ТЕКСТ ИЗ ВК — он может быть одним чистым сообщением с отчётом за один день, ИЛИ целиком скопированным куском истории чата за несколько дней, где вперемешку идут реальные отчёты, обычная переписка, приветствия, вопросы сотрудников, имена отправителей сообщений и т.п. Твоя задача — найти ВСЕ настоящие финансовые отчёты в тексте (обычно это сообщения, где явно посчитана выручка: есть «наличные», «карта/карты» и «итого выручка» с числами) и вернуть их списком через submit_parsed_reports. Всё остальное — приветствия, вопросы не про деньги, имена отправителей сообщений, реакции — полностью игнорируй, НЕ добавляй в unmatchedLines (unmatchedLines — только для строк ВНУТРИ найденного отчёта, которые ты не смог классифицировать).
+
+Если это ФОТО Z-ОТЧЁТА — на чеке обычно есть разделы «Продажи» (выручка по способам оплаты — Банковские карты, Наличные и т.п.), «Списания» (удаления блюд), и «Внесения и изъятия» / «Движение наличных средств», где перечислены отдельные операции «Внесение наличных» или «Оплата услуг» с коротким комментарием (например «закуп», «зп», «курьер», «калик», «дб»). Твоя задача — извлечь выручку по способам оплаты (в поле revenue) и КАЖДУЮ операцию изъятия/оплаты услуг превратить в отдельную строку kitchenExpenses или otherExpenses, САМОСТОЯТЕЛЬНО определив категорию по смыслу комментария и известному списку категорий ниже (например, «закуп» обычно значит закупка продуктов → kitchenExpenses; «курьер» → скорее всего otherExpenses с категорией, похожей на оплату курьера, или заполни courier.pay, если это явно оплата курьеру; комментарий «дб» — это перенос/начальный остаток кассы, НЕ расход, полностью игнорируй такие строки, не добавляй их никуда). Если комментарий совсем не по этому объясняет что расход — используй ближайшую подходящую категорию из списка ниже, а если категория совсем непонятна — категория «Прочее» и обязательно кратко поясни в unmatchedLines, что это была за строка на чеке и почему не удалось точно определить категорию.
 
 Сегодняшняя дата (если нигде нет явной даты): ${fallbackDate}
 
@@ -139,7 +141,15 @@ ${fullGlossary}
 4. Вызови submit_parsed_reports ровно один раз со всеми найденными отчётами.`;
 }
 
-async function callClaude(apiKey, systemPrompt, text) {
+async function callClaude(apiKey, systemPrompt, { text, image }) {
+  const content = [];
+  if (image?.data && image?.mediaType) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
+    content.push({ type: 'text', text: 'Вот фото Z-отчёта. Извлеки данные согласно инструкции.' });
+  } else {
+    content.push({ type: 'text', text: String(text) });
+  }
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -148,10 +158,10 @@ async function callClaude(apiKey, systemPrompt, text) {
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: image ? MODEL_VISION : MODEL,
       max_tokens: 4000,
       system: systemPrompt,
-      messages: [{ role: 'user', content: String(text) }],
+      messages: [{ role: 'user', content }],
       tools: [TOOL_SCHEMA],
       tool_choice: { type: 'tool', name: 'submit_parsed_reports' }
     })
@@ -257,6 +267,7 @@ export default async function handler(req, res) {
 
   const {
     text,
+    image, // { data: base64, mediaType: 'image/jpeg' }
     revenueChannels = [],
     employees = [],
     expenseCategories = [],
@@ -264,12 +275,19 @@ export default async function handler(req, res) {
     glossary = ''
   } = req.body || {};
 
-  if (!text || !String(text).trim()) {
-    res.status(400).json({ error: 'Пустой текст отчёта.' });
+  const hasText = text && String(text).trim();
+  const hasImage = image?.data && image?.mediaType;
+
+  if (!hasText && !hasImage) {
+    res.status(400).json({ error: 'Пустой текст отчёта или фото.' });
     return;
   }
-  if (String(text).length > 20000) {
+  if (hasText && String(text).length > 20000) {
     res.status(400).json({ error: 'Текст слишком длинный (максимум 20000 символов). Разбейте на несколько вставок.' });
+    return;
+  }
+  if (hasImage && image.data.length > 8_000_000) { // ~6MB исходного файла в base64
+    res.status(400).json({ error: 'Фото слишком большое (максимум ~6 МБ). Сожмите или сфотографируйте по частям.' });
     return;
   }
 
@@ -277,7 +295,7 @@ export default async function handler(req, res) {
   const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate: today, glossary });
 
   try {
-    const data = await callClaude(apiKey, systemPrompt, text);
+    const data = await callClaude(apiKey, systemPrompt, { text, image: hasImage ? image : null });
     const toolUse = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'submit_parsed_reports');
     if (!toolUse) {
       res.status(502).json({ error: 'Модель не вернула структурированный результат. Попробуйте ещё раз.' });
@@ -287,14 +305,14 @@ export default async function handler(req, res) {
 
     logAttempt({
       supabaseUrl, token, anonKey: supabaseAnonKey,
-      payload: { input_text: String(text).slice(0, 8000), ai_output: reports, used_fallback: false, error: null }
+      payload: { input_text: hasImage ? '[фото Z-отчёта]' : String(text).slice(0, 8000), ai_output: reports, used_fallback: false, error: null }
     });
 
     res.status(200).json({ reports });
   } catch (err) {
     logAttempt({
       supabaseUrl, token, anonKey: supabaseAnonKey,
-      payload: { input_text: String(text).slice(0, 8000), ai_output: null, used_fallback: false, error: String(err?.message || err).slice(0, 1000) }
+      payload: { input_text: hasImage ? '[фото Z-отчёта]' : String(text).slice(0, 8000), ai_output: null, used_fallback: false, error: String(err?.message || err).slice(0, 1000) }
     });
     res.status(502).json({ error: err?.message || 'Внутренняя ошибка сервера' });
   }
