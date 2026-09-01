@@ -168,6 +168,18 @@ function dayRevenueTotal(day, channels) {
 // Сопоставляет название способа оплаты из iiko (например "Банковские карты",
 // "Нетмонет безналичный расчет") с настроенным каналом выручки в приложении —
 // по алиасам для типовых случаев, и по вхождению подстроки как запасной вариант.
+// Обёртка над fetch с жёстким таймаутом — без неё зависший запрос (сбой сети,
+// зависший сервер) мог бы держать индикатор загрузки вечно, ничего не показывая.
+async function fetchWithTimeout(url, options, timeoutMs = 25000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function matchIikoPayTypeToChannel(payType, channels) {
   const pt = String(payType || '').toLowerCase();
   const aliases = {
@@ -1022,7 +1034,7 @@ function Dashboard({ ctx, setPage }) {
     setExpenseDebug(null);
     const t = setTimeout(async () => {
       try {
-        const resp = await fetch('/api/iiko-day-report', {
+        const resp = await fetchWithTimeout('/api/iiko-day-report', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
           body: JSON.stringify({ date: dayDate })
@@ -1051,7 +1063,7 @@ function Dashboard({ ctx, setPage }) {
         // было видно, где именно застревает цепочка, если снова не сработает.
         try {
           const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
-          const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
+          const expResp = await fetchWithTimeout('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
           const expData = await expResp.json();
           if (cancelled) return;
           if (!expResp.ok) { setExpenseDebug({ step: 'iiko-expenses', ok: false, expData, forDate: dayDate }); return; }
@@ -1061,7 +1073,7 @@ function Dashboard({ ctx, setPage }) {
           const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
           if (newExp.length === 0) { setExpenseDebug({ step: 'no-new', dayExpenses, syncedKeysCount: syncedKeysSet.size, forDate: dayDate }); return; }
           const syntheticText = `Расходы за ${dayDate}:\n` + newExp.map((i) => `${i.comment} ${i.amount}`).join('\n');
-          const catResp = await fetch('/api/parse-report', {
+          const catResp = await fetchWithTimeout('/api/parse-report', {
             method: 'POST', headers: authHeaders,
             body: JSON.stringify({
               text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],

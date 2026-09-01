@@ -87,7 +87,7 @@ export default async function handler(req, res) {
     const expenses = rows
       .map((r) => ({
         date: (r['DateTime.Typed'] || '').slice(0, 10),
-        comment: String(r['Comment'] || '').trim().toLowerCase() || 'без комментария',
+        comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
       .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп') // "дб" — не расход, "зп" — уже учтена в ФОТ отдельно
