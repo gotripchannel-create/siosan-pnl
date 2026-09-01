@@ -1055,13 +1055,14 @@ function Dashboard({ ctx, setPage }) {
         if (!resp.ok || cancelled) return;
         setIikoDayDetails(data);
 
-        // Кто работал в этот день — сопоставляем кассира смены с сотрудником и
-        // автоматически проставляем ему смену (те же данные, что использует расчёт
-        // зарплаты). Не трогаем дни, где смена уже стоит вручную — только дозаполняем
-        // пустое.
-        const cashierNames = [...new Set((data.cashShifts || []).map((s) => s.cashierName).filter(Boolean))];
-        if (cashierNames.length > 0 && employees?.length > 0) {
-          const matchedEmployees = cashierNames.map((n) => matchIikoCashierToEmployee(n, employees)).filter(Boolean);
+        // Кто работал в этот день — теперь по НАСТОЯЩИМ явкам (кто реально
+        // приходил/уходил на терминале), а не только по тому, кто открывал кассу.
+        // Сопоставляем по имени с сотрудником и автоматически проставляем ему смену
+        // (те же данные, что использует расчёт зарплаты). Не трогаем дни, где смена
+        // уже стоит вручную — только дозаполняем пустое.
+        const attendanceNames = [...new Set((data.attendance || []).map((a) => a.name).filter(Boolean))];
+        if (attendanceNames.length > 0 && employees?.length > 0) {
+          const matchedEmployees = attendanceNames.map((n) => matchIikoCashierToEmployee(n, employees)).filter(Boolean);
           if (matchedEmployees.length > 0) {
             const mkShift = dayDate.slice(0, 7);
             setMonths((prev) => {
@@ -1492,22 +1493,17 @@ function Dashboard({ ctx, setPage }) {
             </Card>
           )}
 
-          {iikoDayDetails?.attendanceDebug && (
-            <Card style={{marginTop:16}}>
-              <div className="rp-card-title">Диагностика явок сотрудников (временно)</div>
-              <p className="rp-muted" style={{fontSize:12, marginBottom:8}}>Пришлите этот блок целиком — по нему подберём правильные имена полей.</p>
-              <pre style={{background:COLORS.bg, border:'1px solid '+COLORS.line, borderRadius:10, padding:14, fontSize:11, overflow:'auto', maxHeight:400}}>{JSON.stringify(iikoDayDetails.attendanceDebug, null, 2)}</pre>
-            </Card>
-          )}
-
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
-              {iikoDayDetails.cashShifts?.some((s) => s.cashierName) && (
-                <Section title="Кто был на смене" count={new Set(iikoDayDetails.cashShifts.map((s) => s.cashierName).filter(Boolean)).size} defaultOpen={true}>
-                  <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
-                    {[...new Set(iikoDayDetails.cashShifts.map((s) => s.cashierName).filter(Boolean))].map((name, i) => (
-                      <span key={i} className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{name}</span>
+              {iikoDayDetails.attendance?.length > 0 && (
+                <Section title="Кто был на смене" count={new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean)).size} defaultOpen={true}>
+                  <div className="rp-list">
+                    {iikoDayDetails.attendance.filter((a) => a.name).map((a, i) => (
+                      <div key={i} className="rp-list-row">
+                        <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{a.name}</span>
+                        <span className="rp-muted" style={{fontSize:12}}>{a.from}–{a.to}</span>
+                      </div>
                     ))}
                   </div>
                 </Section>

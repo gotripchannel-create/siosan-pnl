@@ -299,38 +299,50 @@ export default async function handler(req, res) {
       }
     } catch (e) { result.errors.payIncome = e.message; }
 
-    // 6. Явки сотрудников (кто реально приходил/уходил по терминалу) — отдельный
-    // источник от кассовых смен: показывает ВСЕХ работавших, не только кассира.
-    // Пока в диагностическом режиме (attendanceDebug) — сопоставляем сырой ответ,
-    // чтобы увидеть реальные имена полей на этой версии сервера, затем зафиксируем.
+    // 6. Явки сотрудников — кто реально приходил/уходил по терминалу (не только
+    // кассир, как в кассовых сменах выше). Эти два эндпоинта у iiko всегда отдают
+    // XML, даже если явно просить JSON — поэтому разбираем текст напрямую простыми
+    // регулярками (сама XML плоская, без вложенных повторяющихся тегов внутри полей).
+    const xmlBlocks = (xml, tag) => {
+      const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'g');
+      const out = []; let m;
+      while ((m = re.exec(xml))) out.push(m[1]);
+      return out;
+    };
+    const xmlField = (block, tag) => {
+      const m = block.match(new RegExp(`<${tag}>([^<]*)<\\/${tag}>`));
+      return m ? m[1] : null;
+    };
     try {
       const attResp = await fetch(
         `${serverUrl.replace(/\/$/, '')}/resto/api/employees/attendance?from=${date}&to=${date}&key=${encodeURIComponent(token)}`
       );
       const attText = await attResp.text();
-      let attJson = null;
-      try { attJson = JSON.parse(attText); } catch (_) {}
 
-      let employeesJson = null;
-      let employeesRawText = '';
-      try {
-        const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`);
-        const empText = await empResp.text();
-        employeesRawText = empText.slice(0, 1500);
-        try { employeesJson = JSON.parse(empText); } catch (_) { employeesJson = null; }
-      } catch (e2) { employeesJson = { error: e2.message }; }
+      const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`);
+      const empText = await empResp.text();
 
-      result.attendanceDebug = {
-        ok: attResp.ok, status: attResp.status,
-        contentType: attResp.headers.get('content-type'),
-        rawText: attText.slice(0, 3000),
-        raw: attJson ?? null,
-        firstItemKeys: Array.isArray(attJson) && attJson[0] ? Object.keys(attJson[0]) : null,
-        employeesSample: Array.isArray(employeesJson) ? employeesJson.slice(0, 5) : employeesJson,
-        employeesRawText
-      };
+      const nameById = {};
+      for (const block of xmlBlocks(empText, 'employee')) {
+        const id = xmlField(block, 'id');
+        const name = xmlField(block, 'name');
+        if (id && name) nameById[id] = name;
+      }
+
+      result.attendance = xmlBlocks(attText, 'attendance').map((block) => {
+        const employeeId = xmlField(block, 'employeeId');
+        const dateFrom = xmlField(block, 'personalDateFrom') || xmlField(block, 'dateFrom');
+        const dateTo = xmlField(block, 'personalDateTo') || xmlField(block, 'dateTo');
+        return {
+          employeeId,
+          name: nameById[employeeId] || null,
+          date: (dateFrom || '').slice(0, 10),
+          from: (dateFrom || '').slice(11, 16),
+          to: (dateTo || '').slice(11, 16)
+        };
+      }).filter((a) => a.date === date);
     } catch (e) {
-      result.attendanceDebug = { ok: false, error: e.message };
+      result.errors.attendance = e.message;
     }
 
     res.status(200).json(result);
