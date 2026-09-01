@@ -1019,6 +1019,7 @@ function Dashboard({ ctx, setPage }) {
     let cancelled = false;
     setDayLiveSyncLoading(true);
     setIikoDayDetails(null);
+    setExpenseDebug(null);
     const t = setTimeout(async () => {
       try {
         const resp = await fetch('/api/iiko-day-report', {
@@ -1052,12 +1053,13 @@ function Dashboard({ ctx, setPage }) {
           const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
           const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
           const expData = await expResp.json();
-          if (!expResp.ok || cancelled) { setExpenseDebug({ step: 'iiko-expenses', ok: false, expData }); return; }
+          if (cancelled) return;
+          if (!expResp.ok) { setExpenseDebug({ step: 'iiko-expenses', ok: false, expData, forDate: dayDate }); return; }
           const dayExpenses = expData.expenses || [];
           const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
           const syncedKeysSet = new Set(settings.iikoExpensesSyncedKeys || []);
           const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
-          if (newExp.length === 0) { setExpenseDebug({ step: 'no-new', dayExpenses, syncedKeysCount: syncedKeysSet.size }); return; }
+          if (newExp.length === 0) { setExpenseDebug({ step: 'no-new', dayExpenses, syncedKeysCount: syncedKeysSet.size, forDate: dayDate }); return; }
           const syntheticText = `Расходы за ${dayDate}:\n` + newExp.map((i) => `${i.comment} ${i.amount}`).join('\n');
           const catResp = await fetch('/api/parse-report', {
             method: 'POST', headers: authHeaders,
@@ -1067,12 +1069,13 @@ function Dashboard({ ctx, setPage }) {
             })
           });
           const catData = await catResp.json();
-          if (!catResp.ok || cancelled) { setExpenseDebug({ step: 'parse-report-failed', ok: catResp.ok, catData, syntheticText }); return; }
+          if (cancelled) return;
+          if (!catResp.ok) { setExpenseDebug({ step: 'parse-report-failed', ok: catResp.ok, catData, syntheticText, forDate: dayDate }); return; }
           // Не полагаемся на то, что ИИ правильно распознал дату из текста — мы и так
           // её точно знаем (это dayDate), поэтому берём отчёт независимо от того, что
           // именно вернулось в поле date, лишь бы reports был непустым.
           const report = (catData.reports || [])[0];
-          if (!report) { setExpenseDebug({ step: 'empty-reports', catData, syntheticText }); return; }
+          if (!report) { setExpenseDebug({ step: 'empty-reports', catData, syntheticText, forDate: dayDate }); return; }
           setMonths((prev) => {
             const curMonth = prev[mk] || emptyMonth(settings, null);
             const existing = getDay(curMonth, dayDate);
@@ -1081,9 +1084,9 @@ function Dashboard({ ctx, setPage }) {
             return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
           });
           setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
-          setExpenseDebug({ step: 'success', report, newExpCount: newExp.length });
+          setExpenseDebug({ step: 'success', report, newExpCount: newExp.length, forDate: dayDate });
         } catch (err) {
-          setExpenseDebug({ step: 'exception', message: err?.message });
+          if (!cancelled) setExpenseDebug({ step: 'exception', message: err?.message, forDate: dayDate });
         }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
