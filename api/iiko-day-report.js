@@ -313,16 +313,22 @@ export default async function handler(req, res) {
       try { attJson = JSON.parse(attText); } catch (_) {}
 
       let employeesJson = null;
+      let employeesRawText = '';
       try {
         const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`, { headers: { Accept: 'application/json' } });
         const empText = await empResp.text();
-        try { employeesJson = JSON.parse(empText); } catch (_) { employeesJson = empText.slice(0, 500); }
+        employeesRawText = empText.slice(0, 1500);
+        try { employeesJson = JSON.parse(empText); } catch (_) { employeesJson = null; }
       } catch (e2) { employeesJson = { error: e2.message }; }
 
       result.attendanceDebug = {
         ok: attResp.ok, status: attResp.status,
-        raw: attJson ?? attText.slice(0, 3000),
-        employeesSample: Array.isArray(employeesJson) ? employeesJson.slice(0, 5) : employeesJson
+        contentType: attResp.headers.get('content-type'),
+        rawText: attText.slice(0, 3000),
+        raw: attJson ?? null,
+        firstItemKeys: Array.isArray(attJson) && attJson[0] ? Object.keys(attJson[0]) : null,
+        employeesSample: Array.isArray(employeesJson) ? employeesJson.slice(0, 5) : employeesJson,
+        employeesRawText
       };
     } catch (e) {
       result.attendanceDebug = { ok: false, error: e.message };
