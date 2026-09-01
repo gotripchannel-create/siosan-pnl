@@ -1052,7 +1052,7 @@ function Dashboard({ ctx, setPage }) {
           const expData = await expResp.json();
           if (!expResp.ok || cancelled) return;
           const dayExpenses = expData.expenses || [];
-          const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+          const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
           const syncedKeysSet = new Set(settings.iikoExpensesSyncedKeys || []);
           const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
           if (newExp.length === 0) return;
@@ -1107,7 +1107,7 @@ function Dashboard({ ctx, setPage }) {
       if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
 
       const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
-      const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+      const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
       const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
       if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
 
@@ -1148,7 +1148,9 @@ function Dashboard({ ctx, setPage }) {
         return next;
       });
 
-      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExpenses.map(keyOf)] }));
+      const processedDates = new Set(reports.map((r) => r.date).filter(Boolean));
+      const actuallyProcessedKeys = newExpenses.filter((e) => processedDates.has(e.date)).map(keyOf);
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...actuallyProcessedKeys] }));
       logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
       setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });
     } catch (e) {
@@ -5101,7 +5103,7 @@ function IncomingReportsPage({ ctx }) {
       if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
 
       const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
-      const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+      const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
       const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
       if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
 
@@ -5144,8 +5146,9 @@ function IncomingReportsPage({ ctx }) {
         return next;
       });
 
-      // Помечаем обработанные исходные операции, чтобы повторный запуск их не задвоил.
-      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExpenses.map(keyOf)] }));
+      // Помечаем обработанными ТОЛЬКО те даты, что реально пришли в ответе категоризации.
+      const processedDates3 = new Set(reports.map((r) => r.date).filter(Boolean));
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExpenses.filter((e) => processedDates3.has(e.date)).map(keyOf)] }));
       logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
 
       setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });

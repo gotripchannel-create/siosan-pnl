@@ -370,10 +370,15 @@ export default async function handler(req, res) {
 
     // Расходы (изъятия наличных) — категоризируем только те, что ещё не обрабатывали
     // раньше (settings.iikoExpensesSyncedKeys — тот же список, что используется при
-    // ручной синхронизации на "Входящие отчёты"/Дашборде, дедуп общий для всех путей).
+    // синхронизации на Дашборде, дедуп общий для всех путей).
+    // Префикс "v2::" — намеренно новый формат ключа: старые пометки (до исправления
+    // бага ниже) считали расход "обработанным" даже если категоризация не удалась,
+    // из-за чего реальные расходы застревали и никогда не попадали в P&L. Смена
+    // префикса делает старые (испорченные) пометки нерелевантными — все прежние
+    // расходы автоматически переобработаются заново один раз.
     withRevenue.settings = withRevenue.settings || {};
     const syncedKeys = new Set(withRevenue.settings.iikoExpensesSyncedKeys || []);
-    const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+    const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
     const newExpenses = payoutExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
     let expensesAdded = 0;
     let merged = withRevenue;
@@ -385,7 +390,13 @@ export default async function handler(req, res) {
       const merged2 = mergeExpensesIntoData(withRevenue, reports);
       merged = merged2.data;
       expensesAdded = merged2.added;
-      merged.settings.iikoExpensesSyncedKeys = [...syncedKeys, ...newExpenses.map(keyOf)];
+      // Помечаем обработанными ТОЛЬКО те даты, для которых реально пришёл отчёт от
+      // категоризации — если Claude не смог обработать какую-то дату (пустой ответ,
+      // сбой сети и т.п.), она НЕ помечается и будет предпринята попытка заново в
+      // следующий раз, а не потеряется молча навсегда.
+      const processedDates = new Set(reports.map((r) => r.date).filter(Boolean));
+      const actuallyProcessedKeys = newExpenses.filter((e) => processedDates.has(e.date)).map(keyOf);
+      merged.settings.iikoExpensesSyncedKeys = [...syncedKeys, ...actuallyProcessedKeys];
     }
 
     if (added > 0 || filledIn > 0 || newSuppliers > 0 || daysUpdated > 0 || expensesAdded > 0) {
