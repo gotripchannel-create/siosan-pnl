@@ -954,6 +954,7 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncRangeOpen, setRevSyncRangeOpen] = useState(false);
   const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
   const [revSyncTo, setRevSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
 
   // Автоматическая выручка из iiko — заменяет ручной ввод в «Кассовая смена (день)».
@@ -1004,6 +1005,44 @@ function Dashboard({ ctx, setPage }) {
     }
   };
 
+  // Мгновенная автозагрузка выбранного дня из iiko — без отдельной кнопки. Срабатывает
+  // при каждой смене даты в режиме "День". Небольшая задержка (300мс), чтобы не слать
+  // запрос на каждый промежуточный клик по календарю.
+  useEffect(() => {
+    if (viewMode !== 'day' || !dayDate) return;
+    let cancelled = false;
+    setDayLiveSyncLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const resp = await fetch('/api/iiko-day-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          body: JSON.stringify({ date: dayDate })
+        });
+        const data = await resp.json();
+        if (!resp.ok || cancelled) return;
+        const byPayType = data.revenue?.byPayType || {};
+        const revenue = {};
+        for (const [payType, amount] of Object.entries(byPayType)) {
+          const channel = matchIikoPayTypeToChannel(payType, settings.revenueChannels);
+          if (channel) revenue[channel.id] = (revenue[channel.id] || 0) + (Number(amount) || 0);
+        }
+        if (Object.keys(revenue).length === 0) return;
+        const mk = dayDate.slice(0, 7);
+        setMonths((prev) => {
+          const curMonth = prev[mk] || emptyMonth(settings, null);
+          const existing = getDay(curMonth, dayDate);
+          return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' } } } };
+        });
+      } catch (_) {
+        // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
+      } finally {
+        if (!cancelled) setDayLiveSyncLoading(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); setDayLiveSyncLoading(false); };
+  }, [dayDate, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
 
@@ -1034,7 +1073,12 @@ function Dashboard({ ctx, setPage }) {
 
   const delta = (a, b) => (b ? ((a - b) / b) * 100 : 0);
 
-  const dayObj = getDay(month, dayDate);
+  // Важно: dayDate может относиться к ДРУГОМУ месяцу, чем открыт сейчас наверху
+  // (например, выбрали день в конце прошлого месяца, а сверху уже переключились на
+  // новый) — ищем данные в правильном месяце по dayDate, а не в открытом `month`.
+  const dayMonthKey = dayDate.slice(0, 7);
+  const dayMonthObj = dayMonthKey === monthKey ? month : (months[dayMonthKey] || emptyMonth(settings, null));
+  const dayObj = getDay(dayMonthObj, dayDate);
   const dayRevByChannel = settings.revenueChannels.map(c => ({ name: c.name, id: c.id, value: Number(dayObj.revenue?.[c.id]) || 0 }));
   const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
   const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
@@ -1194,7 +1238,8 @@ function Dashboard({ ctx, setPage }) {
         <>
           <Card style={{marginBottom:16}}>
             <div style={{display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginBottom:14}}>
-              <Field label="Выберите день"><input type="date" value={dayDate} onChange={e => setDayDate(e.target.value)} min={dateStr(year, monthIdx, 1)} max={dateStr(year, monthIdx, daysInMonth(year, monthIdx))} /></Field>
+              <Field label="Выберите день"><input type="date" value={dayDate} onChange={e => setDayDate(e.target.value)} /></Field>
+              {dayLiveSyncLoading && <span className="rp-muted" style={{fontSize:12, marginTop:18}}><RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Обновляю из iiko…</span>}
               <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setPage('day')} style={{marginTop:18}}>Открыть в «День» для редактирования →</button>
             </div>
             <div className={`rp-hero ${dayProfitSel >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} style={{marginBottom:0, cursor:'default'}}>
