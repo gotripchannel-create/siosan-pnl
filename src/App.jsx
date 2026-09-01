@@ -939,7 +939,7 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
+  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, setSettings, employees, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -955,6 +955,11 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
   const [revSyncTo, setRevSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
+  const [iikoDayDetails, setIikoDayDetails] = useState(null);
+  const [expSyncLoading, setExpSyncLoading] = useState(false);
+  const [expSyncError, setExpSyncError] = useState('');
+  const [expSyncSummary, setExpSyncSummary] = useState(null);
+  const [expandedCheck, setExpandedCheck] = useState(null);
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
 
   // Автоматическая выручка из iiko — заменяет ручной ввод в «Кассовая смена (день)».
@@ -1012,6 +1017,7 @@ function Dashboard({ ctx, setPage }) {
     if (viewMode !== 'day' || !dayDate) return;
     let cancelled = false;
     setDayLiveSyncLoading(true);
+    setIikoDayDetails(null);
     const t = setTimeout(async () => {
       try {
         const resp = await fetch('/api/iiko-day-report', {
@@ -1021,6 +1027,7 @@ function Dashboard({ ctx, setPage }) {
         });
         const data = await resp.json();
         if (!resp.ok || cancelled) return;
+        setIikoDayDetails(data);
         const byPayType = data.revenue?.byPayType || {};
         const revenue = {};
         for (const [payType, amount] of Object.entries(byPayType)) {
@@ -1042,6 +1049,75 @@ function Dashboard({ ctx, setPage }) {
     }, 300);
     return () => { cancelled = true; clearTimeout(t); setDayLiveSyncLoading(false); };
   }, [dayDate, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Синхронизация расходов из iiko прямо с Дашборда (та же логика, что на странице
+  // «Входящие отчёты») — чтобы не уходить в другой раздел за этим. Работает за
+  // текущий открытый месяц; для конкретного дня расходы попадут в тот же день.
+  const syncExpensesFromIikoOnDashboard = async () => {
+    setExpSyncLoading(true); setExpSyncError(''); setExpSyncSummary(null);
+    try {
+      const from = dateStr(year, monthIdx, 1);
+      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+
+      const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const expData = await expResp.json();
+      if (!expResp.ok) { setExpSyncError(expData?.error || 'Не удалось получить расходы из iiko.'); return; }
+
+      const allExpenses = expData.expenses || [];
+      if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
+
+      const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
+      const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+      const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
+      if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
+
+      const byDay = new Map();
+      for (const e of newExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
+      const syntheticText = [...byDay.entries()]
+        .map(([date, items]) => `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n'))
+        .join('\n\n');
+
+      const resp = await fetch('/api/parse-report', {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({
+          text: syntheticText,
+          revenueChannels: settings.revenueChannels || [], employees: employees || [],
+          expenseCategories: settings.expenseCategories || [], fallbackDate: to,
+          glossary: settings.reportGlossary || ''
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { setExpSyncError(data?.error || 'Не удалось категоризировать расходы.'); return; }
+
+      const reports = data.reports || [];
+      let addedCount = 0;
+      setMonths((prev) => {
+        const next = { ...prev };
+        for (const report of reports) {
+          if (!report.date) continue;
+          const mk = report.date.slice(0, 7);
+          const curMonth = next[mk] || emptyMonth(settings, null);
+          const day = { ...getDay(curMonth, report.date) };
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          addedCount += newKitchen.length + newOther.length;
+          next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
+        }
+        return next;
+      });
+
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExpenses.map(keyOf)] }));
+      logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
+      setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });
+    } catch (e) {
+      setExpSyncError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setExpSyncLoading(false);
+    }
+  };
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
@@ -1188,6 +1264,9 @@ function Dashboard({ ctx, setPage }) {
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setRevSyncRangeOpen(true)} disabled={revSyncLoading} title="Выбрать конкретную дату, месяц или период">
             <Calendar size={13}/> За период…
           </button>
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={syncExpensesFromIikoOnDashboard} disabled={expSyncLoading}>
+            <RefreshCw size={13} className={expSyncLoading ? 'rp-spin' : ''}/> {expSyncLoading ? 'Синхронизирую…' : 'Синхронизировать расходы'}
+          </button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
@@ -1199,6 +1278,14 @@ function Dashboard({ ctx, setPage }) {
             ? 'За этот месяц данных в iiko не найдено.'
             : <>Готово: обновлена выручка за <b>{revSyncSummary.days}</b> {revSyncSummary.days === 1 ? 'день' : 'дней'}.</>}
           {revSyncSummary.unmatched.length > 0 && <> Не удалось сопоставить способ(ы) оплаты: {revSyncSummary.unmatched.join(', ')} — добавьте похожий канал выручки в Настройках, иначе эти суммы не попадут в дашборд.</>}
+        </div>
+      )}
+      {expSyncError && <div className="rp-inline-warn" style={{marginBottom:16}}><AlertTriangle size={13}/> {expSyncError}</div>}
+      {expSyncSummary && (
+        <div className="rp-cash-check" style={{marginBottom:16}}>
+          <Info size={13}/> {expSyncSummary.total === 0
+            ? 'За этот месяц изъятий наличных в iiko не найдено.'
+            : <>Готово: добавлено <b>{expSyncSummary.added}</b> расходов{expSyncSummary.skipped > 0 && <>, {expSyncSummary.skipped} уже были обработаны раньше</>}.</>}
         </div>
       )}
 
@@ -1288,6 +1375,96 @@ function Dashboard({ ctx, setPage }) {
               <p className="rp-muted" style={{fontSize:11, marginTop:8}}>ФОТ и постоянные расходы считаются за месяц целиком и здесь не разбиваются по дням.</p>
             </Card>
           </div>
+
+          {iikoDayDetails && (
+            <Card style={{marginTop:16}}>
+              <div className="rp-card-title">Детали дня из iiko</div>
+              <Section title="Кассовые смены" count={iikoDayDetails.cashShifts?.length ?? 0} defaultOpen={true}>
+                {iikoDayDetails.cashShifts?.length > 0 ? (
+                  <div className="rp-list">
+                    {iikoDayDetails.cashShifts.map((s, i) => (
+                      <div key={i} className="rp-list-row" style={{flexDirection:'column', alignItems:'flex-start', gap:4}}>
+                        <div style={{display:'flex', justifyContent:'space-between', width:'100%'}}>
+                          <b>Смена №{s.sessionNumber}</b>
+                          <span className="rp-muted" style={{fontSize:12}}>{s.status === 'OPEN' ? 'открыта' : 'закрыта'}</span>
+                        </div>
+                        <div className="rp-muted" style={{fontSize:12}}>Внесено {fmtRub(s.payIn)} · Изъято {fmtRub(s.payOut)} · Нал {fmtRub(s.salesCash)} · Карта {fmtRub(s.salesCard)}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="rp-muted" style={{fontSize:13}}>Кассовых смен за этот день не найдено.</div>}
+              </Section>
+
+              {iikoDayDetails.checks?.length > 0 && (
+                <Section title="Чеки за день" count={iikoDayDetails.checks.length} defaultOpen={false}>
+                  <div className="rp-table-wrap">
+                    <table className="rp-table">
+                      <thead><tr><th>Время</th><th>№ заказа</th><th>Оплата</th><th style={{textAlign:'right'}}>Сумма</th></tr></thead>
+                      <tbody>
+                        {iikoDayDetails.checks.map((c, i) => {
+                          const key = `${c.orderNum}-${i}`;
+                          const open = expandedCheck === key;
+                          return (
+                            <React.Fragment key={key}>
+                              <tr onClick={() => setExpandedCheck(open ? null : key)} style={{cursor:'pointer'}}>
+                                <td>{c.time || '—'}</td>
+                                <td>№{c.orderNum} {open ? <ChevronUp size={12} style={{verticalAlign:-1}}/> : <ChevronDown size={12} style={{verticalAlign:-1}}/>}</td>
+                                <td className="rp-muted" style={{fontSize:12}}>{c.payType}</td>
+                                <td className="rp-num" style={{fontWeight:600}}>{fmtRub(c.total)}</td>
+                              </tr>
+                              {open && (
+                                <tr>
+                                  <td colSpan={4} style={{padding:0, background:COLORS.bg}}>
+                                    <table className="rp-table" style={{margin:'4px 0 8px 24px', width:'calc(100% - 24px)'}}>
+                                      <tbody>
+                                        {c.items.map((it, j) => (
+                                          <tr key={j}><td>{it.name}</td><td className="rp-num" style={{width:60}}>×{fmt0(it.qty)}</td><td className="rp-num" style={{width:100}}>{fmtRub(it.amount)}</td></tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </Section>
+              )}
+
+              {iikoDayDetails.topDishes?.length > 0 && (
+                <Section title="Что продавалось" count={iikoDayDetails.topDishes.length} defaultOpen={false}>
+                  <div className="rp-table-wrap">
+                    <table className="rp-table">
+                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                      <tbody>
+                        {iikoDayDetails.topDishes.map((d, i) => (
+                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Section>
+              )}
+
+              {iikoDayDetails.deletions?.items?.length > 0 && (
+                <Section title="Что удаляли" count={iikoDayDetails.deletions.items.length} defaultOpen={false}>
+                  <div className="rp-table-wrap">
+                    <table className="rp-table">
+                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                      <tbody>
+                        {iikoDayDetails.deletions.items.map((d, i) => (
+                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Section>
+              )}
+            </Card>
+          )}
         </>
       )}
 
