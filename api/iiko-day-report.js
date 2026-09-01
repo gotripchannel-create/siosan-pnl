@@ -305,8 +305,7 @@ export default async function handler(req, res) {
     // чтобы увидеть реальные имена полей на этой версии сервера, затем зафиксируем.
     try {
       const attResp = await fetch(
-        `${serverUrl.replace(/\/$/, '')}/resto/api/employees/attendance?from=${date}&to=${date}&key=${encodeURIComponent(token)}`,
-        { headers: { Accept: 'application/json' } }
+        `${serverUrl.replace(/\/$/, '')}/resto/api/employees/attendance?from=${date}&to=${date}&key=${encodeURIComponent(token)}`
       );
       const attText = await attResp.text();
       let attJson = null;
@@ -315,7 +314,7 @@ export default async function handler(req, res) {
       let employeesJson = null;
       let employeesRawText = '';
       try {
-        const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`, { headers: { Accept: 'application/json' } });
+        const empResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/employees?key=${encodeURIComponent(token)}`);
         const empText = await empResp.text();
         employeesRawText = empText.slice(0, 1500);
         try { employeesJson = JSON.parse(empText); } catch (_) { employeesJson = null; }
