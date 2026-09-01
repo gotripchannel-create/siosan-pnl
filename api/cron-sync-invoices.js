@@ -105,7 +105,7 @@ function uid() {
 // продублирована здесь, так как cron выполняется отдельно от фронтенда.
 function matchPayTypeToChannel(payType, channels) {
   const pt = String(payType || '').toLowerCase();
-  const aliases = { cash: ['наличн'], card: ['банковск', 'карт'], yandex: ['яндекс'], netmonet: ['нетмонет', 'нет монет'] };
+  const aliases = { cash: ['наличн', 'внесени'], card: ['банковск', 'карт'], yandex: ['яндекс'], netmonet: ['нетмонет', 'нет монет'] };
   for (const ch of channels) {
     const al = aliases[ch.id];
     if (al && al.some((a) => pt.includes(a))) return ch;
@@ -137,6 +137,39 @@ async function fetchRevenueByDay(serverUrl, token, from, to) {
     if (/без оплаты/i.test(payType) || !date) continue;
     (byDay[date] ||= {})[payType] = (byDay[date][payType] || 0) + (Number(r['DishDiscountSumInt']) || 0);
   }
+
+  // Внесения по заказу (деньги, принятые за заказ отдельной кассовой операцией, а не
+  // обычной продажей) — не попадают в отчёт по продажам выше, поэтому раньше терялись.
+  // Берём из отчёта по проводкам, исключая «дб» (начальный остаток) и «зп» (зарплата).
+  try {
+    const txResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reportType: 'TRANSACTIONS', buildSummary: false,
+        groupByRowFields: ['DateTime.Typed', 'Comment'], groupByColFields: [],
+        aggregateFields: ['Sum.Incoming'],
+        filters: {
+          'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
+          'TransactionType': { filterType: 'IncludeValues', values: ['PAYIN'] }
+        }
+      })
+    });
+    const txJson = JSON.parse(await txResp.text());
+    if (txResp.ok) {
+      for (const r of (txJson?.data || [])) {
+        const comment = String(r['Comment'] || '').trim().toLowerCase();
+        if (comment === 'дб' || comment === 'зп') continue;
+        const date = (r['DateTime.Typed'] || '').slice(0, 10);
+        const amt = Number(r['Sum.Incoming']) || 0;
+        if (!date || amt <= 0) continue;
+        (byDay[date] ||= {})['Внесение по заказу'] = (byDay[date]['Внесение по заказу'] || 0) + amt;
+      }
+    }
+  } catch (_) {
+    // Не считаем фатальным для всей синхронизации — выручка по продажам важнее.
+  }
+
   return byDay;
 }
 

@@ -171,7 +171,7 @@ function dayRevenueTotal(day, channels) {
 function matchIikoPayTypeToChannel(payType, channels) {
   const pt = String(payType || '').toLowerCase();
   const aliases = {
-    cash: ['наличн'],
+    cash: ['наличн', 'внесени'],
     card: ['банковск', 'карт'],
     yandex: ['яндекс'],
     netmonet: ['нетмонет', 'нет монет'],

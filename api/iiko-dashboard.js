@@ -310,8 +310,13 @@ export default async function handler(req, res) {
       if (cashPayIncomeByDay[day.date]) {
         day.total = Math.round((day.total + cashPayIncomeByDay[day.date]) * 100) / 100;
         day.cashPayIncome = Math.round(cashPayIncomeByDay[day.date] * 100) / 100;
+        // Важно: добавляем и в byPayType (под тем же ключом, что и на верхнем уровне
+        // totalsByPayType, ниже), иначе day.total и сумма day.byPayType расходятся —
+        // а именно byPayType используют клиенты для синхронизации выручки по каналам.
+        day.byPayType = { ...day.byPayType, 'Внесение по заказу': Math.round(((day.byPayType?.['Внесение по заказу'] || 0) + cashPayIncomeByDay[day.date]) * 100) / 100 };
       }
     }
+    totalsByPayType['Внесение по заказу'] = Math.round((cashPayIncome) * 100) / 100;
 
     res.status(200).json({
       from, to,

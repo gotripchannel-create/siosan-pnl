@@ -288,6 +288,10 @@ export default async function handler(req, res) {
         if (payIncome > 0 && result.revenue) {
           result.revenue.payIncomeAdded = Math.round(payIncome * 100) / 100;
           result.revenue.total = Math.round((result.revenue.total + payIncome) * 100) / 100;
+          // Важно: добавляем и в byPayType, иначе total и сумма byPayType расходятся —
+          // именно byPayType используют клиенты (например, автозагрузка дня на
+          // Дашборде) для синхронизации выручки по каналам.
+          result.revenue.byPayType = { ...result.revenue.byPayType, 'Внесение по заказу': Math.round(((result.revenue.byPayType?.['Внесение по заказу'] || 0) + payIncome) * 100) / 100 };
         }
       } else {
         result.errors.payIncome = `Отчёт по проводкам вернул ошибку (${txResp.status}).`;
