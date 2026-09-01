@@ -238,25 +238,32 @@ export default async function handler(req, res) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
+  // Внутренний вызов от фонового задания (cron-sync-invoices) — у него нет
+  // пользовательской сессии, вместо неё сверяем уже настроенный секрет cron-задания.
+  const internalSecret = req.headers['x-internal-secret'];
+  const isInternalCall = !!process.env.CRON_SECRET && internalSecret === process.env.CRON_SECRET;
+
   if (!supabaseUrl || !supabaseAnonKey) {
     res.status(500).json({ error: 'Supabase не настроен на сервере.' });
     return;
   }
-  if (!token) {
+  if (!token && !isInternalCall) {
     res.status(401).json({ error: 'Требуется авторизация.' });
     return;
   }
-  try {
-    const userResp = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: supabaseAnonKey }
-    });
-    if (!userResp.ok) {
-      res.status(401).json({ error: 'Сессия недействительна. Войдите заново.' });
+  if (!isInternalCall) {
+    try {
+      const userResp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+        headers: { Authorization: `Bearer ${token}`, apikey: supabaseAnonKey }
+      });
+      if (!userResp.ok) {
+        res.status(401).json({ error: 'Сессия недействительна. Войдите заново.' });
+        return;
+      }
+    } catch (e) {
+      res.status(401).json({ error: 'Не удалось проверить авторизацию.' });
       return;
     }
-  } catch (e) {
-    res.status(401).json({ error: 'Не удалось проверить авторизацию.' });
-    return;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

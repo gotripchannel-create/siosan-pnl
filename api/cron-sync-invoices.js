@@ -117,6 +117,80 @@ function matchPayTypeToChannel(payType, channels) {
   return null;
 }
 
+async function fetchPayoutExpenses(serverUrl, token, from, to) {
+  const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      reportType: 'TRANSACTIONS', buildSummary: false,
+      groupByRowFields: ['DateTime.Typed', 'Comment'], groupByColFields: [],
+      aggregateFields: ['Sum.Incoming'],
+      filters: {
+        'DateTime.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from, to, includeLow: true, includeHigh: true },
+        'TransactionType': { filterType: 'IncludeValues', values: ['PAYOUT'] }
+      }
+    })
+  });
+  const json = JSON.parse(await resp.text());
+  if (!resp.ok) return [];
+  return (json?.data || [])
+    .map((r) => ({
+      date: (r['DateTime.Typed'] || '').slice(0, 10),
+      comment: String(r['Comment'] || '').trim().toLowerCase() || 'без комментария',
+      amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
+    }))
+    .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп');
+}
+
+// Категоризация расходов через уже существующий ИИ-парсер (/api/parse-report) —
+// вызываем именно его, а не отдельную копию промпта, чтобы логика категоризации
+// была одна на всё приложение (и для ручной вставки из ВК, и для авторасходов из
+// iiko). Аутентифицируемся как "внутренний" вызов через уже настроенный CRON_SECRET
+// (см. изменение авторизации в api/parse-report.js).
+async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
+  const syntheticText = Object.entries(expensesByDay)
+    .map(([date, items]) => `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n'))
+    .join('\n\n');
+  if (!syntheticText.trim()) return [];
+
+  const to = Object.keys(expensesByDay).sort().slice(-1)[0] || new Date().toISOString().slice(0, 10);
+  const resp = await fetch(`https://${host}/api/parse-report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
+    body: JSON.stringify({
+      text: syntheticText,
+      revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
+      expenseCategories: settingsObj.expenseCategories || [], fallbackDate: to,
+      glossary: settingsObj.reportGlossary || ''
+    })
+  });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  return data.reports || [];
+}
+
+function mergeExpensesIntoData(data, reports) {
+  data.months = data.months || {};
+  let added = 0;
+  for (const report of reports) {
+    if (!report.date) continue;
+    const mk = report.date.slice(0, 7);
+    if (!data.months[mk]) data.months[mk] = {};
+    const month = data.months[mk];
+    month.days = month.days || {};
+    const existing = month.days[report.date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, comment: '' }, promo: { pay: 0, comment: '' } };
+    const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    month.days[report.date] = {
+      ...existing,
+      kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
+      otherExpenses: [...(existing.otherExpenses || []), ...newOther]
+    };
+    added += newKitchen.length + newOther.length;
+  }
+  return { data, added };
+}
+
 async function fetchRevenueByDay(serverUrl, token, from, to) {
   const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
     method: 'POST',
@@ -280,6 +354,7 @@ export default async function handler(req, res) {
     token = await iikoAuth(serverUrl, login, password);
     const invoices = await fetchInvoices(serverUrl, token, from, to);
     const revenueByDay = await fetchRevenueByDay(serverUrl, token, from, to);
+    const payoutExpenses = await fetchPayoutExpenses(serverUrl, token, from, to);
 
     // Читаем текущие данные напрямую из Supabase (service-role — в обход RLS).
     const getResp = await fetch(`${supabaseUrl}/rest/v1/restaurant_data?restaurant_id=eq.${RESTAURANT_ID}&select=id,data`, {
@@ -291,9 +366,29 @@ export default async function handler(req, res) {
     if (!row) throw new Error('Строка restaurant_data не найдена — сначала откройте приложение хотя бы раз, чтобы она создалась.');
 
     const { data: withInvoices, added, filledIn, newSuppliers } = mergeInvoicesIntoData(row.data || {}, invoices);
-    const { data: merged, daysUpdated, unmatched } = mergeRevenueIntoData(withInvoices, revenueByDay);
+    const { data: withRevenue, daysUpdated, unmatched } = mergeRevenueIntoData(withInvoices, revenueByDay);
 
-    if (added > 0 || filledIn > 0 || newSuppliers > 0 || daysUpdated > 0) {
+    // Расходы (изъятия наличных) — категоризируем только те, что ещё не обрабатывали
+    // раньше (settings.iikoExpensesSyncedKeys — тот же список, что используется при
+    // ручной синхронизации на "Входящие отчёты"/Дашборде, дедуп общий для всех путей).
+    withRevenue.settings = withRevenue.settings || {};
+    const syncedKeys = new Set(withRevenue.settings.iikoExpensesSyncedKeys || []);
+    const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+    const newExpenses = payoutExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
+    let expensesAdded = 0;
+    let merged = withRevenue;
+    if (newExpenses.length > 0) {
+      const byDay = {};
+      for (const e of newExpenses) { (byDay[e.date] ||= []).push(e); }
+      const host = req.headers.host;
+      const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || []);
+      const merged2 = mergeExpensesIntoData(withRevenue, reports);
+      merged = merged2.data;
+      expensesAdded = merged2.added;
+      merged.settings.iikoExpensesSyncedKeys = [...syncedKeys, ...newExpenses.map(keyOf)];
+    }
+
+    if (added > 0 || filledIn > 0 || newSuppliers > 0 || daysUpdated > 0 || expensesAdded > 0) {
       const patchResp = await fetch(`${supabaseUrl}/rest/v1/restaurant_data?id=eq.${row.id}`, {
         method: 'PATCH',
         headers: {
@@ -305,7 +400,7 @@ export default async function handler(req, res) {
       if (!patchResp.ok) throw new Error(`Не удалось сохранить данные в Supabase (${patchResp.status}).`);
     }
 
-    res.status(200).json({ ok: true, from, to, invoicesFound: invoices.length, added, filledIn, newSuppliers, daysUpdated, unmatchedPayTypes: unmatched });
+    res.status(200).json({ ok: true, from, to, invoicesFound: invoices.length, added, filledIn, newSuppliers, daysUpdated, unmatchedPayTypes: unmatched, expensesAdded });
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось выполнить автоматическую синхронизацию.' });
   } finally {

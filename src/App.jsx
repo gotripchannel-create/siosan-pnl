@@ -1041,6 +1041,45 @@ function Dashboard({ ctx, setPage }) {
           const existing = getDay(curMonth, dayDate);
           return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' } } } };
         });
+
+        // Расходы (изъятия наличных) за этот же день — тоже сами, без кнопки. Берём
+        // только то, что ещё не обрабатывали раньше (settings.iikoExpensesSyncedKeys —
+        // общий список дедупликации для всех путей синхронизации: cron, Дашборд,
+        // «Входящие отчёты»).
+        try {
+          const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+          const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
+          const expData = await expResp.json();
+          if (!expResp.ok || cancelled) return;
+          const dayExpenses = expData.expenses || [];
+          const keyOf = (e) => `${e.date}::${e.comment}::${e.amount}`;
+          const syncedKeysSet = new Set(settings.iikoExpensesSyncedKeys || []);
+          const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
+          if (newExp.length === 0) return;
+          const syntheticText = `Расходы за ${dayDate}:\n` + newExp.map((i) => `${i.comment} ${i.amount}`).join('\n');
+          const catResp = await fetch('/api/parse-report', {
+            method: 'POST', headers: authHeaders,
+            body: JSON.stringify({
+              text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],
+              expenseCategories: settings.expenseCategories || [], fallbackDate: dayDate, glossary: settings.reportGlossary || ''
+            })
+          });
+          const catData = await catResp.json();
+          if (!catResp.ok || cancelled) return;
+          const report = (catData.reports || [])[0];
+          if (report) {
+            setMonths((prev) => {
+              const curMonth = prev[mk] || emptyMonth(settings, null);
+              const existing = getDay(curMonth, dayDate);
+              const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+              const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+              return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
+            });
+            setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
+          }
+        } catch (_) {
+          // Тихая фоновая подгрузка расходов — не мешаем основному потоку выручки.
+        }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
       } finally {
@@ -1118,6 +1157,20 @@ function Dashboard({ ctx, setPage }) {
       setExpSyncLoading(false);
     }
   };
+
+  // Автозагрузка ВСЕГО месяца при открытии/смене месяца сверху — без кнопки. То же
+  // самое, что раньше делали кнопки "Синхронизировать выручку"/"Синхронизировать
+  // расходы", просто само по себе, при заходе на дашборд или переключении месяца.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled) return;
+      try { await syncRevenueFromIiko(); } catch (_) {}
+      if (cancelled) return;
+      try { await syncExpensesFromIikoOnDashboard(); } catch (_) {}
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [monthKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
@@ -1258,15 +1311,11 @@ function Dashboard({ ctx, setPage }) {
             <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>Месяц</button>
             <button className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>День</button>
           </div>
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => syncRevenueFromIiko()} disabled={revSyncLoading}>
-            <RefreshCw size={13} className={revSyncLoading ? 'rp-spin' : ''}/> {revSyncLoading ? 'Синхронизирую…' : 'Синхронизировать выручку'}
-          </button>
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setRevSyncRangeOpen(true)} disabled={revSyncLoading} title="Выбрать конкретную дату, месяц или период">
-            <Calendar size={13}/> За период…
-          </button>
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={syncExpensesFromIikoOnDashboard} disabled={expSyncLoading}>
-            <RefreshCw size={13} className={expSyncLoading ? 'rp-spin' : ''}/> {expSyncLoading ? 'Синхронизирую…' : 'Синхронизировать расходы'}
-          </button>
+          {(revSyncLoading || expSyncLoading) && (
+            <span className="rp-muted" style={{fontSize:12}}>
+              <RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Синхронизирую с iiko…
+            </span>
+          )}
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
@@ -1563,28 +1612,6 @@ function Dashboard({ ctx, setPage }) {
         </Modal>
       )}
 
-      {revSyncRangeOpen && (
-        <Modal title="Синхронизировать выручку за период" onClose={() => setRevSyncRangeOpen(false)}>
-          <p className="rp-muted" style={{marginBottom:14}}>Можно указать один день (одинаковые даты «С» и «По»), любой месяц целиком, или произвольный период. Уже засинхронизированные дни просто перезапишутся актуальными цифрами.</p>
-          <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:14}}>
-            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date().toISOString().slice(0,10); setRevSyncFrom(d); setRevSyncTo(d); }}>Сегодня</button>
-            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); const s = d.toISOString().slice(0,10); setRevSyncFrom(s); setRevSyncTo(s); }}>Вчера</button>
-            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { setRevSyncFrom(dateStr(year, monthIdx, 1)); setRevSyncTo(dateStr(year, monthIdx, daysInMonth(year, monthIdx))); }}>Этот месяц</button>
-            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(year, monthIdx-1, 1); setRevSyncFrom(dateStr(d.getFullYear(), d.getMonth(), 1)); setRevSyncTo(dateStr(d.getFullYear(), d.getMonth(), daysInMonth(d.getFullYear(), d.getMonth()))); }}>Прошлый месяц</button>
-          </div>
-          <div className="rp-form-grid">
-            <Field label="С"><input type="date" value={revSyncFrom} onChange={(e) => setRevSyncFrom(e.target.value)} /></Field>
-            <Field label="По"><input type="date" value={revSyncTo} onChange={(e) => setRevSyncTo(e.target.value)} /></Field>
-          </div>
-          <div className="rp-modal-actions">
-            <button className="rp-btn rp-btn-ghost" onClick={() => setRevSyncRangeOpen(false)}>Отмена</button>
-            <button className="rp-btn" disabled={revSyncLoading} onClick={async () => { setRevSyncRangeOpen(false); await syncRevenueFromIiko(revSyncFrom, revSyncTo); }}>
-              {revSyncLoading ? 'Синхронизирую…' : 'Начать'}
-            </button>
-          </div>
-        </Modal>
-      )}
-
       {customizeOpen && (
         <Modal title="Настроить дашборд" onClose={() => setCustomizeOpen(false)}>
           <p className="rp-muted" style={{marginBottom:14}}>Выберите, какие блоки показывать. Настройка сохраняется и применяется на всех ваших устройствах.</p>
@@ -1860,7 +1887,7 @@ function DayEntry({ ctx }) {
           </div>
           {day.revenueSource === 'iiko' && (
             <p className="rp-muted" style={{fontSize:11, marginTop:-4, marginBottom:10}}>
-              Эти цифры подтянуты автоматически из кассы iiko (Дашборд → «Синхронизировать выручку»). Менять вручную не обязательно — при следующей синхронизации значения обновятся актуальными.
+              Эти цифры подтягиваются автоматически из кассы iiko — сами, без кнопок, при открытии Дашборда и раз в сутки в фоне. Менять вручную не обязательно — при следующей автосинхронизации значения обновятся актуальными.
             </p>
           )}
           <div className="rp-form-grid">
@@ -5247,11 +5274,8 @@ function IncomingReportsPage({ ctx }) {
       </div>
 
       <Card style={{marginBottom:16}}>
-        <div className="rp-card-title-row"><div><div className="rp-card-title"><Sparkles size={15} style={{verticalAlign:-2, marginRight:6}}/>Расходы из iiko</div><div className="rp-muted">Изъятия наличных из кассы (закуп, курьер и т.п.) — ИИ сам раскладывает по категориям и сразу применяет к P&L за {MONTHS_RU[monthIdx]} {year}. Повторный запуск не задваивает уже обработанное.</div></div>
-          <button className="rp-btn" onClick={syncExpensesFromIiko} disabled={expSyncLoading}>
-            <RefreshCw size={14} className={expSyncLoading ? 'rp-spin' : ''} style={{verticalAlign:-2, marginRight:6}}/>{expSyncLoading ? 'Синхронизирую…' : 'Синхронизировать'}
-          </button>
-        </div>
+        <div className="rp-card-title"><Sparkles size={15} style={{verticalAlign:-2, marginRight:6}}/>Расходы из iiko</div>
+        <p className="rp-muted" style={{marginTop:6}}>Изъятия наличных из кассы (закуп, курьер и т.п.) — ИИ сам раскладывает по категориям и применяет к P&L. Происходит автоматически, без кнопок: раз в сутки в фоне и сразу при открытии Дашборда.</p>
         {expSyncError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {expSyncError}</div>}
         {expSyncSummary && (
           <div className="rp-cash-check" style={{marginTop:12}}>
