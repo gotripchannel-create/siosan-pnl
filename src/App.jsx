@@ -180,6 +180,18 @@ async function fetchWithTimeout(url, options, timeoutMs = 25000) {
   }
 }
 
+// Сопоставляет имя кассира из iiko (например "Вероника В.М.") с сотрудником в
+// приложении — по вхождению имени сотрудника в строку кассира (без учёта регистра).
+function matchIikoCashierToEmployee(iikoName, employees) {
+  if (!iikoName) return null;
+  const normalized = String(iikoName).toLowerCase().trim();
+  for (const emp of employees) {
+    const firstName = String(emp.name || '').trim().toLowerCase().split(/\s+/)[0];
+    if (firstName && firstName.length > 1 && normalized.includes(firstName)) return emp;
+  }
+  return null;
+}
+
 function matchIikoPayTypeToChannel(payType, channels) {
   const pt = String(payType || '').toLowerCase();
   const aliases = {
@@ -1042,6 +1054,31 @@ function Dashboard({ ctx, setPage }) {
         const data = await resp.json();
         if (!resp.ok || cancelled) return;
         setIikoDayDetails(data);
+
+        // Кто работал в этот день — сопоставляем кассира смены с сотрудником и
+        // автоматически проставляем ему смену (те же данные, что использует расчёт
+        // зарплаты). Не трогаем дни, где смена уже стоит вручную — только дозаполняем
+        // пустое.
+        const cashierNames = [...new Set((data.cashShifts || []).map((s) => s.cashierName).filter(Boolean))];
+        if (cashierNames.length > 0 && employees?.length > 0) {
+          const matchedEmployees = cashierNames.map((n) => matchIikoCashierToEmployee(n, employees)).filter(Boolean);
+          if (matchedEmployees.length > 0) {
+            const mkShift = dayDate.slice(0, 7);
+            setMonths((prev) => {
+              const curMonth = prev[mkShift] || emptyMonth(settings, null);
+              const nextShifts = { ...(curMonth.shifts || {}) };
+              for (const emp of matchedEmployees) {
+                const empShifts = { ...(nextShifts[emp.id] || {}) };
+                if (empShifts[dayDate] == null) {
+                  empShifts[dayDate] = emp.standardShift || settings.standardShiftHours;
+                  nextShifts[emp.id] = empShifts;
+                }
+              }
+              return { ...prev, [mkShift]: { ...curMonth, shifts: nextShifts } };
+            });
+          }
+        }
+
         const byPayType = data.revenue?.byPayType || {};
         const revenue = {};
         for (const [payType, amount] of Object.entries(byPayType)) {
@@ -1458,13 +1495,23 @@ function Dashboard({ ctx, setPage }) {
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
+              {iikoDayDetails.cashShifts?.some((s) => s.cashierName) && (
+                <Section title="Кто был на смене" count={new Set(iikoDayDetails.cashShifts.map((s) => s.cashierName).filter(Boolean)).size} defaultOpen={true}>
+                  <div style={{display:'flex', flexWrap:'wrap', gap:8}}>
+                    {[...new Set(iikoDayDetails.cashShifts.map((s) => s.cashierName).filter(Boolean))].map((name, i) => (
+                      <span key={i} className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{name}</span>
+                    ))}
+                  </div>
+                </Section>
+              )}
+
               <Section title="Кассовые смены" count={iikoDayDetails.cashShifts?.length ?? 0} defaultOpen={true}>
                 {iikoDayDetails.cashShifts?.length > 0 ? (
                   <div className="rp-list">
                     {iikoDayDetails.cashShifts.map((s, i) => (
                       <div key={i} className="rp-list-row" style={{flexDirection:'column', alignItems:'flex-start', gap:4}}>
                         <div style={{display:'flex', justifyContent:'space-between', width:'100%'}}>
-                          <b>Смена №{s.sessionNumber}</b>
+                          <b>Смена №{s.sessionNumber}{s.cashierName && <span className="rp-muted" style={{fontWeight:400}}> · {s.cashierName}</span>}</b>
                           <span className="rp-muted" style={{fontSize:12}}>{s.status === 'OPEN' ? 'открыта' : 'закрыта'}</span>
                         </div>
                         <div className="rp-muted" style={{fontSize:12}}>Внесено {fmtRub(s.payIn)} · Изъято {fmtRub(s.payOut)} · Нал {fmtRub(s.salesCash)} · Карта {fmtRub(s.salesCard)}</div>
@@ -2303,6 +2350,37 @@ function EmployeesPage({ ctx }) {
             {visible.length === 0 && <tr><td colSpan={9}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
         </table></div>
+      </Card>
+
+      <Card style={{marginTop:16}}>
+        <div className="rp-card-title">Кто работал — {MONTHS_RU[monthIdx]} {year}</div>
+        <p className="rp-muted" style={{fontSize:12, marginBottom:14}}>Смены проставляются автоматически, когда сотрудник открывает кассовую смену в iiko (имя сопоставляется по совпадению). Клик по дню — быстрый переход к сменам этого дня.</p>
+        <div className="rp-cal-grid">
+          {WEEKDAYS_RU.map((w) => <div key={w} className="rp-cal-weekday">{w}</div>)}
+          {(() => {
+            const total = daysInMonth(year, monthIdx);
+            const firstWeekday = (new Date(year, monthIdx, 1).getDay() + 6) % 7;
+            const cells = [];
+            for (let i = 0; i < firstWeekday; i++) cells.push(null);
+            for (let d = 1; d <= total; d++) cells.push(d);
+            while (cells.length % 7 !== 0) cells.push(null);
+            return cells.map((d, i) => {
+              if (d == null) return <div key={i} className="rp-cal-cell rp-cal-cell-empty" />;
+              const dateKey = dateStr(year, monthIdx, d);
+              const namesToday = employees.filter((e) => month.shifts?.[e.id]?.[dateKey] != null).map((e) => e.name);
+              return (
+                <div key={i} className={`rp-cal-cell ${namesToday.length > 0 ? 'rp-cal-has-items' : ''}`}>
+                  <div className="rp-cal-daynum">{d}</div>
+                  {namesToday.length > 0 && (
+                    <div className="rp-cal-items">
+                      {namesToday.map((name, j) => <div key={j} className="rp-cal-chip">{name}</div>)}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
+        </div>
       </Card>
 
       {editing && (

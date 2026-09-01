@@ -251,7 +251,8 @@ export default async function handler(req, res) {
         payIncome: Number(s.payIncome) || 0,
         salesCash: Number(s.salesCash) || 0, salesCard: Number(s.salesCard) || 0,
         cashRemain: s.cashRemain != null ? Number(s.cashRemain) : null,
-        cashDiff: s.cashDiff != null ? Number(s.cashDiff) : null
+        cashDiff: s.cashDiff != null ? Number(s.cashDiff) : null,
+        cashierName: s.responsibleUserName || s.cashierName || s.userName || null
       }));
 
       // Внесения по заказу (payIncome) — ВРЕМЕННО не прибавляются автоматически к
