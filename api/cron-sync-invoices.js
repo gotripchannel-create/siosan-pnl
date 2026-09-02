@@ -97,6 +97,13 @@ async function fetchInvoices(serverUrl, token, from, to) {
   return invoices;
 }
 
+// Сервер Vercel работает в UTC — new Date().toISOString() даёт "вчера" по московскому
+// времени с полуночи до 3 утра. Везде, где нужна "сегодняшняя дата" по факту (не UTC),
+// используем эту функцию.
+function moscowToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }
@@ -153,7 +160,7 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
     .join('\n\n');
   if (!syntheticText.trim()) return [];
 
-  const to = Object.keys(expensesByDay).sort().slice(-1)[0] || new Date().toISOString().slice(0, 10);
+  const to = Object.keys(expensesByDay).sort().slice(-1)[0] || moscowToday();
   const resp = await fetch(`https://${host}/api/parse-report`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
@@ -364,7 +371,7 @@ export default async function handler(req, res) {
   try {
     // Окно в 21 день — с запасом покрывает и еженедельные, и двухнедельные поставки,
     // плюс ловит накладные, задним числом проведённые в iiko после факта поставки.
-    const to = new Date().toISOString().slice(0, 10);
+    const to = moscowToday();
     const fromObj = new Date(); fromObj.setDate(fromObj.getDate() - 21);
     const from = fromObj.toISOString().slice(0, 10);
 

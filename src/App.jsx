@@ -54,6 +54,10 @@ const dateStr = (y, mIdx, d) => `${y}-${pad2(mIdx + 1)}-${pad2(d)}`;
 const monthKeyOf = (y, mIdx) => `${y}-${pad2(mIdx + 1)}`;
 const dayOfMonthFromDateStr = (ds) => parseInt(ds.split('-')[2], 10);
 const todayObj = () => { const t = new Date(); return { y: t.getFullYear(), m: t.getMonth(), d: t.getDate() }; };
+// ВАЖНО: только через эту функцию — не new Date().toISOString().slice(0,10), у неё UTC,
+// а не московское время, из-за чего с полуночи до 3 утра "сегодня" ошибочно считалось
+// вчерашним днём по всему приложению.
+const todayStr = () => { const t = todayObj(); return dateStr(t.y, t.m, t.d); };
 
 function defaultSettings() {
   return {
@@ -991,7 +995,7 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncSummary, setRevSyncSummary] = useState(null);
   const [revSyncRangeOpen, setRevSyncRangeOpen] = useState(false);
   const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
-  const [revSyncTo, setRevSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [revSyncTo, setRevSyncTo] = useState(() => todayStr());
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
   const [iikoDayDetails, setIikoDayDetails] = useState(null);
   const [expenseDebug, setExpenseDebug] = useState(null);
@@ -2857,7 +2861,7 @@ function SuppliersPage({ ctx }) {
     return earliest;
   }, [months]);
   const [fullSyncFrom, setFullSyncFrom] = useState(() => earliestKnownOrderDate || (() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().slice(0, 10); })());
-  const [fullSyncTo, setFullSyncTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [fullSyncTo, setFullSyncTo] = useState(() => todayStr());
 
   const totalOrdered = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.ordered || 0), 0);
   const totalPaid = activeSuppliers.reduce((s, sup) => s + (ledger[sup.id]?.paid || 0), 0);
@@ -2978,7 +2982,7 @@ function SuppliersPage({ ctx }) {
             const dateKey = dateStr(year, monthIdx, d);
             const items = deliveriesByDay[dateKey] || [];
             const dayTotal = items.reduce((s, it) => s + it.amount, 0);
-            const isToday = dateKey === new Date().toISOString().slice(0, 10);
+            const isToday = dateKey === todayStr();
             return (
               <div key={i} className={`rp-cal-cell ${items.length > 0 ? 'rp-cal-has-items' : ''} ${isToday ? 'rp-cal-today' : ''}`}>
                 <div className="rp-cal-daynum">{d}</div>
@@ -3073,7 +3077,7 @@ function RenameForm({ initial, onSave }) {
 }
 
 function SupplierOpModal({ supplier, kind, onClose, onSave, history, thresholdPct = 60 }) {
-  const [amount, setAmount] = useState(''); const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [amount, setAmount] = useState(''); const [date, setDate] = useState(todayStr());
   const [invoice, setInvoice] = useState(''); const [method, setMethod] = useState('cashless'); const [comment, setComment] = useState('');
 
   const priorAmounts = ((kind === 'order' ? history?.orders : history?.payments) || []).map((x) => Number(x.amount) || 0).filter((v) => v > 0).slice(-5);
@@ -4216,7 +4220,7 @@ function SettingsPage({ ctx }) {
 
 function IikoIntegrationPanel({ ctx }) {
   const { session } = ctx;
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayStr());
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
@@ -4309,7 +4313,7 @@ function BackupPanel({ ctx }) {
   const [error, setError] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
 
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = todayStr();
   const dataOut = { version: 1, exportedAt: new Date().toISOString(), settings, employees, suppliers, months, auditLog };
 
   const downloadBackup = () => {
@@ -4671,7 +4675,7 @@ function IikoDashboardPage({ ctx }) {
   const [error, setError] = useState('');
   const [cashData, setCashData] = useState(null);
   const [cashError, setCashError] = useState('');
-  const [dayDate, setDayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dayDate, setDayDate] = useState(todayStr());
   const [dayReport, setDayReport] = useState(null);
   const [dayLoading, setDayLoading] = useState(false);
   const [dayError, setDayError] = useState('');

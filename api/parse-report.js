@@ -298,7 +298,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const today = fallbackDate || new Date().toISOString().slice(0, 10);
+  // Сервер Vercel работает в UTC — new Date().toISOString() даёт "вчера" по московскому
+  // времени с полуночи до 3 утра, поэтому явно берём московскую дату как запасной вариант.
+  const today = fallbackDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate: today, glossary });
 
   try {

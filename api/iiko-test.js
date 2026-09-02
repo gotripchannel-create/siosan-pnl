@@ -59,7 +59,9 @@ export default async function handler(req, res) {
   }
 
   const { date } = req.body || {};
-  const targetDate = date || new Date().toISOString().slice(0, 10);
+  // Сервер Vercel работает в UTC — new Date().toISOString() даёт "вчера" по московскому
+  // времени с полуночи до 3 утра, поэтому явно берём московскую дату.
+  const targetDate = date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
   let token = null;
   try {
