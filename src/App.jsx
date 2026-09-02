@@ -997,6 +997,7 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
   const [revSyncTo, setRevSyncTo] = useState(() => todayStr());
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
+  const expenseSyncInFlightRef = useRef(new Set());
   const [iikoDayDetails, setIikoDayDetails] = useState(null);
   const [expenseDebug, setExpenseDebug] = useState(null);
   const [expSyncLoading, setExpSyncLoading] = useState(false);
@@ -1112,8 +1113,18 @@ function Dashboard({ ctx, setPage }) {
           return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' } } } };
         });
         // Расходы для этого дня синхронизируются отдельным месячным механизмом (см.
-        // useEffect по monthKey ниже) — специально убрано отсюда, раньше оба механизма
-        // запускались одновременно при заходе на дашборд и задваивали расходы гонкой.
+        // useEffect по monthKey ниже) — но тот механизм срабатывает только для месяца,
+        // ОТКРЫТОГО СВЕРХУ. Если просматриваемый день принадлежит ДРУГОМУ месяцу
+        // (например, открыт сентябрь, а смотрим день в августе) — расходы для него
+        // никогда бы не подтянулись. Поэтому здесь отдельно: если день не из открытого
+        // месяца, синхронизируем расходы именно для месяца этого дня.
+        if (mk !== monthKey && !expenseSyncInFlightRef.current.has(mk)) {
+          expenseSyncInFlightRef.current.add(mk);
+          const [dy, dm] = mk.split('-').map(Number);
+          const monthFrom = dateStr(dy, dm - 1, 1);
+          const monthTo = dateStr(dy, dm - 1, daysInMonth(dy, dm - 1));
+          try { await syncExpensesFromIikoOnDashboard(monthFrom, monthTo); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(mk); }
+        }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
       } finally {
@@ -1126,11 +1137,11 @@ function Dashboard({ ctx, setPage }) {
   // Синхронизация расходов из iiko прямо с Дашборда (та же логика, что на странице
   // «Входящие отчёты») — чтобы не уходить в другой раздел за этим. Работает за
   // текущий открытый месяц; для конкретного дня расходы попадут в тот же день.
-  const syncExpensesFromIikoOnDashboard = async () => {
+  const syncExpensesFromIikoOnDashboard = async (customFrom, customTo) => {
     setExpSyncLoading(true); setExpSyncError(''); setExpSyncSummary(null);
     try {
-      const from = dateStr(year, monthIdx, 1);
-      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const from = customFrom || dateStr(year, monthIdx, 1);
+      const to = customTo || dateStr(year, monthIdx, daysInMonth(year, monthIdx));
       const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
 
       const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
@@ -1208,7 +1219,10 @@ function Dashboard({ ctx, setPage }) {
       if (cancelled) return;
       try { await syncRevenueFromIiko(); } catch (_) {}
       if (cancelled) return;
-      try { await syncExpensesFromIikoOnDashboard(); } catch (_) {}
+      if (!expenseSyncInFlightRef.current.has(monthKey)) {
+        expenseSyncInFlightRef.current.add(monthKey);
+        try { await syncExpensesFromIikoOnDashboard(); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(monthKey); }
+      }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
   }, [monthKey]); // eslint-disable-line react-hooks/exhaustive-deps
