@@ -1560,6 +1560,26 @@ function Dashboard({ ctx, setPage }) {
                 </Section>
               )}
 
+              {iikoDayDetails.payoutDetails?.length > 0 && (
+                <Section title="Изъятия наличных из iiko (сырые данные)" count={iikoDayDetails.payoutDetails.length} defaultOpen={true}>
+                  <p className="rp-muted" style={{fontSize:11, marginBottom:8}}>Это прямые данные из iiko, до категоризации ИИ. Если тут есть суммы, а расходы за день выше показывают 0 — значит проблема в категоризации/синхронизации, а не в том, что операций не было.</p>
+                  <div className="rp-table-wrap">
+                    <table className="rp-table">
+                      <thead><tr><th>Комментарий</th><th>Статус</th><th style={{textAlign:'right'}}>Сумма</th></tr></thead>
+                      <tbody>
+                        {iikoDayDetails.payoutDetails.map((r, i) => (
+                          <tr key={i} style={r.excluded ? {opacity:0.5} : {}}>
+                            <td>«{r.comment}»</td>
+                            <td className="rp-muted" style={{fontSize:12}}>{r.excluded ? 'исключено (не расход)' : 'считается расходом'}</td>
+                            <td className="rp-num">{fmtRub(r.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Section>
+              )}
+
               <Section title="Кассовые смены" count={iikoDayDetails.cashShifts?.length ?? 0} defaultOpen={true}>
                 {iikoDayDetails.cashShifts?.length > 0 ? (
                   <div className="rp-list">

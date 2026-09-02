@@ -113,7 +113,7 @@ export default async function handler(req, res) {
   const dateFilter = { filterType: 'DateRange', periodType: 'CUSTOM', from: date, to: date, includeLow: true, includeHigh: true };
 
   let token = null;
-  const result = { date, revenue: null, discount: null, deletions: null, topDishes: null, cashShifts: null, errors: {} };
+  const result = { date, revenue: null, discount: null, deletions: null, topDishes: null, cashShifts: null, payoutDetails: null, errors: {} };
 
   try {
     token = await iikoAuth(serverUrl, login, password);
@@ -305,6 +305,35 @@ export default async function handler(req, res) {
         result.errors.payIncome = `Отчёт по проводкам вернул ошибку (${txResp.status}).`;
       }
     } catch (e) { result.errors.payIncome = e.message; }
+
+    // 5b. Изъятия наличных (PAYOUT) — та же логика, что и внесения выше, но в другую
+    // сторону. Показываем расшифровку по комментарию прямо в приложении, чтобы видеть,
+    // что реально происходило в этот день, без похода к терминалу iiko.
+    try {
+      const poResp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reportType: 'TRANSACTIONS', buildSummary: false,
+          groupByRowFields: ['Comment'], groupByColFields: [],
+          aggregateFields: ['Sum.Incoming'],
+          filters: {
+            'DateTime.Typed': dateFilter,
+            'TransactionType': { filterType: 'IncludeValues', values: ['PAYOUT'] }
+          }
+        })
+      });
+      const poText = await poResp.text();
+      const poJson = JSON.parse(poText);
+      if (poResp.ok) {
+        const isExcludedPo = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк'; };
+        result.payoutDetails = (poJson?.data || [])
+          .map(r => ({ comment: r['Comment'] || '(без комментария)', amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100, excluded: isExcludedPo(r) }))
+          .sort((a, b) => b.amount - a.amount);
+      } else {
+        result.errors.payout = `Отчёт по проводкам (изъятия) вернул ошибку (${poResp.status}).`;
+      }
+    } catch (e) { result.errors.payout = e.message; }
 
     // 6. Явки сотрудников — кто реально приходил/уходил по терминалу (не только
     // кассир, как в кассовых сменах выше). Эти два эндпоинта у iiko всегда отдают
