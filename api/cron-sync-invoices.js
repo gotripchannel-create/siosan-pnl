@@ -257,7 +257,7 @@ async function fetchRevenueByDay(serverUrl, token, from, to) {
     if (txResp.ok) {
       for (const r of (txJson?.data || [])) {
         const comment = String(r['Comment'] || '').trim().toLowerCase();
-        if (comment === 'дб' || comment === 'зп') continue;
+        if (comment === 'дб' || comment === 'зп' || comment === 'бк') continue;
         const date = (r['DateTime.Typed'] || '').slice(0, 10);
         const amt = Number(r['Sum.Incoming']) || 0;
         if (!date || amt <= 0) continue;

@@ -90,7 +90,7 @@ export default async function handler(req, res) {
         comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
-      .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп') // "дб" — не расход, "зп" — уже учтена в ФОТ отдельно
+      .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп' && e.comment !== 'бк') // "дб" — не расход, "зп" — уже учтена в ФОТ отдельно, "бк" — перенос остатка между сменами
       .sort((a, b) => a.date.localeCompare(b.date));
 
     res.status(200).json({ from, to, expenses });

@@ -284,7 +284,7 @@ export default async function handler(req, res) {
       const txJson = JSON.parse(txText);
       if (txResp.ok) {
         const allRows = txJson?.data || [];
-        const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп'; };
+        const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк'; };
         const rows = allRows.filter(r => !isExcluded(r));
         const payIncome = rows.reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
         // Полная разбивка по комментарию (включая уже исключённые) — чтобы можно было

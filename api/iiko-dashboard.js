@@ -293,7 +293,7 @@ export default async function handler(req, res) {
       if (txResp.ok) {
         for (const r of (txJson?.data || [])) {
           const comment = String(r['Comment'] || '').trim().toLowerCase();
-          if (comment === 'дб' || comment === 'зп') continue; // не выручка: начальный остаток кассы / зарплата
+          if (comment === 'дб' || comment === 'зп' || comment === 'бк') continue; // не выручка: начальный остаток кассы / зарплата / перенос остатка между сменами
           const amt = Number(r['Sum.Incoming']) || 0;
           const d = (r['DateTime.Typed'] || '').slice(0, 10);
           cashPayIncome += amt;
