@@ -175,6 +175,22 @@ function dayRevenueTotal(day, channels) {
 // по алиасам для типовых случаев, и по вхождению подстроки как запасной вариант.
 // Обёртка над fetch с жёстким таймаутом — без неё зависший запрос (сбой сети,
 // зависший сервер) мог бы держать индикатор загрузки вечно, ничего не показывая.
+// Выполняет асинхронную работу над списком элементов с ограничением на количество
+// одновременных запросов (чтобы не отправить сотню запросов разом, но и не ждать их
+// строго по одному — так синхронизация за много дней проходит в разы быстрее).
+async function runWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let index = 0;
+  async function next() {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, next));
+  return results;
+}
+
 async function fetchWithTimeout(url, options, timeoutMs = 25000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1004,6 +1020,10 @@ function Dashboard({ ctx, setPage }) {
   const [expSyncError, setExpSyncError] = useState('');
   const [expSyncSummary, setExpSyncSummary] = useState(null);
   const [expandedCheck, setExpandedCheck] = useState(null);
+  const [historySyncOpen, setHistorySyncOpen] = useState(false);
+  const [historySyncFrom, setHistorySyncFrom] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return dateStr(d.getFullYear(), d.getMonth(), 1); });
+  const [historySyncTo, setHistorySyncTo] = useState(() => todayStr());
+  const [historySyncProgress, setHistorySyncProgress] = useState(null);
   const showWidget = (key) => settings.dashboardWidgets?.[key] !== false;
 
   // Автоматическая выручка из iiko — заменяет ручной ввод в «Кассовая смена (день)».
@@ -1163,11 +1183,12 @@ function Dashboard({ ctx, setPage }) {
       // одним текстом и пытались сопоставить ответы обратно по датам, что оказалось
       // ненадёжно (ИИ иногда возвращает дату неточно, записи молча терялись). По
       // одному дню за раз путаницы с датой в принципе быть не может — дата известна
-      // заранее, а не распознаётся из текста.
+      // заранее, а не распознаётся из текста. Обрабатываем до 5 дней ОДНОВРЕМЕННО —
+      // при синхронизации за много месяцев это в разы быстрее, чем строго по одному.
       let addedCount = 0;
       let failedDays = 0;
       const successfulDates = [];
-      for (const [date, items] of byDay.entries()) {
+      await runWithConcurrency([...byDay.entries()], 5, async ([date, items]) => {
         try {
           const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
           const resp = await fetchWithTimeout('/api/parse-report', {
@@ -1180,9 +1201,9 @@ function Dashboard({ ctx, setPage }) {
             })
           }, 25000);
           const data = await resp.json();
-          if (!resp.ok) { failedDays += 1; continue; }
+          if (!resp.ok) { failedDays += 1; return; }
           const report = (data.reports || [])[0];
-          if (!report) { failedDays += 1; continue; }
+          if (!report) { failedDays += 1; return; }
 
           const mk = date.slice(0, 7);
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
@@ -1204,7 +1225,7 @@ function Dashboard({ ctx, setPage }) {
         } catch (e) {
           failedDays += 1;
         }
-      }
+      });
       if (failedDays > 0) {
         setExpSyncError(`Не удалось обработать ${failedDays} из ${byDay.size} дней — попробуйте синхронизировать ещё раз, необработанные дни попытаются снова.`);
       }
@@ -1219,6 +1240,32 @@ function Dashboard({ ctx, setPage }) {
     } finally {
       setExpSyncLoading(false);
     }
+  };
+
+  // Загрузка истории за произвольный период — идём по месяцам внутри диапазона,
+  // для каждого запускаем полную синхронизацию (выручка + расходы). Отдельно от
+  // автоматики выше — та трогает только открытый сейчас месяц, а тут можно явно
+  // указать широкий период (например, полгода) и получить его целиком за один раз.
+  const syncHistoryRange = async () => {
+    const fromParts = historySyncFrom.split('-').map(Number);
+    const toParts = historySyncTo.split('-').map(Number);
+    const months = [];
+    let cy = fromParts[0], cm = fromParts[1] - 1; // 0-indexed
+    const endY = toParts[0], endM = toParts[1] - 1;
+    while (cy < endY || (cy === endY && cm <= endM)) {
+      months.push({ y: cy, m: cm });
+      cm += 1; if (cm > 11) { cm = 0; cy += 1; }
+    }
+    setHistorySyncProgress({ done: 0, total: months.length, currentLabel: '' });
+    for (let i = 0; i < months.length; i++) {
+      const { y, m } = months[i];
+      const mFrom = dateStr(y, m, 1);
+      const mTo = dateStr(y, m, daysInMonth(y, m));
+      setHistorySyncProgress({ done: i, total: months.length, currentLabel: `${MONTHS_RU[m]} ${y}` });
+      try { await syncRevenueFromIiko(mFrom, mTo); } catch (_) {}
+      try { await syncExpensesFromIikoOnDashboard(mFrom, mTo); } catch (_) {}
+    }
+    setHistorySyncProgress({ done: months.length, total: months.length, currentLabel: '' });
   };
 
   // Автозагрузка ВСЕГО месяца при открытии/смене месяца сверху — без кнопки. То же
@@ -1421,6 +1468,7 @@ function Dashboard({ ctx, setPage }) {
               <RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Синхронизирую с iiko…
             </span>
           )}
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setHistorySyncOpen(true)} disabled={revSyncLoading || expSyncLoading}><Calendar size={13}/> Загрузить историю</button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
@@ -1772,6 +1820,34 @@ function Dashboard({ ctx, setPage }) {
       {drill === 'expenses' && (
         <Modal title="Детализация расходов месяца" onClose={() => setDrill(null)} wide>
           <ExpenseBreakdownTable pnl={pnl} />
+        </Modal>
+      )}
+
+      {historySyncOpen && (
+        <Modal title="Загрузить историю за период" onClose={() => { if (!historySyncProgress || historySyncProgress.done === historySyncProgress.total) setHistorySyncOpen(false); }}>
+          <p className="rp-muted" style={{marginBottom:14}}>Пройдёмся по каждому месяцу в диапазоне и подтянем выручку и расходы из iiko. Уже загруженное не задвоится. Может занять несколько минут на полгода — можно закрыть окно, процесс продолжится в фоне.</p>
+          <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:14}}>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(); d.setMonth(d.getMonth()-3); setHistorySyncFrom(dateStr(d.getFullYear(), d.getMonth(), 1)); setHistorySyncTo(todayStr()); }}>Последние 3 месяца</button>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(); d.setMonth(d.getMonth()-6); setHistorySyncFrom(dateStr(d.getFullYear(), d.getMonth(), 1)); setHistorySyncTo(todayStr()); }}>Последние полгода</button>
+            <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => { const d = new Date(); d.setFullYear(d.getFullYear()-1); setHistorySyncFrom(dateStr(d.getFullYear(), d.getMonth(), 1)); setHistorySyncTo(todayStr()); }}>Последний год</button>
+          </div>
+          <div className="rp-form-grid">
+            <Field label="С"><input type="date" value={historySyncFrom} onChange={(e) => setHistorySyncFrom(e.target.value)} /></Field>
+            <Field label="По"><input type="date" value={historySyncTo} onChange={(e) => setHistorySyncTo(e.target.value)} /></Field>
+          </div>
+          {historySyncProgress && (
+            <div className="rp-cash-check" style={{marginTop:14}}>
+              <Info size={13}/> {historySyncProgress.done < historySyncProgress.total
+                ? <>Обрабатываю: <b>{historySyncProgress.currentLabel}</b> ({historySyncProgress.done + 1} из {historySyncProgress.total})</>
+                : <>Готово! Обработано {historySyncProgress.total} {historySyncProgress.total === 1 ? 'месяц' : 'месяцев'}.</>}
+            </div>
+          )}
+          <div className="rp-modal-actions">
+            <button className="rp-btn rp-btn-ghost" onClick={() => setHistorySyncOpen(false)}>{historySyncProgress && historySyncProgress.done < historySyncProgress.total ? 'Скрыть (продолжит в фоне)' : 'Закрыть'}</button>
+            <button className="rp-btn" disabled={!!(historySyncProgress && historySyncProgress.done < historySyncProgress.total)} onClick={syncHistoryRange}>
+              {historySyncProgress && historySyncProgress.done < historySyncProgress.total ? 'Идёт загрузка…' : 'Начать'}
+            </button>
+          </div>
         </Modal>
       )}
 

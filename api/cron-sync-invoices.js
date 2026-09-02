@@ -160,29 +160,38 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
 // путаницы с датой в принципе быть не может — дата известна заранее, передаётся явно
 // как fallbackDate, а не распознаётся моделью из текста.
 // Возвращает Map<дата, report> — только для дней, где категоризация прошла успешно.
+// Обрабатываем до 5 дней ОДНОВРЕМЕННО (не строго по одному) — в разы быстрее при
+// большом накопившемся списке, и помогает уложиться в лимит времени Vercel.
 async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
   const results = new Map();
-  for (const [date, items] of Object.entries(expensesByDay)) {
-    const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
-    try {
-      const resp = await fetch(`https://${host}/api/parse-report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
-        body: JSON.stringify({
-          text: syntheticText,
-          revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
-          expenseCategories: settingsObj.expenseCategories || [], fallbackDate: date,
-          glossary: settingsObj.reportGlossary || ''
-        })
-      });
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      const report = (data.reports || [])[0];
-      if (report) results.set(date, report);
-    } catch (_) {
-      // Пропускаем этот день — попытается снова в следующий запуск cron.
+  const entries = Object.entries(expensesByDay);
+  const CONCURRENCY = 5;
+  let index = 0;
+  async function worker() {
+    while (index < entries.length) {
+      const [date, items] = entries[index++];
+      const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
+      try {
+        const resp = await fetch(`https://${host}/api/parse-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
+          body: JSON.stringify({
+            text: syntheticText,
+            revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
+            expenseCategories: settingsObj.expenseCategories || [], fallbackDate: date,
+            glossary: settingsObj.reportGlossary || ''
+          })
+        });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const report = (data.reports || [])[0];
+        if (report) results.set(date, report);
+      } catch (_) {
+        // Пропускаем этот день — попытается снова в следующий запуск cron.
+      }
     }
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, entries.length) }, worker));
   return results;
 }
 
@@ -426,7 +435,7 @@ export default async function handler(req, res) {
       // первый запуск после починки бага) можно не уложиться в 60 секунд (лимит
       // Vercel Hobby). Берём самые НОВЫЕ дни первыми — они важнее; остальные
       // подхватятся в следующих ежедневных запусках.
-      const MAX_DAYS_PER_RUN = 15;
+      const MAX_DAYS_PER_RUN = 30;
       const allDates = Object.keys(byDayFull).sort().reverse();
       const byDay = {};
       for (const d of allDates.slice(0, MAX_DAYS_PER_RUN)) byDay[d] = byDayFull[d];
