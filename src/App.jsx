@@ -1152,7 +1152,7 @@ function Dashboard({ ctx, setPage }) {
       if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
 
       const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
-      const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
+      const keyOf = (e) => `v3::${e.date}::${e.comment}::${e.amount}`;
       const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
       if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
 
@@ -5322,7 +5322,7 @@ function IncomingReportsPage({ ctx }) {
       if (allExpenses.length === 0) { setExpSyncSummary({ added: 0, total: 0, skipped: 0 }); return; }
 
       const syncedKeys = new Set(settings.iikoExpensesSyncedKeys || []);
-      const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
+      const keyOf = (e) => `v3::${e.date}::${e.comment}::${e.amount}`;
       const newExpenses = allExpenses.filter((e) => !syncedKeys.has(keyOf(e)));
       if (newExpenses.length === 0) { setExpSyncSummary({ added: 0, total: allExpenses.length, skipped: allExpenses.length }); return; }
 
