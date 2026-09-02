@@ -1107,57 +1107,9 @@ function Dashboard({ ctx, setPage }) {
           const existing = getDay(curMonth, dayDate);
           return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, revenue: { ...existing.revenue, ...revenue }, revenueSource: 'iiko' } } } };
         });
-
-        // Расходы (изъятия наличных) за этот же день — тоже сами, без кнопки. Берём
-        // только то, что ещё не обрабатывали раньше (settings.iikoExpensesSyncedKeys —
-        // общий список дедупликации для всех путей синхронизации: cron, Дашборд,
-        // «Входящие отчёты»). Сохраняем диагностику каждого шага в expenseDebug, чтобы
-        // было видно, где именно застревает цепочка, если снова не сработает.
-        try {
-          const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
-          const expResp = await fetchWithTimeout('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: dayDate, to: dayDate }) });
-          const expData = await expResp.json();
-          if (cancelled) return;
-          if (!expResp.ok) { setExpenseDebug({ step: 'iiko-expenses', ok: false, expData, forDate: dayDate }); return; }
-          const dayExpenses = expData.expenses || [];
-          const keyOf = (e) => `v2::${e.date}::${e.comment}::${e.amount}`;
-          const syncedKeysSet = new Set(settings.iikoExpensesSyncedKeys || []);
-          const newExp = dayExpenses.filter((e) => !syncedKeysSet.has(keyOf(e)));
-          if (newExp.length === 0) { setExpenseDebug({ step: 'no-new', dayExpenses, syncedKeysCount: syncedKeysSet.size, forDate: dayDate }); return; }
-          const syntheticText = `Расходы за ${dayDate}:\n` + newExp.map((i) => `${i.comment} ${i.amount}`).join('\n');
-          const catResp = await fetchWithTimeout('/api/parse-report', {
-            method: 'POST', headers: authHeaders,
-            body: JSON.stringify({
-              text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],
-              expenseCategories: settings.expenseCategories || [], fallbackDate: dayDate, glossary: settings.reportGlossary || ''
-            })
-          });
-          const catData = await catResp.json();
-          if (cancelled) return;
-          if (!catResp.ok) { setExpenseDebug({ step: 'parse-report-failed', ok: catResp.ok, catData, syntheticText, forDate: dayDate }); return; }
-          // Не полагаемся на то, что ИИ правильно распознал дату из текста — мы и так
-          // её точно знаем (это dayDate), поэтому берём отчёт независимо от того, что
-          // именно вернулось в поле date, лишь бы reports был непустым.
-          const report = (catData.reports || [])[0];
-          if (!report) { setExpenseDebug({ step: 'empty-reports', catData, syntheticText, forDate: dayDate }); return; }
-          setMonths((prev) => {
-            const curMonth = prev[mk] || emptyMonth(settings, null);
-            const existing = getDay(curMonth, dayDate);
-            const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-            const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-            let courierPatch = {};
-            if (report.courier?.pay) {
-              const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-              const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-              courierPatch = { courier: { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel } };
-            }
-            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [dayDate]: { ...existing, ...courierPatch, kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen], otherExpenses: [...(existing.otherExpenses || []), ...newOther] } } } };
-          });
-          setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...newExp.map(keyOf)] }));
-          setExpenseDebug({ step: 'success', report, newExpCount: newExp.length, forDate: dayDate });
-        } catch (err) {
-          if (!cancelled) setExpenseDebug({ step: 'exception', message: err?.message, forDate: dayDate });
-        }
+        // Расходы для этого дня синхронизируются отдельным месячным механизмом (см.
+        // useEffect по monthKey ниже) — специально убрано отсюда, раньше оба механизма
+        // запускались одновременно при заходе на дашборд и задваивали расходы гонкой.
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
       } finally {
@@ -1256,6 +1208,44 @@ function Dashboard({ ctx, setPage }) {
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
   }, [monthKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая очистка задвоенных расходов — баг гонки (день и месяц синхронизировались
+  // одновременно и оба добавляли одни и те же расходы, иногда с чуть другим названием
+  // категории от ИИ) уже исправлен выше, но уже накопленные дубли сами не исчезнут.
+  // Убираем повторы по сумме внутри одного дня — раз этот баг мог задвоить запись
+  // максимум один раз, снятие по точному совпадению суммы безопасно.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const dedupeBucket = (arr) => {
+            if (!arr || arr.length === 0) return { list: arr, changed: false };
+            const seenAmounts = new Set();
+            const kept = [];
+            let bucketChanged = false;
+            for (const item of arr) {
+              if (item.source === 'iiko') {
+                if (seenAmounts.has(item.amount)) { bucketChanged = true; continue; }
+                seenAmounts.add(item.amount);
+              }
+              kept.push(item);
+            }
+            return { list: bucketChanged ? kept : arr, changed: bucketChanged };
+          };
+          const k = dedupeBucket(day.kitchenExpenses);
+          const o = dedupeBucket(day.otherExpenses);
+          if (k.changed || o.changed) { monthChanged = true; changedAny = true; days[ds] = { ...day, kitchenExpenses: k.list, otherExpenses: o.list }; }
+          else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
