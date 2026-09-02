@@ -4886,6 +4886,27 @@ function IikoDashboardPage({ ctx }) {
                     </div>
                   )}
 
+                  {dayReport.revenue?.payIncomeDetails?.length > 0 && (
+                    <div>
+                      <div className="rp-muted" style={{fontSize:11, fontWeight:700, marginBottom:6, textTransform:'uppercase'}}>Расшифровка внесений по комментарию</div>
+                      <div className="rp-table-wrap">
+                        <table className="rp-table">
+                          <thead><tr><th>Комментарий</th><th>Статус</th><th style={{textAlign:'right'}}>Сумма</th></tr></thead>
+                          <tbody>
+                            {dayReport.revenue.payIncomeDetails.map((r, i) => (
+                              <tr key={i} style={r.excluded ? {opacity:0.5} : {}}>
+                                <td>«{r.comment}»</td>
+                                <td className="rp-muted" style={{fontSize:12}}>{r.excluded ? 'исключено (не выручка)' : 'считается выручкой'}</td>
+                                <td className="rp-num">{fmtRub(r.amount)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="rp-muted" style={{fontSize:11, marginTop:6}}>Если тут есть строка с большой суммой и подозрительным (не «заказ») комментарием — это, скорее всего, перенос остатка кассы между сменами, а не реальная выручка. Пришлите точный текст комментария — добавим его в исключения.</p>
+                    </div>
+                  )}
+
                   {dayReport.secondBranch && (
                     <div className="rp-cash-check">
                       <Info size={13}/> Из выручки уже исключена сумма второго филиала: <b>{fmtRub(dayReport.secondBranch.total)}</b> ({dayReport.secondBranch.count} чек.), пробитая через «Блюдо от Шефа» (от 5000 ₽ — меньшие суммы под этим названием считаются обычным заказом первого заведения).

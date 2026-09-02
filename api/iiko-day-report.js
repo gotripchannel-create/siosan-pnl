@@ -283,9 +283,16 @@ export default async function handler(req, res) {
       const txText = await txResp.text();
       const txJson = JSON.parse(txText);
       if (txResp.ok) {
-        const payIncome = (txJson?.data || [])
-          .filter(r => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c !== 'дб' && c !== 'зп'; })
-          .reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
+        const allRows = txJson?.data || [];
+        const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп'; };
+        const rows = allRows.filter(r => !isExcluded(r));
+        const payIncome = rows.reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
+        // Полная разбивка по комментарию (включая уже исключённые) — чтобы можно было
+        // увидеть в самом приложении, из чего именно складывается сумма, не идя к
+        // терминалу за этим.
+        result.revenue.payIncomeDetails = allRows
+          .map(r => ({ comment: r['Comment'] || '(без комментария)', amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100, excluded: isExcluded(r) }))
+          .sort((a, b) => b.amount - a.amount);
         if (payIncome > 0 && result.revenue) {
           result.revenue.payIncomeAdded = Math.round(payIncome * 100) / 100;
           result.revenue.total = Math.round((result.revenue.total + payIncome) * 100) / 100;
