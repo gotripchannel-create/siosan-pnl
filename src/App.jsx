@@ -1613,21 +1613,27 @@ function Dashboard({ ctx, setPage }) {
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
-              {iikoDayDetails.attendance?.length > 0 && (
-                <Section title="Кто был на смене" count={new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean)).size} defaultOpen={true}>
-                  <div className="rp-list">
-                    {iikoDayDetails.attendance.filter((a) => a.name).map((a, i) => {
-                      const isSharedLogin = a.name.includes('/');
-                      return (
-                        <div key={i} className="rp-list-row">
-                          <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{a.name}</span>
-                          <span className="rp-muted" style={{fontSize:12}}>{a.from}–{a.to}{isSharedLogin && ' · общий кассовый логин, в смену не проставляется'}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Section>
-              )}
+              {iikoDayDetails.attendance?.length > 0 && (() => {
+                const realNames = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))];
+                return realNames.length > 0 && (
+                  <Section title="Кто был на смене" count={realNames.length} defaultOpen={true}>
+                    <div className="rp-list">
+                      {realNames.map((name, i) => {
+                        const emp = matchIikoCashierToEmployee(name, employees);
+                        const rateLabel = emp
+                          ? (emp.payType === 'shift' ? `${fmtRub(emp.rate)}/смена` : emp.payType === 'hour' ? `${fmtRub(emp.rate)}/час` : `${fmtRub(emp.rate)} оклад`)
+                          : 'сотрудник не найден в базе';
+                        return (
+                          <div key={i} className="rp-list-row">
+                            <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{name}</span>
+                            <span className="rp-muted" style={{fontSize:12}}>{rateLabel}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Section>
+                );
+              })()}
 
               {iikoDayDetails.payoutDetails?.length > 0 && (
                 <Section title="Изъятия наличных из iiko (сырые данные)" count={iikoDayDetails.payoutDetails.length} defaultOpen={true}>

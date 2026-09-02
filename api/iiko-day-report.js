@@ -284,7 +284,7 @@ export default async function handler(req, res) {
       const txJson = JSON.parse(txText);
       if (txResp.ok) {
         const allRows = txJson?.data || [];
-        const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк' || c.startsWith('закрытие кассовой смены'); };
+        const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк' || c === 'ошибка' || c.startsWith('закрытие кассовой смены'); };
         const rows = allRows.filter(r => !isExcluded(r));
         const payIncome = rows.reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
         // Полная разбивка по комментарию (включая уже исключённые) — чтобы можно было
@@ -326,7 +326,7 @@ export default async function handler(req, res) {
       const poText = await poResp.text();
       const poJson = JSON.parse(poText);
       if (poResp.ok) {
-        const isExcludedPo = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк' || c.startsWith('закрытие кассовой смены'); };
+        const isExcludedPo = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || c === 'зп' || c === 'бк' || c === 'ошибка' || c.startsWith('закрытие кассовой смены'); };
         result.payoutDetails = (poJson?.data || [])
           .map(r => ({ comment: r['Comment'] || '(без комментария)', amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100, excluded: isExcludedPo(r) }))
           .sort((a, b) => b.amount - a.amount);
