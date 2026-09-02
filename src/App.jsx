@@ -1099,7 +1099,12 @@ function Dashboard({ ctx, setPage }) {
         // Сопоставляем по имени с сотрудником и автоматически проставляем ему смену
         // (те же данные, что использует расчёт зарплаты). Не трогаем дни, где смена
         // уже стоит вручную — только дозаполняем пустое.
-        const attendanceNames = [...new Set((data.attendance || []).map((a) => a.name).filter(Boolean))];
+        // ВАЖНО: имена вида «Артем/Вика» (со слэшем) — это общий кассовый логин на
+        // терминале (кассовая смена), а не конкретный человек. Такие имена НЕ
+        // используем для автопростановки смены — непонятно, кто из двух реально
+        // работал, а угадывать не хотим. В списке «Кто был на смене» они всё равно
+        // видны (это просто вывод сырых данных, не влияет на зарплату).
+        const attendanceNames = [...new Set((data.attendance || []).map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))];
         if (attendanceNames.length > 0 && employees?.length > 0) {
           const matchedEmployees = attendanceNames.map((n) => matchIikoCashierToEmployee(n, employees)).filter(Boolean);
           if (matchedEmployees.length > 0) {
@@ -1574,7 +1579,9 @@ function Dashboard({ ctx, setPage }) {
                   </PieChart>
                 </ResponsiveContainer>
               )}
-              <p className="rp-muted" style={{fontSize:11, marginTop:8}}>ФОТ и постоянные расходы считаются за месяц целиком и здесь не разбиваются по дням.</p>
+              <div className="rp-cash-check" style={{marginTop:8, cursor:'pointer'}} onClick={() => setPage('payroll')}>
+                <Info size={13}/> Потрачено на сотрудников за {MONTHS_RU[monthIdx].toLowerCase()} (весь ФОТ месяца, не разбивается по дням): <b>{fmtRub(pnl.payroll.totalFot)}</b> — нажмите, чтобы открыть «Зарплата»
+              </div>
 
               {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayCourierPay > 0 || dayCourierFuel > 0 || dayPromo > 0) && (
                 <div style={{marginTop:14}}>
@@ -1609,12 +1616,15 @@ function Dashboard({ ctx, setPage }) {
               {iikoDayDetails.attendance?.length > 0 && (
                 <Section title="Кто был на смене" count={new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean)).size} defaultOpen={true}>
                   <div className="rp-list">
-                    {iikoDayDetails.attendance.filter((a) => a.name).map((a, i) => (
-                      <div key={i} className="rp-list-row">
-                        <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{a.name}</span>
-                        <span className="rp-muted" style={{fontSize:12}}>{a.from}–{a.to}</span>
-                      </div>
-                    ))}
+                    {iikoDayDetails.attendance.filter((a) => a.name).map((a, i) => {
+                      const isSharedLogin = a.name.includes('/');
+                      return (
+                        <div key={i} className="rp-list-row">
+                          <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{a.name}</span>
+                          <span className="rp-muted" style={{fontSize:12}}>{a.from}–{a.to}{isSharedLogin && ' · общий кассовый логин, в смену не проставляется'}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </Section>
               )}
