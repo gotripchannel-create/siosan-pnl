@@ -184,18 +184,27 @@ function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
-function mergeExpensesIntoData(data, reports) {
+function mergeExpensesIntoData(data, reports, knownDates) {
   data.months = data.months || {};
   data.settings = data.settings || {};
   const fixedRate = data.settings.courierFixedRate || 2500;
+  const sortedKnownDates = [...knownDates].sort();
+  const knownDatesSet = new Set(sortedKnownDates);
   let added = 0;
-  for (const report of reports) {
-    if (!report.date) continue;
-    const mk = report.date.slice(0, 7);
+  const matchedDatesUsed = [];
+  reports.forEach((report, i) => {
+    // Не полагаемся слепо на report.date от ИИ — сверяем со списком дат, которые мы
+    // сами отправили на категоризацию. Если не совпало, но количество отчётов равно
+    // количеству известных дат — сопоставляем по порядку (тот же порядок, что в тексте).
+    let matchedDate = knownDatesSet.has(report.date) ? report.date : null;
+    if (!matchedDate && reports.length === sortedKnownDates.length) matchedDate = sortedKnownDates[i];
+    if (!matchedDate) return;
+    matchedDatesUsed.push(matchedDate);
+    const mk = matchedDate.slice(0, 7);
     if (!data.months[mk]) data.months[mk] = {};
     const month = data.months[mk];
     month.days = month.days || {};
-    const existing = month.days[report.date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
+    const existing = month.days[matchedDate] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
     const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     let courierUpdate = existing.courier;
@@ -204,15 +213,15 @@ function mergeExpensesIntoData(data, reports) {
       const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
       courierUpdate = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
     }
-    month.days[report.date] = {
+    month.days[matchedDate] = {
       ...existing,
       courier: courierUpdate,
       kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
       otherExpenses: [...(existing.otherExpenses || []), ...newOther]
     };
     added += newKitchen.length + newOther.length;
-  }
-  return { data, added };
+  });
+  return { data, added, matchedDatesUsed };
 }
 
 async function fetchRevenueByDay(serverUrl, token, from, to) {
@@ -411,14 +420,13 @@ export default async function handler(req, res) {
       for (const e of newExpenses) { (byDay[e.date] ||= []).push(e); }
       const host = req.headers.host;
       const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || []);
-      const merged2 = mergeExpensesIntoData(withRevenue, reports);
+      const merged2 = mergeExpensesIntoData(withRevenue, reports, Object.keys(byDay));
       merged = merged2.data;
       expensesAdded = merged2.added;
-      // Помечаем обработанными ТОЛЬКО те даты, для которых реально пришёл отчёт от
-      // категоризации — если Claude не смог обработать какую-то дату (пустой ответ,
-      // сбой сети и т.п.), она НЕ помечается и будет предпринята попытка заново в
-      // следующий раз, а не потеряется молча навсегда.
-      const processedDates = new Set(reports.map((r) => r.date).filter(Boolean));
+      // Помечаем обработанными ТОЛЬКО те даты, что реально были применены (через
+      // matchedDatesUsed — учитывает и случаи, когда ИИ вернул дату не в точности,
+      // как мы её отправляли, но мы всё равно смогли надёжно её сопоставить).
+      const processedDates = new Set(merged2.matchedDatesUsed);
       const actuallyProcessedKeys = newExpenses.filter((e) => processedDates.has(e.date)).map(keyOf);
       merged.settings.iikoExpensesSyncedKeys = [...syncedKeys, ...actuallyProcessedKeys];
     }

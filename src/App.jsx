@@ -1175,14 +1175,27 @@ function Dashboard({ ctx, setPage }) {
       if (!resp.ok) { setExpSyncError(data?.error || 'Не удалось категоризировать расходы.'); return; }
 
       const reports = data.reports || [];
+      const knownDates = [...byDay.keys()].sort();
+      // Не полагаемся слепо на то, что ИИ правильно распознал дату внутри многодневного
+      // текста — мы и так точно знаем список дат (это ключи byDay). Если report.date
+      // совпадает с одной из известных дат — используем её. Если нет (или пусто), но
+      // количество отчётов совпадает с количеством известных дат — сопоставляем по
+      // порядку (отчёты идут в том же порядке, что и блоки в тексте). Только если
+      // ничего не подошло — пропускаем, а не молча теряем данные.
+      const knownDatesSet = new Set(knownDates);
       let addedCount = 0;
+      const unmatchedReports = [];
+      const matchedDatesUsed = [];
       setMonths((prev) => {
         const next = { ...prev };
-        for (const report of reports) {
-          if (!report.date) continue;
-          const mk = report.date.slice(0, 7);
+        reports.forEach((report, i) => {
+          let matchedDate = knownDatesSet.has(report.date) ? report.date : null;
+          if (!matchedDate && reports.length === knownDates.length) matchedDate = knownDates[i];
+          if (!matchedDate) { unmatchedReports.push(report); return; }
+          matchedDatesUsed.push(matchedDate);
+          const mk = matchedDate.slice(0, 7);
           const curMonth = next[mk] || emptyMonth(settings, null);
-          const day = { ...getDay(curMonth, report.date) };
+          const day = { ...getDay(curMonth, matchedDate) };
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
@@ -1193,13 +1206,16 @@ function Dashboard({ ctx, setPage }) {
             day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
           }
           addedCount += newKitchen.length + newOther.length;
-          next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
-        }
+          next[mk] = { ...curMonth, days: { ...curMonth.days, [matchedDate]: day } };
+        });
         return next;
       });
+      if (unmatchedReports.length > 0) {
+        setExpSyncError(`Внимание: ${unmatchedReports.length} отчёт(а) от ИИ не удалось сопоставить ни с одной известной датой — пропущены, чтобы не записать не в тот день.`);
+      }
 
-      const processedDates = new Set(reports.map((r) => r.date).filter(Boolean));
-      const actuallyProcessedKeys = newExpenses.filter((e) => processedDates.has(e.date)).map(keyOf);
+      const matchedDatesSet = new Set(matchedDatesUsed);
+      const actuallyProcessedKeys = newExpenses.filter((e) => matchedDatesSet.has(e.date)).map(keyOf);
       setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...actuallyProcessedKeys] }));
       logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
       setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });
