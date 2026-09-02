@@ -1158,64 +1158,59 @@ function Dashboard({ ctx, setPage }) {
 
       const byDay = new Map();
       for (const e of newExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
-      const syntheticText = [...byDay.entries()]
-        .map(([date, items]) => `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n'))
-        .join('\n\n');
 
-      const resp = await fetch('/api/parse-report', {
-        method: 'POST', headers: authHeaders,
-        body: JSON.stringify({
-          text: syntheticText,
-          revenueChannels: settings.revenueChannels || [], employees: employees || [],
-          expenseCategories: settings.expenseCategories || [], fallbackDate: to,
-          glossary: settings.reportGlossary || ''
-        })
-      });
-      const data = await resp.json();
-      if (!resp.ok) { setExpSyncError(data?.error || 'Не удалось категоризировать расходы.'); return; }
-
-      const reports = data.reports || [];
-      const knownDates = [...byDay.keys()].sort();
-      // Не полагаемся слепо на то, что ИИ правильно распознал дату внутри многодневного
-      // текста — мы и так точно знаем список дат (это ключи byDay). Если report.date
-      // совпадает с одной из известных дат — используем её. Если нет (или пусто), но
-      // количество отчётов совпадает с количеством известных дат — сопоставляем по
-      // порядку (отчёты идут в том же порядке, что и блоки в тексте). Только если
-      // ничего не подошло — пропускаем, а не молча теряем данные.
-      const knownDatesSet = new Set(knownDates);
+      // Один запрос к ИИ на КАЖДЫЙ день отдельно — раньше отправляли все дни разом
+      // одним текстом и пытались сопоставить ответы обратно по датам, что оказалось
+      // ненадёжно (ИИ иногда возвращает дату неточно, записи молча терялись). По
+      // одному дню за раз путаницы с датой в принципе быть не может — дата известна
+      // заранее, а не распознаётся из текста.
       let addedCount = 0;
-      const unmatchedReports = [];
-      const matchedDatesUsed = [];
-      setMonths((prev) => {
-        const next = { ...prev };
-        reports.forEach((report, i) => {
-          let matchedDate = knownDatesSet.has(report.date) ? report.date : null;
-          if (!matchedDate && reports.length === knownDates.length) matchedDate = knownDates[i];
-          if (!matchedDate) { unmatchedReports.push(report); return; }
-          matchedDatesUsed.push(matchedDate);
-          const mk = matchedDate.slice(0, 7);
-          const curMonth = next[mk] || emptyMonth(settings, null);
-          const day = { ...getDay(curMonth, matchedDate) };
+      let failedDays = 0;
+      const successfulDates = [];
+      for (const [date, items] of byDay.entries()) {
+        try {
+          const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
+          const resp = await fetchWithTimeout('/api/parse-report', {
+            method: 'POST', headers: authHeaders,
+            body: JSON.stringify({
+              text: syntheticText,
+              revenueChannels: settings.revenueChannels || [], employees: employees || [],
+              expenseCategories: settings.expenseCategories || [], fallbackDate: date,
+              glossary: settings.reportGlossary || ''
+            })
+          }, 25000);
+          const data = await resp.json();
+          if (!resp.ok) { failedDays += 1; continue; }
+          const report = (data.reports || [])[0];
+          if (!report) { failedDays += 1; continue; }
+
+          const mk = date.slice(0, 7);
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
-          if (report.courier?.pay) {
-            const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-            const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-            day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
-          }
+          setMonths((prev) => {
+            const curMonth = prev[mk] || emptyMonth(settings, null);
+            const day = { ...getDay(curMonth, date) };
+            day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
+            day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+            if (report.courier?.pay) {
+              const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
+              const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
+              day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+            }
+            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [date]: day } } };
+          });
           addedCount += newKitchen.length + newOther.length;
-          next[mk] = { ...curMonth, days: { ...curMonth.days, [matchedDate]: day } };
-        });
-        return next;
-      });
-      if (unmatchedReports.length > 0) {
-        setExpSyncError(`Внимание: ${unmatchedReports.length} отчёт(а) от ИИ не удалось сопоставить ни с одной известной датой — пропущены, чтобы не записать не в тот день.`);
+          successfulDates.push(date);
+        } catch (e) {
+          failedDays += 1;
+        }
+      }
+      if (failedDays > 0) {
+        setExpSyncError(`Не удалось обработать ${failedDays} из ${byDay.size} дней — попробуйте синхронизировать ещё раз, необработанные дни попытаются снова.`);
       }
 
-      const matchedDatesSet = new Set(matchedDatesUsed);
-      const actuallyProcessedKeys = newExpenses.filter((e) => matchedDatesSet.has(e.date)).map(keyOf);
+      const successfulDatesSet = new Set(successfulDates);
+      const actuallyProcessedKeys = newExpenses.filter((e) => successfulDatesSet.has(e.date)).map(keyOf);
       setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...actuallyProcessedKeys] }));
       logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
       setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });

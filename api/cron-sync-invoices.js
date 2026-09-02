@@ -154,26 +154,36 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
 // была одна на всё приложение (и для ручной вставки из ВК, и для авторасходов из
 // iiko). Аутентифицируемся как "внутренний" вызов через уже настроенный CRON_SECRET
 // (см. изменение авторизации в api/parse-report.js).
+// Один запрос к ИИ на КАЖДЫЙ день отдельно — раньше отправляли все дни разом одним
+// текстом и пытались сопоставить ответы обратно по датам, что оказалось ненадёжно
+// (ИИ иногда возвращает дату неточно, записи молча терялись). По одному дню за раз
+// путаницы с датой в принципе быть не может — дата известна заранее, передаётся явно
+// как fallbackDate, а не распознаётся моделью из текста.
+// Возвращает Map<дата, report> — только для дней, где категоризация прошла успешно.
 async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
-  const syntheticText = Object.entries(expensesByDay)
-    .map(([date, items]) => `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n'))
-    .join('\n\n');
-  if (!syntheticText.trim()) return [];
-
-  const to = Object.keys(expensesByDay).sort().slice(-1)[0] || moscowToday();
-  const resp = await fetch(`https://${host}/api/parse-report`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
-    body: JSON.stringify({
-      text: syntheticText,
-      revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
-      expenseCategories: settingsObj.expenseCategories || [], fallbackDate: to,
-      glossary: settingsObj.reportGlossary || ''
-    })
-  });
-  if (!resp.ok) return [];
-  const data = await resp.json();
-  return data.reports || [];
+  const results = new Map();
+  for (const [date, items] of Object.entries(expensesByDay)) {
+    const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
+    try {
+      const resp = await fetch(`https://${host}/api/parse-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.CRON_SECRET || '' },
+        body: JSON.stringify({
+          text: syntheticText,
+          revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
+          expenseCategories: settingsObj.expenseCategories || [], fallbackDate: date,
+          glossary: settingsObj.reportGlossary || ''
+        })
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const report = (data.reports || [])[0];
+      if (report) results.set(date, report);
+    } catch (_) {
+      // Пропускаем этот день — попытается снова в следующий запуск cron.
+    }
+  }
+  return results;
 }
 
 // Разбивает одну выплату курьеру («ЗП КУРЬЕР 3500») на фиксированную ставку и бензин
@@ -184,27 +194,19 @@ function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
-function mergeExpensesIntoData(data, reports, knownDates) {
+function mergeExpensesIntoData(data, reportsByDate) {
   data.months = data.months || {};
   data.settings = data.settings || {};
   const fixedRate = data.settings.courierFixedRate || 2500;
-  const sortedKnownDates = [...knownDates].sort();
-  const knownDatesSet = new Set(sortedKnownDates);
   let added = 0;
   const matchedDatesUsed = [];
-  reports.forEach((report, i) => {
-    // Не полагаемся слепо на report.date от ИИ — сверяем со списком дат, которые мы
-    // сами отправили на категоризацию. Если не совпало, но количество отчётов равно
-    // количеству известных дат — сопоставляем по порядку (тот же порядок, что в тексте).
-    let matchedDate = knownDatesSet.has(report.date) ? report.date : null;
-    if (!matchedDate && reports.length === sortedKnownDates.length) matchedDate = sortedKnownDates[i];
-    if (!matchedDate) return;
-    matchedDatesUsed.push(matchedDate);
-    const mk = matchedDate.slice(0, 7);
+  for (const [date, report] of reportsByDate.entries()) {
+    matchedDatesUsed.push(date);
+    const mk = date.slice(0, 7);
     if (!data.months[mk]) data.months[mk] = {};
     const month = data.months[mk];
     month.days = month.days || {};
-    const existing = month.days[matchedDate] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
+    const existing = month.days[date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
     const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     let courierUpdate = existing.courier;
@@ -213,14 +215,14 @@ function mergeExpensesIntoData(data, reports, knownDates) {
       const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
       courierUpdate = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
     }
-    month.days[matchedDate] = {
+    month.days[date] = {
       ...existing,
       courier: courierUpdate,
       kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
       otherExpenses: [...(existing.otherExpenses || []), ...newOther]
     };
     added += newKitchen.length + newOther.length;
-  });
+  }
   return { data, added, matchedDatesUsed };
 }
 
@@ -416,11 +418,21 @@ export default async function handler(req, res) {
     let expensesAdded = 0;
     let merged = withRevenue;
     if (newExpenses.length > 0) {
+      const byDayFull = {};
+      for (const e of newExpenses) { (byDayFull[e.date] ||= []).push(e); }
+      // Ограничиваем количество дней за один запуск — теперь на каждый день уходит
+      // отдельный запрос к ИИ, и при большом накопившемся списке (например, самый
+      // первый запуск после починки бага) можно не уложиться в 60 секунд (лимит
+      // Vercel Hobby). Берём самые НОВЫЕ дни первыми — они важнее; остальные
+      // подхватятся в следующих ежедневных запусках.
+      const MAX_DAYS_PER_RUN = 15;
+      const allDates = Object.keys(byDayFull).sort().reverse();
       const byDay = {};
-      for (const e of newExpenses) { (byDay[e.date] ||= []).push(e); }
+      for (const d of allDates.slice(0, MAX_DAYS_PER_RUN)) byDay[d] = byDayFull[d];
+
       const host = req.headers.host;
       const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || []);
-      const merged2 = mergeExpensesIntoData(withRevenue, reports, Object.keys(byDay));
+      const merged2 = mergeExpensesIntoData(withRevenue, reports);
       merged = merged2.data;
       expensesAdded = merged2.added;
       // Помечаем обработанными ТОЛЬКО те даты, что реально были применены (через
