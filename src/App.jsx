@@ -1008,6 +1008,14 @@ function Dashboard({ ctx, setPage }) {
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
   const expenseSyncInFlightRef = useRef(new Set());
   const [iikoDayDetails, setIikoDayDetails] = useState(null);
+  // Клиентский кэш уже загруженных дней в рамках текущей сессии — раньше повторный
+  // клик на день, который только что смотрели, снова шёл в сеть и ждал ответ от
+  // сервера iiko (самая долгая часть — 10-20+ секунд на медленном локальном сервере).
+  // Прошлые дни задним числом не меняются, поэтому их можно смело отдавать из кэша
+  // мгновенно. Сегодняшний день кэшируем тоже, но с коротким TTL — он "живой" и
+  // за день данные меняются, но серия быстрых кликов туда-сюда не должна каждый
+  // раз бить по серверу заново.
+  const dayDetailsCacheRef = useRef(new Map());
   const [expenseDebug, setExpenseDebug] = useState(null);
   const [expSyncLoading, setExpSyncLoading] = useState(false);
   const [expSyncError, setExpSyncError] = useState('');
@@ -1073,9 +1081,20 @@ function Dashboard({ ctx, setPage }) {
   useEffect(() => {
     if (viewMode !== 'day' || !dayDate) return;
     let cancelled = false;
+    setExpenseDebug(null);
+
+    const TODAY_CACHE_TTL_MS = 60 * 1000; // сегодняшний день — короткий TTL, он ещё меняется
+    const cached = dayDetailsCacheRef.current.get(dayDate);
+    const isToday = dayDate === todayStr();
+    if (cached && (!isToday || Date.now() - cached.fetchedAt < TODAY_CACHE_TTL_MS)) {
+      // Уже грузили этот день в этой сессии — отдаём мгновенно, без похода в сеть.
+      setIikoDayDetails(cached.data);
+      setDayLiveSyncLoading(false);
+      return () => { cancelled = true; };
+    }
+
     setDayLiveSyncLoading(true);
     setIikoDayDetails(null);
-    setExpenseDebug(null);
     const t = setTimeout(async () => {
       try {
         const resp = await fetchWithTimeout('/api/iiko-day-report', {
@@ -1085,6 +1104,7 @@ function Dashboard({ ctx, setPage }) {
         });
         const data = await resp.json();
         if (!resp.ok || cancelled) return;
+        dayDetailsCacheRef.current.set(dayDate, { data, fetchedAt: Date.now() });
         setIikoDayDetails(data);
 
         // Кто работал в этот день — теперь по НАСТОЯЩИМ явкам (кто реально

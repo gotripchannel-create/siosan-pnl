@@ -25,6 +25,24 @@ async function iikoAuth(serverUrl, login, password) {
   return text.trim();
 }
 
+// Токен авторизации переиспользуется между вызовами этой функции, пока Vercel держит
+// её "тёплой" (обычно несколько минут между запросами). Раньше на каждую смену даты
+// шла ПОЛНАЯ повторная авторизация на сервере iiko — это самая медленная часть запроса
+// (отдельный сетевой round-trip до локального сервера ресторана). TTL держим короче
+// реального времени жизни сессии iiko (обычно ~15+ минут простоя), чтобы не ловить
+// протухший токен.
+let cachedAuth = { token: null, serverUrl: null, expiresAt: 0 };
+const AUTH_TTL_MS = 8 * 60 * 1000;
+
+async function getIikoToken(serverUrl, login, password, forceFresh = false) {
+  if (!forceFresh && cachedAuth.token && cachedAuth.serverUrl === serverUrl && Date.now() < cachedAuth.expiresAt) {
+    return cachedAuth.token;
+  }
+  const token = await iikoAuth(serverUrl, login, password);
+  cachedAuth = { token, serverUrl, expiresAt: Date.now() + AUTH_TTL_MS };
+  return token;
+}
+
 async function iikoLogout(serverUrl, token) {
   try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
 }
@@ -116,33 +134,50 @@ export default async function handler(req, res) {
   const result = { date, revenue: null, discount: null, deletions: null, topDishes: null, cashShifts: null, payoutDetails: null, errors: {} };
 
   try {
-    token = await iikoAuth(serverUrl, login, password);
+    token = await getIikoToken(serverUrl, login, password);
 
     // 1. Выручка по способам оплаты (+ сумма до скидки, для расчёта скидки).
-    // Выполняется первой и отдельно (await), потому что блоки "2b" и "5" ниже
-    // дописывают в result.revenue поправки (второй филиал, внесения по заказу) —
-    // им нужен уже готовый result.revenue.byPayType/total.
-    try {
-      const rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt']);
-      const byPayType = {};
-      let total = 0, totalBeforeDiscount = 0;
-      for (const r of rows) {
-        const pt = r['PayTypes'] || 'Не указано';
-        const amt = Number(r['DishDiscountSumInt']) || 0;
-        if (/без оплаты/i.test(pt)) continue;
-        byPayType[pt] = (byPayType[pt] || 0) + amt;
-        total += amt;
-        totalBeforeDiscount += Number(r['DishSumInt']) || amt;
-      }
-      result.revenue = { byPayType, total: Math.round(total * 100) / 100 };
-      result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
-    } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
+    // Раньше это выполнялось первым и блокировало старт всех остальных запросов —
+    // хотя большинство из них (топ блюд, чеки, удаления, кассовые смены, явки,
+    // изъятия) вообще не зависят от результата выручки. Теперь запускаем эту секцию
+    // как отдельную промису и стартуем её ОДНОВРЕМЕННО с независимыми запросами ниже;
+    // ждём её завершения отдельно только перед блоками "2b" и "5" (см. ниже), которым
+    // действительно нужен уже готовый result.revenue.
+    const fetchRevenue = async () => {
+      try {
+        let rows;
+        try {
+          rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt']);
+        } catch (e) {
+          if (e.status === 401 || /авториз/i.test(e.message || '')) {
+            token = await getIikoToken(serverUrl, login, password, true);
+            rows = await queryDay(serverUrl, token, date, ['PayTypes'], ['DishDiscountSumInt', 'DishSumInt']);
+          } else {
+            throw e;
+          }
+        }
+        const byPayType = {};
+        let total = 0, totalBeforeDiscount = 0;
+        for (const r of rows) {
+          const pt = r['PayTypes'] || 'Не указано';
+          const amt = Number(r['DishDiscountSumInt']) || 0;
+          if (/без оплаты/i.test(pt)) continue;
+          byPayType[pt] = (byPayType[pt] || 0) + amt;
+          total += amt;
+          totalBeforeDiscount += Number(r['DishSumInt']) || amt;
+        }
+        result.revenue = { byPayType, total: Math.round(total * 100) / 100 };
+        result.discount = { total: Math.round(Math.max(0, totalBeforeDiscount - total) * 100) / 100 };
+      } catch (e) { result.errors.revenue = e.message; if (e.raw) result.errors.revenueRaw = e.raw; }
+    };
+    const revenuePromise = fetchRevenue();
 
-    // Дальше — все запросы, которые не зависят друг от друга (кроме уточнений
-    // result.revenue из "2b" и "5", которые лишь дописывают уже готовый объект,
-    // а не блокируют друг друга) — отправляем ОДНОВРЕМЕННО вместо последовательного
-    // await по одному. Раньше 7 запросов подряд означали 7x время ожидания одного
-    // самого медленного запроса iiko; теперь — время одного, самого медленного.
+    // Дальше — все запросы, которые не зависят друг от друга и не зависят от выручки
+    // (кроме уточнений result.revenue из "2b" и "5", которые лишь дописывают уже
+    // готовый объект — они запускаются ПОСЛЕ revenuePromise, см. ниже) — отправляем
+    // ОДНОВРЕМЕННО вместо последовательного await по одному. Раньше 7+ запросов подряд
+    // означали 7x+ время ожидания одного самого медленного запроса iiko; теперь —
+    // время одного, самого медленного.
 
     // 2. Топ проданных блюд — "Блюдо от Шефа" сюда никогда не попадает, это не блюдо,
     // а способ пробить нестандартную сумму (либо разовый заказ первого заведения,
@@ -406,25 +441,32 @@ export default async function handler(req, res) {
       }
     };
 
-    // Запускаем все независимые запросы одновременно и ждём завершения самого
-    // медленного (а не суммы всех, как было раньше). allSettled — чтобы падение
-    // одного запроса не отменяло остальные (каждый блок и так ловит свои ошибки
-    // внутри и пишет их в result.errors, но allSettled — дополнительная страховка).
-    await Promise.allSettled([
+    // Независимые от выручки запросы стартуют сразу, ещё до того как revenuePromise
+    // (запущенная выше) завершится — они её результат не используют. fetchSecondBranch
+    // и fetchPayIncome дописывают поправки в уже готовый result.revenue, поэтому их
+    // запускаем отдельно, ПОСЛЕ revenuePromise — но остальные при этом не ждут.
+    const independentPromise = Promise.allSettled([
       fetchTopDishes(),
       fetchChecks(),
-      fetchSecondBranch(),
       fetchDeletions(),
       fetchCashShifts(),
-      fetchPayIncome(),
       fetchPayout(),
       fetchAttendance(),
     ]);
+
+    await revenuePromise;
+    await Promise.allSettled([
+      fetchSecondBranch(),
+      fetchPayIncome(),
+    ]);
+    await independentPromise;
 
     res.status(200).json(result);
   } catch (err) {
     res.status(502).json({ error: err?.message || 'Не удалось подключиться к серверу iiko.' });
   } finally {
-    if (token) await iikoLogout(serverUrl, token);
+    // Раньше здесь был iikoLogout(serverUrl, token) на каждый запрос — это убивало
+    // токен сразу после ответа, и следующему клику по дате приходилось логиниться
+    // заново (см. кэш токена выше). Сессия на сервере iiko сама истечёт по TTL.
   }
 }
