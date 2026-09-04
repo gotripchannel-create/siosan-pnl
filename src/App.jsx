@@ -1635,21 +1635,69 @@ function Dashboard({ ctx, setPage }) {
               )}
               {iikoDayDetails.attendance?.length > 0 && (() => {
                 const realNames = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))];
-                return realNames.length > 0 && (
-                  <Section title="Кто был на смене" count={realNames.length} defaultOpen={true}>
+
+                // Сколько часов реально отработал человек в этот день — по разнице
+                // времени прихода/ухода из явок (нужно только для почасовой оплаты,
+                // у сменной ставки дневная сумма и так известна — это сама ставка).
+                const parseHM = (s) => {
+                  if (!s) return null;
+                  const [h, m] = s.split(':').map(Number);
+                  return (Number.isFinite(h) && Number.isFinite(m)) ? h * 60 + m : null;
+                };
+                const attendanceHours = (name) => {
+                  const recs = iikoDayDetails.attendance.filter((a) => a.name === name);
+                  let totalMin = 0, any = false;
+                  for (const r of recs) {
+                    const f = parseHM(r.from), t = parseHM(r.to);
+                    if (f != null && t != null) { let diff = t - f; if (diff < 0) diff += 24 * 60; totalMin += diff; any = true; }
+                  }
+                  return any ? totalMin / 60 : null;
+                };
+
+                // Курьер отдельным сотрудником в явках iiko не значится — его ставка
+                // и компенсация бензина всегда вместе одной суммой в изъятии наличных
+                // с комментарием "курьер" (см. секцию ниже). Если такое изъятие есть
+                // за этот день — показываем курьера в этом же списке автоматически,
+                // без ручного добавления.
+                const courierPayout = (iikoDayDetails.payoutDetails || []).find(
+                  (r) => !r.excluded && String(r.comment || '').trim().toUpperCase() === 'КУРЬЕР'
+                );
+
+                const rows = realNames.map((name) => {
+                  const emp = matchIikoCashierToEmployee(name, employees);
+                  let amount = null, label;
+                  if (!emp) {
+                    label = 'сотрудник не найден в базе';
+                  } else if (emp.payType === 'shift') {
+                    amount = emp.rate;
+                    label = `${fmtRub(emp.rate)}/смена`;
+                  } else if (emp.payType === 'hour') {
+                    const hours = attendanceHours(name);
+                    if (hours != null) { amount = emp.rate * hours; label = `${fmtRub(emp.rate)}/час × ${hours.toFixed(1)}ч = ${fmtRub(amount)}`; }
+                    else label = `${fmtRub(emp.rate)}/час (часы не определены)`;
+                  } else {
+                    label = `${fmtRub(emp.rate)} оклад (не входит в дневной итог)`;
+                  }
+                  return { key: name, name, label, amount };
+                });
+                if (courierPayout) {
+                  rows.push({ key: 'courier', name: 'Курьер', label: `${fmtRub(courierPayout.amount)} (ставка + бензин, из изъятия)`, amount: courierPayout.amount, isCourier: true });
+                }
+                const totalSpent = rows.reduce((s, r) => s + (r.amount || 0), 0);
+
+                return rows.length > 0 && (
+                  <Section title="Кто был на смене" count={rows.length} defaultOpen={true}>
                     <div className="rp-list">
-                      {realNames.map((name, i) => {
-                        const emp = matchIikoCashierToEmployee(name, employees);
-                        const rateLabel = emp
-                          ? (emp.payType === 'shift' ? `${fmtRub(emp.rate)}/смена` : emp.payType === 'hour' ? `${fmtRub(emp.rate)}/час` : `${fmtRub(emp.rate)} оклад`)
-                          : 'сотрудник не найден в базе';
-                        return (
-                          <div key={i} className="rp-list-row">
-                            <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{name}</span>
-                            <span className="rp-muted" style={{fontSize:12}}>{rateLabel}</span>
-                          </div>
-                        );
-                      })}
+                      {rows.map((r) => (
+                        <div key={r.key} className="rp-list-row">
+                          <span className="rp-badge" style={{background:`${r.isCourier ? COLORS.accent2 : COLORS.accent}22`, color: r.isCourier ? COLORS.accent2 : COLORS.accent, fontSize:13, padding:'6px 12px'}}>{r.name}</span>
+                          <span className="rp-muted" style={{fontSize:12}}>{r.label}</span>
+                        </div>
+                      ))}
+                      <div className="rp-list-row" style={{borderTop:`1px solid ${COLORS.line}`, marginTop:6, paddingTop:10}}>
+                        <div className="rp-list-main"><b>Итого потрачено на сотрудников за день</b></div>
+                        <div className="rp-list-amount"><b>{fmtRub(totalSpent)}</b></div>
+                      </div>
                     </div>
                   </Section>
                 );
