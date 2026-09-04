@@ -1559,23 +1559,35 @@ function Dashboard({ ctx, setPage }) {
             <Card>
               <div className="rp-card-title">Выручка по каналам за день</div>
               {dayRevenueSel === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Нет данных за этот день" /> : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <PieChart>
-                    <Pie data={dayRevByChannel.filter(c => c.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
-                      {dayRevByChannel.filter(c => c.value > 0).map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-                    </Pie>
-                    <Tooltip formatter={(v) => fmtRub(v)} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <PieChart>
+                      <Pie data={dayRevByChannel.filter(c => c.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={40}>
+                        {dayRevByChannel.filter(c => c.value > 0).map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={(v) => fmtRub(v)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="rp-list" style={{marginTop:8}}>
+                    {dayRevByChannel.filter(c => c.value > 0).map((c, i) => (
+                      <div key={c.id} className="rp-list-row">
+                        <div className="rp-list-main" style={{display:'flex', alignItems:'center', gap:8}}>
+                          <span style={{width:9, height:9, borderRadius:'50%', background:COLORS.chartPalette[i % COLORS.chartPalette.length], flexShrink:0}} />
+                          <span>{c.name}</span>
+                        </div>
+                        <div className="rp-list-amount">{fmtRub(c.value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </Card>
             <Card>
               <div className="rp-card-title">Расходы за день</div>
               {dayStructure.length === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Расходов за этот день нет" /> : (
-                <ResponsiveContainer width="100%" height={220}>
+                <ResponsiveContainer width="100%" height={180}>
                   <PieChart>
-                    <Pie data={dayStructure} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
+                    <Pie data={dayStructure} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={40}>
                       {dayStructure.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
                     </Pie>
                     <Tooltip formatter={(v) => fmtRub(v)} />
