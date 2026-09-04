@@ -177,7 +177,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
 // Возвращает Map<дата, report> — только для дней, где категоризация прошла успешно.
 // Обрабатываем до 5 дней ОДНОВРЕМЕННО (не строго по одному) — в разы быстрее при
 // большом накопившемся списке, и помогает уложиться в лимит времени Vercel.
-async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
+async function categorizeExpenses(host, expensesByDay, settingsObj, employees, suppliers) {
   const results = new Map();
   const entries = Object.entries(expensesByDay);
   const CONCURRENCY = 5;
@@ -193,7 +193,10 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
           body: JSON.stringify({
             text: syntheticText,
             revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
-            expenseCategories: settingsObj.expenseCategories || [], fallbackDate: date,
+            expenseCategories: settingsObj.expenseCategories || [],
+            suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+            fixedExpenseNames: (settingsObj.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+            fallbackDate: date,
             glossary: settingsObj.reportGlossary || ''
           })
         });
@@ -456,7 +459,7 @@ export default async function handler(req, res) {
       for (const d of allDates.slice(0, MAX_DAYS_PER_RUN)) byDay[d] = byDayFull[d];
 
       const host = req.headers.host;
-      const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || []);
+      const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || [], withRevenue.suppliers || []);
       const merged2 = mergeExpensesIntoData(withRevenue, reports);
       merged = merged2.data;
       expensesAdded = merged2.added;

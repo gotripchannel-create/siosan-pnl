@@ -75,7 +75,7 @@ function defaultSettings() {
     ],
     expenseCategories: [
       'Связь', 'Канцелярия', 'Хозтовары', 'Ремонт', 'Реклама', 'Посуда',
-      'Упаковка', 'Лампочки', 'Печать', 'Avito', 'Расходники', 'Прочее',
+      'Упаковка', 'Лампочки', 'Печать', 'Avito', 'Расходники', 'Поставщики', 'Постоянные (проверить)', 'Прочее',
     ],
     fixedExpenses: [
       { id: uid(), name: 'Аренда', amount: 84000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
@@ -786,7 +786,16 @@ export default function App() {
         }
 
         if (parsed) {
-          setSettings(parsed.settings || defaultSettings());
+          const loadedSettings = parsed.settings || defaultSettings();
+          // На случай, если у пользователя уже сохранены свои settings.expenseCategories
+          // без новых категорий "Поставщики"/"Постоянные (проверить)" — дополняем их,
+          // не трогая остальной список (порядок и прочие категории не меняются).
+          const mustHave = ['Поставщики', 'Постоянные (проверить)'];
+          const missing = mustHave.filter((c) => !(loadedSettings.expenseCategories || []).includes(c));
+          if (missing.length > 0) {
+            loadedSettings.expenseCategories = [...(loadedSettings.expenseCategories || []), ...missing];
+          }
+          setSettings(loadedSettings);
           setEmployees(parsed.employees || seedEmployees());
           setSuppliers(parsed.suppliers || seedSuppliers());
           setMonths(parsed.months || {});
@@ -1010,7 +1019,7 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, setSettings, employees, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
+  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, setSettings, employees, suppliers, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -1234,7 +1243,10 @@ function Dashboard({ ctx, setPage }) {
             body: JSON.stringify({
               text: syntheticText,
               revenueChannels: settings.revenueChannels || [], employees: employees || [],
-              expenseCategories: settings.expenseCategories || [], fallbackDate: date,
+              expenseCategories: settings.expenseCategories || [],
+              suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+              fixedExpenseNames: (settings.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+              fallbackDate: date,
               glossary: settings.reportGlossary || ''
             })
           }, 25000);

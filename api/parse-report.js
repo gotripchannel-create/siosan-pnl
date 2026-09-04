@@ -131,10 +131,12 @@ const TOOL_SCHEMA = {
   }
 };
 
-function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate, glossary }) {
+function buildSystemPrompt({ revenueChannels, employees, expenseCategories, suppliers, fixedExpenseNames, fallbackDate, glossary }) {
   const channelsList = revenueChannels.map(c => `- id="${c.id}" name="${c.name}"`).join('\n') || '(нет настроенных каналов)';
   const employeesList = employees.map(e => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
+  const suppliersList = (suppliers || []).join(', ') || '(не заданы)';
+  const fixedNamesList = (fixedExpenseNames || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
   const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
 
@@ -156,6 +158,14 @@ ${employeesList}
 
 Категории закупок для кухни/бара (поле category у kitchenExpenses) — ОБЯЗАТЕЛЬНО используй РОВНО одно из этих названий, ничего не придумывай и не пиши своими словами (например «Закупка продуктов», «Закуп», «Продукты для кухни» — ВСЕГДА пиши просто «Продукты», а не варианты этой фразы):
 ${kitchenCategoriesList}
+
+Известные поставщики (по названию из справочника поставщиков заведения) — если комментарий изъятия явно указывает на оплату ОДНОМУ ИЗ НИХ (например, встречается название компании или похожее сокращение), НЕ клади это в kitchenExpenses с категорией «Продукты» — вместо этого добавь в otherExpenses с category РОВНО «Поставщики» (а не название конкретного поставщика — просто «Поставщики», это отдельная сводная категория для отчёта; сам платёж уже учитывается отдельно на странице «Поставщики» приложения, здесь его только нужно ВИДЕТЬ в общем списке расходов дня, поэтому используй именно эту категорию, чтобы не путать с обычной закупкой продуктов):
+${suppliersList}
+
+Известные названия постоянных ежемесячных статей расходов заведения (аренда, коммуналка, охрана и т.п.) — если комментарий изъятия явно похож на оплату ОДНОЙ ИЗ НИХ (не обычная разовая закупка, а именно повторяющийся ежемесячный платёж), НЕ клади в kitchenExpenses — добавь в otherExpenses с category РОВНО «Постоянные (проверить)» (эта статья уже заложена в бюджет отдельно как ежемесячная сумма, а не отдельная транзакция — такую пометку человек должен вручную сверить, чтобы не задвоить расход):
+${fixedNamesList}
+
+Промо / маркетинг: если комментарий про скидки клиентам, компенсации агрегаторам за акции, флаеры, рекламу, продвижение и т.п. — это НЕ kitchenExpenses и НЕ otherExpenses, а поле promo.pay (сложи туда сумму, если в отчёте несколько таких операций за день — просто просуммируй их все в одно число promo.pay).
 
 Словарь терминов и правил, специфичных для этого бизнеса:
 ${fullGlossary}
@@ -304,6 +314,8 @@ export default async function handler(req, res) {
     revenueChannels = [],
     employees = [],
     expenseCategories = [],
+    suppliers = [],
+    fixedExpenseNames = [],
     fallbackDate = null,
     glossary = ''
   } = req.body || {};
@@ -327,7 +339,7 @@ export default async function handler(req, res) {
   // Сервер Vercel работает в UTC — new Date().toISOString() даёт "вчера" по московскому
   // времени с полуночи до 3 утра, поэтому явно берём московскую дату как запасной вариант.
   const today = fallbackDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate: today, glossary });
+  const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, suppliers, fixedExpenseNames, fallbackDate: today, glossary });
 
   try {
     const data = await callClaude(apiKey, systemPrompt, { text, image: hasImage ? image : null });
