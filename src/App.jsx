@@ -632,7 +632,7 @@ function EmptyState({ icon, title, sub }) {
 /* ============================== NAVIGATION ============================== */
 
 const NAV = [
-  { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
+  { id: 'dashboard', label: 'Отчёты', icon: LayoutDashboard },
   { id: 'employees', label: 'Сотрудники', icon: Users },
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
@@ -1473,7 +1473,7 @@ function Dashboard({ ctx, setPage }) {
     <div className="rp-page">
       <div className="rp-page-head-row">
         <div className="rp-page-head">
-          <h1>Дашборд</h1>
+          <h1>Отчёты</h1>
           <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · {pnl.nd} дней</div>
         </div>
         <div style={{display:'flex', gap:10, alignItems:'center'}}>
@@ -1549,18 +1549,9 @@ function Dashboard({ ctx, setPage }) {
               {dayLiveSyncLoading && <span className="rp-muted" style={{fontSize:12, marginTop:18}}><RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Обновляю из iiko…</span>}
               <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setPage('day')} style={{marginTop:18}}>Открыть в «День» для редактирования →</button>
             </div>
-            <div className={`rp-hero ${dayProfitSel >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} style={{marginBottom:0, cursor:'default'}}>
-              <div className="rp-hero-main">
-                <div className="rp-hero-label">Прибыль за {dayDate.split('-').reverse().join('.')}</div>
-                <div className="rp-hero-value">{fmtRub(dayProfitSel)}</div>
-                <div className="rp-hero-meta">
-                  <span>рентабельность {fmtPct(dayRevenueSel ? (dayProfitSel/dayRevenueSel)*100 : 0)}</span>
-                </div>
-              </div>
-              <div className="rp-hero-side">
-                <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(dayRevenueSel)}</div></div>
-                <div><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(dayExpensesSel)}</div></div>
-              </div>
+            <div className="rp-grid-2" style={{marginBottom:0}}>
+              <Stat label="Выручка итого" value={fmtRub(dayRevenueSel)} />
+              <Stat label="Расходы итого" value={fmtRub(dayExpensesSel)} />
             </div>
           </Card>
 
@@ -1624,6 +1615,12 @@ function Dashboard({ ctx, setPage }) {
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
+              {iikoDayDetails.revenue?.checks > 0 && (
+                <div className="rp-grid-2" style={{marginTop:10, marginBottom:16}}>
+                  <Stat label="Количество чеков" value={fmt0(iikoDayDetails.revenue.checks)} />
+                  <Stat label="Средний чек" value={fmtRub(iikoDayDetails.revenue.total / iikoDayDetails.revenue.checks)} />
+                </div>
+              )}
               {iikoDayDetails.attendance?.length > 0 && (() => {
                 const realNames = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))];
                 return realNames.length > 0 && (
@@ -1736,20 +1733,6 @@ function Dashboard({ ctx, setPage }) {
                 </Section>
               )}
 
-              {iikoDayDetails.deletions?.items?.length > 0 && (
-                <Section title="Что удаляли" count={iikoDayDetails.deletions.items.length} defaultOpen={false}>
-                  <div className="rp-table-wrap">
-                    <table className="rp-table">
-                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
-                      <tbody>
-                        {iikoDayDetails.deletions.items.map((d, i) => (
-                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Section>
-              )}
             </Card>
           )}
         </>
