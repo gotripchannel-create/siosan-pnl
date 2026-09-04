@@ -633,19 +633,12 @@ function EmptyState({ icon, title, sub }) {
 
 const NAV = [
   { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
-  { id: 'day', label: 'Кассовая смена (день)', icon: CalendarDays },
-  { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
   { id: 'employees', label: 'Сотрудники', icon: Users },
   { id: 'payroll', label: 'Зарплата', icon: Wallet },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
   { id: 'ai', label: 'AI-помощник', icon: Sparkles },
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
-  { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
-  { id: 'history', label: 'История', icon: History },
-  { id: 'iiko-novo', label: 'Отчёт Новошахтинск', icon: Radio },
-  { id: 'iiko-belaya', label: 'Отчёт Белая Калитва', icon: Radio },
-  { id: 'combined', label: 'Общий отчёт', icon: LayoutDashboard },
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
