@@ -1583,7 +1583,7 @@ function Dashboard({ ctx, setPage }) {
                 <Info size={13}/> Потрачено на сотрудников за {MONTHS_RU[monthIdx].toLowerCase()} (весь ФОТ месяца, не разбивается по дням): <b>{fmtRub(pnl.payroll.totalFot)}</b> — нажмите, чтобы открыть «Зарплата»
               </div>
 
-              {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayCourierPay > 0 || dayCourierFuel > 0 || dayPromo > 0) && (
+              {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayPromo > 0) && (
                 <div style={{marginTop:14}}>
                   <div className="rp-muted" style={{fontSize:11, fontWeight:700, marginBottom:6, textTransform:'uppercase'}}>Что именно</div>
                   <div className="rp-list">
@@ -1593,8 +1593,6 @@ function Dashboard({ ctx, setPage }) {
                     {(dayObj.otherExpenses || []).map((e, i) => (
                       <div key={`o${i}`} className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">{e.category}</div>{e.comment && <div className="rp-muted" style={{fontSize:11}}>{e.comment}</div>}</div><div className="rp-list-amount">{fmtRub(e.amount)}</div></div>
                     ))}
-                    {dayCourierPay > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — ставка</div></div><div className="rp-list-amount">{fmtRub(dayCourierPay)}</div></div>}
-                    {dayCourierFuel > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — бензин</div></div><div className="rp-list-amount">{fmtRub(dayCourierFuel)}</div></div>}
                     {dayPromo > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Промо</div></div><div className="rp-list-amount">{fmtRub(dayPromo)}</div></div>}
                   </div>
                 </div>
