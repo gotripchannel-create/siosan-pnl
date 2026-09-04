@@ -139,6 +139,13 @@ function matchPayTypeToChannel(payType, channels) {
   return null;
 }
 
+// Раньше отсекали только КОММЕНТАРИЙ ЦЕЛИКОМ равный "зп" — но кассиры часто пишут
+// "зп курьер", "зп орхан", "рома зп" и т.п. (зарплата с именем сотрудника), и такие
+// варианты проходили мимо фильтра и превращались в отдельную выдуманную ИИ-категорию
+// расходов "Зарплата" — хотя зарплата сотрудников уже учитывается отдельно через ФОТ/
+// смены. Теперь ищем "зп" как отдельное слово в любом месте комментария.
+const isSalaryComment = (s) => String(s || '').toLowerCase().trim().split(/\s+/).includes('зп');
+
 async function fetchPayoutExpenses(serverUrl, token, from, to) {
   const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
     method: 'POST',
@@ -161,7 +168,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
       comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
       amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
     }))
-    .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп');
+    .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && !isSalaryComment(e.comment));
 }
 
 // Категоризация расходов через уже существующий ИИ-парсер (/api/parse-report) —
@@ -295,7 +302,7 @@ async function fetchRevenueByDay(serverUrl, token, from, to) {
     if (txResp.ok) {
       for (const r of (txJson?.data || [])) {
         const comment = String(r['Comment'] || '').trim().toLowerCase();
-        if (comment === 'дб' || comment === 'зп' || comment === 'бк' || comment === 'ошибка' || comment.startsWith('закрытие кассовой смены')) continue;
+        if (comment === 'дб' || isSalaryComment(comment) || comment === 'бк' || comment === 'ошибка' || comment.startsWith('закрытие кассовой смены')) continue;
         const date = (r['DateTime.Typed'] || '').slice(0, 10);
         const amt = Number(r['Sum.Incoming']) || 0;
         if (!date || amt <= 0) continue;

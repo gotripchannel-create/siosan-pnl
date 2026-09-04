@@ -1402,6 +1402,37 @@ function Dashboard({ ctx, setPage }) {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Разовая чистка уже сохранённых зарплатных выплат, ошибочно попавших в расходы —
+  // раньше комментарии вида "зп курьер", "зп орхан", "рома зп" проходили мимо фильтра
+  // (отсекался только комментарий, равный ровно "зп") и ИИ придумывал для них
+  // отдельную категорию расходов "Зарплата", хотя зарплата уже учитывается отдельно
+  // через ФОТ/смены — получалось задвоение. Новые синхронизации это исправлено (см.
+  // isSalaryComment на сервере), но уже сохранённые записи сами не удалятся —
+  // убираем их один раз при загрузке.
+  useEffect(() => {
+    const isSalaryCategory = (c) => /зарплат|^зп$/i.test(String(c || '').trim());
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const kitchen = day.kitchenExpenses || [];
+          const other = day.otherExpenses || [];
+          const kitchenFiltered = kitchen.filter((e) => !isSalaryCategory(e.category));
+          const otherFiltered = other.filter((e) => !isSalaryCategory(e.category));
+          if (kitchenFiltered.length !== kitchen.length || otherFiltered.length !== other.length) {
+            monthChanged = true; changedAny = true;
+            days[ds] = { ...day, kitchenExpenses: kitchenFiltered, otherExpenses: otherFiltered };
+          } else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const todayDay = getDay(month, selectedDate);
   const todayRevenue = dayRevenueTotal(todayDay, settings.revenueChannels);
 
@@ -1717,11 +1748,15 @@ function Dashboard({ ctx, setPage }) {
 
                 // Курьер отдельным сотрудником в явках iiko не значится — его ставка
                 // и компенсация бензина всегда вместе одной суммой в изъятии наличных
-                // с комментарием "курьер" (см. секцию ниже). Если такое изъятие есть
-                // за этот день — показываем курьера в этом же списке автоматически,
-                // без ручного добавления.
+                // с комментарием, где упоминается "курьер" (например "курьер",
+                // "зп курьер" — второй вариант сервер теперь помечает как зарплатную
+                // выплату и excluded=true, но для курьера это не помеха, ищем по слову
+                // "курьер" в любом месте комментария, не по флагу excluded). Если такое
+                // изъятие есть за этот день — показываем курьера в этом же списке
+                // автоматически, без ручного добавления, и НИГДЕ больше (не в расходах
+                // P&L отдельной строкой) — эта сумма только здесь.
                 const courierPayout = (iikoDayDetails.payoutDetails || []).find(
-                  (r) => !r.excluded && String(r.comment || '').trim().toUpperCase() === 'КУРЬЕР'
+                  (r) => /курьер/i.test(String(r.comment || ''))
                 );
 
                 const rows = realNames.map((name) => {
