@@ -11,6 +11,28 @@ export const maxDuration = 60;
 const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей из текста
 const MODEL_VISION = 'claude-sonnet-4-6'; // для фото Z-отчётов — нужнее точность распознавания мелкого текста на чеке, чем скорость
 
+// Тот же фиксированный список, что используется в ручном интерфейсе (App.jsx,
+// редактор категории для kitchenExpenses). Раньше ИИ мог сам придумать формулировку
+// категории («Закупка продуктов», «Продукты для кухни», «Закуп») — по смыслу одно и
+// то же, но в интерфейсе это выглядело как разные категории. Теперь модель обязана
+// выбрать РОВНО одно из этих названий.
+const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
+
+// Подстраховка на случай, если модель всё же вернёт что-то не из списка выше
+// (или для уже сохранённых ранее записей со старыми вольными формулировками) —
+// приводим к одной из канонических категорий по смыслу слов в исходном тексте.
+function normalizeKitchenCategory(raw) {
+  const trimmed = String(raw || '').trim();
+  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact;
+  const s = trimmed.toLowerCase();
+  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
+  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
+  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
+  return 'Прочее';
+}
+
 // Базовый словарь терминов, собранный из реальных отчётов сотрудников СиоСан.
 // Настройки могут добавить свои термины поверх этого (settings.reportGlossary),
 // они склеиваются вместе и уходят в системный промпт.
@@ -114,6 +136,7 @@ function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fall
   const employeesList = employees.map(e => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
+  const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
 
   return `Ты разбираешь либо (а) текст, скопированный из рабочего чата ВК кафе/службы доставки, либо (б) фото бумажного Z-отчёта (отчёт о закрытии смены) из кассы iiko.
 
@@ -130,6 +153,9 @@ ${channelsList}
 ${employeesList}
 
 Известные категории прочих расходов (не обязательно, но если подходит — используй): ${categoriesList}
+
+Категории закупок для кухни/бара (поле category у kitchenExpenses) — ОБЯЗАТЕЛЬНО используй РОВНО одно из этих названий, ничего не придумывай и не пиши своими словами (например «Закупка продуктов», «Закуп», «Продукты для кухни» — ВСЕГДА пиши просто «Продукты», а не варианты этой фразы):
+${kitchenCategoriesList}
 
 Словарь терминов и правил, специфичных для этого бизнеса:
 ${fullGlossary}
@@ -199,7 +225,7 @@ function postprocess(raw, { revenueChannels, employees }) {
     revenue,
     courier: { pay: raw.courier?.pay ?? null, km: raw.courier?.km ?? null, deliveries: raw.courier?.deliveries ?? null },
     promo: { pay: raw.promo?.pay ?? null },
-    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: e.category || 'Покупки', amount: Number(e.amount) || 0 })),
+    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0 })),
     otherExpenses: (raw.otherExpenses || []).map(e => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0 })),
     advances,
     rosterMatches,

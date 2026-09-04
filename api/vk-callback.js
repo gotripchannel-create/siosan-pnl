@@ -21,6 +21,21 @@ export const maxDuration = 60;
 const RESTAURANT_ID = 'siosan';
 const MODEL = 'claude-haiku-4-5-20251001';
 
+// Тот же фиксированный список, что в ручном интерфейсе и в /api/parse-report — не
+// даём модели придумывать свои формулировки категории закупок кухни.
+const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
+function normalizeKitchenCategory(raw) {
+  const trimmed = String(raw || '').trim();
+  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact;
+  const s = trimmed.toLowerCase();
+  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
+  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
+  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
+  return 'Прочее';
+}
+
 const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» — сумма, которая физически оказалась в кассе на конец смены (сверка кассы). Это НЕ выручка и НЕ расход — клади её в отдельное поле registerCheck, никогда не добавляй в revenue/otherExpenses и не пиши в unmatchedLines (это не ошибка распознавания, а обычное сверочное поле).
 - «Итого выручка» / «выручка итого» — явно указанная итоговая сумма выручки за день, идёт в totalHint.
 - Число может стоять до или после названия поля («22352,2 Наличные» и «Наличные 22352,2» — одно и то же).
@@ -59,6 +74,7 @@ function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fall
   const employeesList = employees.map((e) => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
+  const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
   return `Ты разбираешь ОДНО сообщение из рабочего чата ВК кафе. Найди в нём финансовый отчёт (обычно есть «наличные», «карта» и «итого выручка» с числами) и верни его через submit_parsed_reports. Если это не отчёт (обычная переписка, вопрос, приветствие) — верни пустой массив reports, ничего не выдумывай.
 
 Сегодняшняя дата (если в тексте нет явной даты): ${fallbackDate}
@@ -70,6 +86,9 @@ ${channelsList}
 ${employeesList}
 
 Известные категории прочих расходов: ${categoriesList}
+
+Категории закупок для кухни/бара (поле category у kitchenExpenses) — ОБЯЗАТЕЛЬНО используй РОВНО одно из этих названий, ничего не придумывай своими словами:
+${kitchenCategoriesList}
 
 Словарь терминов и правил:
 ${fullGlossary}
@@ -92,7 +111,7 @@ function postprocess(raw, { revenueChannels, employees }) {
     date: raw.date || null, revenue,
     courier: { pay: raw.courier?.pay ?? null, km: raw.courier?.km ?? null, deliveries: raw.courier?.deliveries ?? null },
     promo: { pay: raw.promo?.pay ?? null },
-    kitchenExpenses: (raw.kitchenExpenses || []).map((e) => ({ category: e.category || 'Покупки', amount: Number(e.amount) || 0 })),
+    kitchenExpenses: (raw.kitchenExpenses || []).map((e) => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0 })),
     otherExpenses: (raw.otherExpenses || []).map((e) => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0 })),
     advances, rosterMatches,
     unmatchedLines: raw.unmatchedLines || [],

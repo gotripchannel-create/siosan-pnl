@@ -19,6 +19,21 @@ import { createHash } from 'crypto';
 
 const RESTAURANT_ID = 'siosan';
 
+// Тот же фиксированный список, что в ручном интерфейсе и в /api/parse-report —
+// не даём категории закупок кухни расползаться на вольные формулировки ИИ.
+const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
+function normalizeKitchenCategory(raw) {
+  const trimmed = String(raw || '').trim();
+  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact;
+  const s = trimmed.toLowerCase();
+  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
+  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
+  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
+  return 'Прочее';
+}
+
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
 }
@@ -216,7 +231,7 @@ function mergeExpensesIntoData(data, reportsByDate) {
     const month = data.months[mk];
     month.days = month.days || {};
     const existing = month.days[date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
-    const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     let courierUpdate = existing.courier;
     if (report.courier?.pay) {

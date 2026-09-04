@@ -213,6 +213,26 @@ function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
+// Фиксированный список категорий закупок кухни/бара — тот же, что в ручном
+// редакторе категории (см. ExpenseModal ниже: 'Продукты', 'Напитки', ...). Раньше
+// ИИ-категоризация (см. api/parse-report.js) писала category свободным текстом, из-за
+// чего одно и то же по смыслу («закупка продуктов» из одного изъятия и «продукты» из
+// другого) выглядело в списке как две разные категории. Промпт теперь тоже просят
+// использовать только эти названия, но эта функция — подстраховка на клиенте для уже
+// сохранённых ранее записей со старыми вольными формулировками.
+const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
+function normalizeKitchenCategory(raw) {
+  const trimmed = String(raw || '').trim();
+  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact;
+  const s = trimmed.toLowerCase();
+  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
+  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
+  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
+  return 'Прочее';
+}
+
 function matchIikoCashierToEmployee(iikoName, employees) {
   if (!iikoName) return null;
   const normalized = String(iikoName).toLowerCase().trim();
@@ -1224,7 +1244,7 @@ function Dashboard({ ctx, setPage }) {
           if (!report) { failedDays += 1; return; }
 
           const mk = date.slice(0, 7);
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           setMonths((prev) => {
             const curMonth = prev[mk] || emptyMonth(settings, null);
@@ -1333,6 +1353,35 @@ function Dashboard({ ctx, setPage }) {
           const k = dedupeBucket(day.kitchenExpenses);
           const o = dedupeBucket(day.otherExpenses);
           if (k.changed || o.changed) { monthChanged = true; changedAny = true; days[ds] = { ...day, kitchenExpenses: k.list, otherExpenses: o.list }; }
+          else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая нормализация категорий закупок кухни — раньше ИИ мог написать категорию
+  // свободным текстом ("Закупка продуктов", "Продукты для кухни" и т.п.), теперь
+  // всегда используется фиксированный список (см. normalizeKitchenCategory выше).
+  // Уже сохранённые ранее записи со старыми формулировками сами не поменяются —
+  // приводим их к канонической категории один раз при загрузке.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const kitchen = day.kitchenExpenses || [];
+          let bucketChanged = false;
+          const normalized = kitchen.map((e) => {
+            const canonical = normalizeKitchenCategory(e.category);
+            if (canonical !== e.category) { bucketChanged = true; return { ...e, category: canonical }; }
+            return e;
+          });
+          if (bucketChanged) { monthChanged = true; changedAny = true; days[ds] = { ...day, kitchenExpenses: normalized }; }
           else days[ds] = day;
         }
         next[mk] = monthChanged ? { ...m, days } : m;
@@ -5501,7 +5550,7 @@ function IncomingReportsPage({ ctx }) {
           const mk = report.date.slice(0, 7);
           const curMonth = next[mk] || emptyMonth(settings, null);
           const day = { ...getDay(curMonth, report.date) };
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
           day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
