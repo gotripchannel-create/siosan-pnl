@@ -1642,11 +1642,13 @@ function Dashboard({ ctx, setPage }) {
   const dayCourierPay = liveCourierForThisDay ? liveCourierForThisDay.amount : (Number(dayObj.courier?.pay) || 0);
   const dayCourierFuel = liveCourierForThisDay ? 0 : (dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7));
   const dayPromo = Number(dayObj.promo?.pay) || 0;
-  const dayExpensesSel = dayKitchen + dayOther + dayCourierPay + dayCourierFuel + dayPromo;
+  // Курьер сознательно НЕ входит в "Расходы итого"/donut — он относится к затратам
+  // на персонал, а не к закупкам/прочим расходам, и должен считаться только в
+  // "Итого потрачено на сотрудников" (см. блок "Кто был на смене" ниже).
+  const dayExpensesSel = dayKitchen + dayOther + dayPromo;
   const dayProfitSel = dayRevenueSel - dayExpensesSel;
   const dayStructure = [
     { name: 'Закупки (кухня/бар)', value: dayKitchen },
-    { name: 'Курьер (ставка+бензин)', value: dayCourierPay + dayCourierFuel },
     { name: 'Промо', value: dayPromo },
     { name: 'Прочие', value: dayOther },
   ].filter(d => d.value > 0);
@@ -1869,7 +1871,7 @@ function Dashboard({ ctx, setPage }) {
                   </div>
                   {(dayCourierPay + dayCourierFuel) > 0 && (
                     <p className="rp-muted" style={{fontSize:11, marginTop:8}}>
-                      Курьер ({fmtRub(dayCourierPay + dayCourierFuel)}) в этот список не входит — сумма и детали в «Кто был на смене» ниже; в «Расходы итого» наверху уже учтена.
+                      Курьер ({fmtRub(dayCourierPay + dayCourierFuel)}) сюда не входит и не входит в «Расходы итого» — это затраты на персонал, сумма и детали в «Кто был на смене» ниже.
                     </p>
                   )}
                 </div>
