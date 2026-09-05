@@ -653,8 +653,7 @@ function EmptyState({ icon, title, sub }) {
 
 const NAV = [
   { id: 'dashboard', label: 'Отчёты', icon: LayoutDashboard },
-  { id: 'employees', label: 'Сотрудники', icon: Users },
-  { id: 'payroll', label: 'Зарплата', icon: Wallet },
+  { id: 'employees', label: 'Зарплата', icon: Users },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
   { id: 'ai', label: 'AI-помощник', icon: Sparkles },
@@ -2801,6 +2800,7 @@ function EmployeesPage({ ctx }) {
   const { employees, setEmployees, month, updateMonth, settings, year, monthIdx, monthKey, logAudit } = ctx;
   const [editing, setEditing] = useState(null);
   const [shiftsFor, setShiftsFor] = useState(null);
+  const [shiftsForInitialTab, setShiftsForInitialTab] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
@@ -2830,7 +2830,7 @@ function EmployeesPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th>Аванс</th><th>Начислено</th><th /></tr></thead>
+          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Начислено</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
               const pay = computeEmployeePay(e, month, settings);
@@ -2890,6 +2890,16 @@ function EmployeesPage({ ctx }) {
       {editing && (
         <Modal title={employees.some((e) => e.id === editing.id) ? 'Сотрудник' : 'Новый сотрудник'} onClose={() => setEditing(null)}>
           <EmployeeForm emp={editing} onSave={saveEmployee} />
+          {employees.some((e) => e.id === editing.id) && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${COLORS.line}` }}>
+              <button
+                className="rp-btn rp-btn-ghost rp-btn-sm"
+                onClick={() => { const id = editing.id; setEditing(null); setShiftsFor(id); setShiftsForInitialTab('adjust'); }}
+              >
+                <Wallet size={14} /> Премии / штрафы за {MONTHS_RU[monthIdx].toLowerCase()}
+              </button>
+            </div>
+          )}
         </Modal>
       )}
 
@@ -2898,7 +2908,8 @@ function EmployeesPage({ ctx }) {
           emp={employees.find((e) => e.id === shiftsFor)}
           month={month} updateMonth={updateMonth} nd={nd} year={year} monthIdx={monthIdx} monthKey={monthKey}
           settings={settings} locked={month.closed} logAudit={logAudit}
-          onClose={() => setShiftsFor(null)}
+          initialTab={shiftsForInitialTab}
+          onClose={() => { setShiftsFor(null); setShiftsForInitialTab(null); }}
         />
       )}
 
@@ -2953,7 +2964,7 @@ function EmployeeForm({ emp, onSave }) {
   );
 }
 
-function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey, settings, locked, onClose, logAudit }) {
+function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey, settings, locked, onClose, logAudit, initialTab }) {
   const standard = emp.standardShift || settings.standardShiftHours;
   const shifts = month.shifts?.[emp.id] || {};
   const setHours = (d, val) => {
@@ -2965,7 +2976,7 @@ function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey,
     });
   };
   const pay = computeEmployeePay(emp, month, settings);
-  const [tab, setTab] = useState('shifts');
+  const [tab, setTab] = useState(initialTab || 'shifts');
 
   return (
     <Modal title={`Смены — ${emp.name}`} onClose={onClose} wide>
