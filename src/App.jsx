@@ -1703,6 +1703,11 @@ function Dashboard({ ctx, setPage }) {
                     ))}
                     {dayPromo > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Промо</div></div><div className="rp-list-amount">{fmtRub(dayPromo)}</div></div>}
                   </div>
+                  {(dayCourierPay + dayCourierFuel) > 0 && (
+                    <p className="rp-muted" style={{fontSize:11, marginTop:8}}>
+                      Курьер ({fmtRub(dayCourierPay + dayCourierFuel)}) в этот список не входит — сумма и детали в «Кто был на смене» ниже; в «Расходы итого» наверху уже учтена.
+                    </p>
+                  )}
                 </div>
               )}
             </Card>
@@ -1746,18 +1751,20 @@ function Dashboard({ ctx, setPage }) {
                   return any ? totalMin / 60 : null;
                 };
 
-                // Курьер отдельным сотрудником в явках iiko не значится — его ставка
-                // и компенсация бензина всегда вместе одной суммой в изъятии наличных
-                // с комментарием, где упоминается "курьер" (например "курьер",
-                // "зп курьер" — второй вариант сервер теперь помечает как зарплатную
-                // выплату и excluded=true, но для курьера это не помеха, ищем по слову
-                // "курьер" в любом месте комментария, не по флагу excluded). Если такое
-                // изъятие есть за этот день — показываем курьера в этом же списке
-                // автоматически, без ручного добавления, и НИГДЕ больше (не в расходах
-                // P&L отдельной строкой) — эта сумма только здесь.
-                const courierPayout = (iikoDayDetails.payoutDetails || []).find(
-                  (r) => /курьер/i.test(String(r.comment || ''))
-                );
+                // Курьер отдельным сотрудником в явках iiko не значится. Раньше эта
+                // сумма считалась ЗАНОВО прямо здесь по сырым изъятиям — из-за этого
+                // она расходилась с "Расходы итого" (там курьер считается по
+                // dayCourierPay/dayCourierFuel — уже синхронизированным и сохранённым
+                // значениям). Теперь берём то же самое число, что и в итоге расходов,
+                // чтобы суммы совпадали. Если по какой-то причине синхронизация ещё не
+                // прошла (dayCourierPay+dayCourierFuel = 0), подстраховываемся сырым
+                // изъятием с упоминанием "курьер" в комментарии — так курьер не
+                // потеряется из виду, даже если ещё не попал в P&L.
+                const courierFromPnL = dayCourierPay + dayCourierFuel;
+                const courierRawFallback = courierFromPnL === 0
+                  ? (iikoDayDetails.payoutDetails || []).find((r) => /курьер/i.test(String(r.comment || '')))
+                  : null;
+                const courierAmount = courierFromPnL > 0 ? courierFromPnL : (courierRawFallback?.amount || 0);
 
                 const rows = realNames.map((name) => {
                   const emp = matchIikoCashierToEmployee(name, employees);
@@ -1776,8 +1783,8 @@ function Dashboard({ ctx, setPage }) {
                   }
                   return { key: name, name, label, amount };
                 });
-                if (courierPayout) {
-                  rows.push({ key: 'courier', name: 'Курьер', label: `${fmtRub(courierPayout.amount)} (ставка + бензин, из изъятия)`, amount: courierPayout.amount, isCourier: true });
+                if (courierAmount > 0) {
+                  rows.push({ key: 'courier', name: 'Курьер', label: `${fmtRub(courierAmount)} (ставка + бензин)`, amount: courierAmount, isCourier: true });
                 }
                 const totalSpent = rows.reduce((s, r) => s + (r.amount || 0), 0);
 
