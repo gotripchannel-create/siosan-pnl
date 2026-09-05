@@ -45,7 +45,7 @@ async function getIikoToken(serverUrl, login, password, forceFresh = false) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 async function olapQuery(serverUrl, token, body) {
@@ -56,7 +56,7 @@ async function olapQuery(serverUrl, token, body) {
   });
   const text = await resp.text();
   let json = null;
-  try { json = JSON.parse(text); } catch (_) {}
+  try { json = JSON.parse(text); } catch (e) { console.error('Ответ iiko не является JSON:', text.slice(0, 300)); }
   if (!resp.ok) {
     const err = new Error(`OLAP-запрос вернул ошибку (${resp.status})`);
     err.raw = json || text;

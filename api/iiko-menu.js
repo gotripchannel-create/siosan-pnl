@@ -29,7 +29,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 export default async function handler(req, res) {

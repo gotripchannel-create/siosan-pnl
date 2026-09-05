@@ -27,7 +27,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 export default async function handler(req, res) {
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     const text = await resp.text();
     let shifts = null;
-    try { shifts = JSON.parse(text); } catch (_) {}
+    try { shifts = JSON.parse(text); } catch (e) { console.error('Ответ iiko (кассовые смены) не является JSON:', text.slice(0, 300)); }
 
     if (!resp.ok) {
       res.status(502).json({ error: `Сервер iiko ответил ошибкой (${resp.status}).`, raw: text.slice(0, 2000) });

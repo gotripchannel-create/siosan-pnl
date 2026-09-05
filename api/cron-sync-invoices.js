@@ -34,7 +34,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 async function fetchInvoices(serverUrl, token, from, to) {
@@ -93,7 +93,7 @@ async function fetchInvoices(serverUrl, token, from, to) {
         });
       }
     }
-  } catch (_) {}
+  } catch (e) { console.error('Не удалось получить состав накладных (cron):', e); }
 
   for (const inv of invoices) inv.items = itemsByKey[`${inv.date}::${inv.supplier}`] || [];
   return invoices;

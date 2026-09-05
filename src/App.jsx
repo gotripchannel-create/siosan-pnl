@@ -782,7 +782,7 @@ export default function App() {
           try {
             const raw = window.localStorage.getItem('restaurant-pnl-data');
             if (raw) parsed = JSON.parse(raw);
-          } catch (_) {}
+          } catch (e) { console.error('Не удалось прочитать локальный резервный кэш данных:', e); }
         }
 
         if (parsed) {
@@ -1225,7 +1225,7 @@ function Dashboard({ ctx, setPage }) {
           const [dy, dm] = mk.split('-').map(Number);
           const monthFrom = dateStr(dy, dm - 1, 1);
           const monthTo = dateStr(dy, dm - 1, daysInMonth(dy, dm - 1));
-          try { await syncExpensesFromIikoOnDashboard(monthFrom, monthTo); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(mk); }
+          try { await syncExpensesFromIikoOnDashboard(monthFrom, monthTo); } catch (e) { console.error('Синхронизация расходов из iiko (для дня в другом месяце) не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(mk); }
         }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
@@ -1400,8 +1400,8 @@ function Dashboard({ ctx, setPage }) {
       const mFrom = dateStr(y, m, 1);
       const mTo = dateStr(y, m, daysInMonth(y, m));
       setHistorySyncProgress({ done: i, total: months.length, currentLabel: `${MONTHS_RU[m]} ${y}` });
-      try { await syncRevenueFromIiko(mFrom, mTo); } catch (_) {}
-      try { await syncExpensesFromIikoOnDashboard(mFrom, mTo); } catch (_) {}
+      try { await syncRevenueFromIiko(mFrom, mTo); } catch (e) { console.error(`Синхронизация выручки за ${mFrom}—${mTo} не удалась:`, e); }
+      try { await syncExpensesFromIikoOnDashboard(mFrom, mTo); } catch (e) { console.error(`Синхронизация расходов за ${mFrom}—${mTo} не удалась:`, e); }
     }
     setHistorySyncProgress({ done: months.length, total: months.length, currentLabel: '' });
   };
@@ -1413,11 +1413,11 @@ function Dashboard({ ctx, setPage }) {
     let cancelled = false;
     const t = setTimeout(async () => {
       if (cancelled) return;
-      try { await syncRevenueFromIiko(); } catch (_) {}
+      try { await syncRevenueFromIiko(); } catch (e) { console.error('Автосинхронизация выручки при открытии месяца не удалась:', e); }
       if (cancelled) return;
       if (!expenseSyncInFlightRef.current.has(monthKey)) {
         expenseSyncInFlightRef.current.add(monthKey);
-        try { await syncExpensesFromIikoOnDashboard(); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(monthKey); }
+        try { await syncExpensesFromIikoOnDashboard(); } catch (e) { console.error('Автосинхронизация расходов при открытии месяца не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(monthKey); }
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
@@ -1610,7 +1610,7 @@ function Dashboard({ ctx, setPage }) {
       try {
         const { data } = await supabase.from('ai_insights_cache').select('*').eq('month_key', monthKey).order('generated_at', { ascending: false }).limit(1).maybeSingle();
         if (!cancelled && data) setInsights({ insights: data.insights, generatedAt: data.generated_at });
-      } catch (_) {}
+      } catch (e) { console.error('Не удалось загрузить кэш AI-инсайтов:', e); }
       if (!cancelled) setInsightsLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -5736,7 +5736,7 @@ function IncomingReportsPage({ ctx }) {
     try {
       const { data, error } = await supabase.from('vk_report_drafts').select('*').eq('restaurant_id', RESTAURANT_ID).eq('status', 'pending').order('message_date', { ascending: true }).order('vk_message_id', { ascending: true });
       if (!error) setDrafts(data || []);
-    } catch (_) {}
+    } catch (e) { console.error('Не удалось загрузить черновики отчётов из VK:', e); }
   }, []);
   useEffect(() => { loadDrafts(); refreshPendingReportsCount?.(); }, [loadDrafts, refreshPendingReportsCount]);
 

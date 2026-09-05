@@ -25,7 +25,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 // Второй филиал СиоСан без своей кассы: его дневную выручку пробивают через кассу
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
 
     const olapText = await olapResp.text();
     let olapJson = null;
-    try { olapJson = JSON.parse(olapText); } catch (_) {}
+    try { olapJson = JSON.parse(olapText); } catch (e) { console.error('Ответ iiko (OLAP-отчёт) не является JSON:', olapText.slice(0, 300)); }
 
     if (!olapResp.ok) {
       res.status(502).json({ error: `Сервер iiko ответил ошибкой (${olapResp.status}).`, raw: olapJson || olapText });
@@ -290,7 +290,7 @@ export default async function handler(req, res) {
       });
       const txText = await txResp.text();
       let txJson = null;
-      try { txJson = JSON.parse(txText); } catch (_) {}
+      try { txJson = JSON.parse(txText); } catch (e) { console.error('Ответ iiko (проводки) не является JSON:', txText.slice(0, 300)); }
       if (txResp.ok) {
         for (const r of (txJson?.data || [])) {
           const comment = String(r['Comment'] || '').trim().toLowerCase();
