@@ -2895,7 +2895,7 @@ function EmployeesPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Начислено</th><th /></tr></thead>
+          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
               const pay = computeEmployeePay(e, month, settings);
@@ -2909,6 +2909,7 @@ function EmployeesPage({ ctx }) {
                   <td className="rp-num rp-link" onClick={() => setShiftsFor(e.id)}>{pay.shiftsCount != null ? `${pay.shiftsCount} см.` : `${fmt0(pay.hours)} ч`}</td>
                   <td className="rp-num">{pay.advance ? fmtRub(pay.advance) : '—'}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.accrued)}</td>
+                  <td className="rp-num rp-strong">{fmtRub(pay.payout)}</td>
                   <td>
                     <button className="rp-icon-btn" onClick={() => setEditing(e)}>✎</button>
                     <button className="rp-icon-btn rp-icon-btn-danger" onClick={() => setDeleteConfirm(e)}><Trash2 size={14} /></button>
@@ -2916,7 +2917,7 @@ function EmployeesPage({ ctx }) {
                 </tr>
               );
             })}
-            {visible.length === 0 && <tr><td colSpan={9}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
+            {visible.length === 0 && <tr><td colSpan={10}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
         </table></div>
       </Card>
