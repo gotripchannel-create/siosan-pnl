@@ -3364,7 +3364,7 @@ function SuppliersPage({ ctx }) {
       <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Список — за {MONTHS_RU[monthIdx].toLowerCase()} {year}; задолженность и итоги вверху — нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year}</div></div>
 
       <div className="rp-grid-4">
-        <Stat label="Заявлено всего" value={fmtRub(totalOrdered)} />
+        <Stat label="Итого сумма закупок" value={fmtRub(totalOrdered)} />
         <Stat label="Заявлено в этом месяце" value={fmtRub((month.supplierOrders || []).reduce((s, o) => s + (Number(o.amount) || 0), 0))} />
         <Stat label="Поставок в этом месяце" value={fmt0((month.supplierOrders || []).length)} />
         <Stat label="Активных поставщиков" value={fmt0(activeSuppliers.length)} />
