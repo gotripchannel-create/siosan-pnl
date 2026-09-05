@@ -815,7 +815,28 @@ export default function App() {
           setSettings(loadedSettings);
           setEmployees(parsed.employees || seedEmployees());
           setSuppliers(parsed.suppliers || seedSuppliers());
-          setMonths(parsed.months || {});
+          // Разовое исправление ещё одного инцидента: значение day.courier.pay/fuel
+          // накапливается (+=) при каждой синхронизации, и 10.08.2026 то же самое
+          // изъятие "зп курьер" (2850 ₽) обработалось дважды (видимо, гонка между
+          // ручной и фоновой cron-синхронизацией) — сохранённая сумма задвоилась
+          // до 5700 ₽. Отображение теперь само себя чинит при просмотре дня (см.
+          // liveCourierForThisDay выше), но для месячных агрегатов (P&L за август,
+          // где этот день не открыт активно) чиним сохранённое значение один раз
+          // здесь, приводя к настоящей сумме изъятия.
+          const loadedMonths = parsed.months || {};
+          const courierIncidentMonth = loadedMonths['2026-08'];
+          const courierIncidentDay = courierIncidentMonth?.days?.['2026-08-10'];
+          if (courierIncidentDay && Math.round(((Number(courierIncidentDay.courier?.pay) || 0) + (Number(courierIncidentDay.courier?.fuel) || 0))) === 5700) {
+            const { pay: fixedPay, fuel: fixedFuel } = splitCourierPayout(2850, loadedSettings.courierFixedRate);
+            loadedMonths['2026-08'] = {
+              ...courierIncidentMonth,
+              days: {
+                ...courierIncidentMonth.days,
+                '2026-08-10': { ...courierIncidentDay, courier: { ...courierIncidentDay.courier, pay: fixedPay, fuel: fixedFuel } },
+              },
+            };
+          }
+          setMonths(loadedMonths);
           setAuditLog(parsed.auditLog || []);
         } else {
           setSettings(defaultSettings());
@@ -1544,8 +1565,21 @@ function Dashboard({ ctx, setPage }) {
   const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
   const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const dayOther = (dayObj.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const dayCourierPay = Number(dayObj.courier?.pay) || 0;
-  const dayCourierFuel = dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
+  // Курьер: сохранённое day.courier.pay/fuel накапливается (+=) при каждой
+  // синхронизации — если одно и то же изъятие обработалось дважды (например,
+  // из-за гонки между ручной синхронизацией и фоновым cron), сумма задваивается
+  // и остаётся задвоенной навсегда, никак не проверяясь позже. Поэтому здесь,
+  // когда мы СЕЙЧАС смотрим именно этот день и уже загрузили по нему живые данные
+  // из iiko, ДОВЕРЯЕМ живому изъятию с комментарием "курьер", а не накопленному
+  // числу — оно не может задвоиться, потому что каждый раз считается заново с нуля
+  // прямо из iiko. Сохранённое значение остаётся резервным вариантом только для
+  // дней, которые сейчас не открыты (агрегаты за месяц и т.п.), где живых данных ещё
+  // нет.
+  const liveCourierForThisDay = iikoDayDetails?.date === dayDate
+    ? (iikoDayDetails.payoutDetails || []).find((r) => /курьер/i.test(String(r.comment || '')))
+    : null;
+  const dayCourierPay = liveCourierForThisDay ? liveCourierForThisDay.amount : (Number(dayObj.courier?.pay) || 0);
+  const dayCourierFuel = liveCourierForThisDay ? 0 : (dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7));
   const dayPromo = Number(dayObj.promo?.pay) || 0;
   const dayExpensesSel = dayKitchen + dayOther + dayCourierPay + dayCourierFuel + dayPromo;
   const dayProfitSel = dayRevenueSel - dayExpensesSel;
