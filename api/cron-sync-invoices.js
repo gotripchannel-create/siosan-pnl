@@ -16,23 +16,10 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
+import { timingSafeStringEqual } from './_lib/security.js';
+import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
-
-// Тот же фиксированный список, что в ручном интерфейсе и в /api/parse-report —
-// не даём категории закупок кухни расползаться на вольные формулировки ИИ.
-const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
-function normalizeKitchenCategory(raw) {
-  const trimmed = String(raw || '').trim();
-  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
-  if (exact) return exact;
-  const s = trimmed.toLowerCase();
-  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
-  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
-  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
-  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
-  return 'Прочее';
-}
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
@@ -139,13 +126,6 @@ function matchPayTypeToChannel(payType, channels) {
   return null;
 }
 
-// Раньше отсекали только КОММЕНТАРИЙ ЦЕЛИКОМ равный "зп" — но кассиры часто пишут
-// "зп курьер", "зп орхан", "рома зп" и т.п. (зарплата с именем сотрудника), и такие
-// варианты проходили мимо фильтра и превращались в отдельную выдуманную ИИ-категорию
-// расходов "Зарплата" — хотя зарплата сотрудников уже учитывается отдельно через ФОТ/
-// смены. Теперь ищем "зп" как отдельное слово в любом месте комментария.
-const isSalaryComment = (s) => String(s || '').toLowerCase().trim().split(/\s+/).includes('зп');
-
 async function fetchPayoutExpenses(serverUrl, token, from, to) {
   const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
     method: 'POST',
@@ -168,7 +148,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
       comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
       amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
     }))
-    .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && !isSalaryComment(e.comment));
+    .filter((e) => e.amount > 0 && e.date && !isExcludedComment(e.comment));
 }
 
 // Категоризация расходов через уже существующий ИИ-парсер (/api/parse-report) —
@@ -218,14 +198,6 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees, s
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, entries.length) }, worker));
   return results;
-}
-
-// Разбивает одну выплату курьеру («ЗП КУРЬЕР 3500») на фиксированную ставку и бензин
-// (остаток сверху) — та же логика, что и на клиенте (src/App.jsx, splitCourierPayout).
-function splitCourierPayout(totalPay, fixedRate) {
-  const total = Number(totalPay) || 0;
-  const fixed = Number(fixedRate) || 2500;
-  return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
 function mergeExpensesIntoData(data, reportsByDate) {
@@ -302,7 +274,7 @@ async function fetchRevenueByDay(serverUrl, token, from, to) {
     if (txResp.ok) {
       for (const r of (txJson?.data || [])) {
         const comment = String(r['Comment'] || '').trim().toLowerCase();
-        if (comment === 'дб' || isSalaryComment(comment) || comment === 'бк' || comment === 'ошибка' || comment.startsWith('закрытие кассовой смены')) continue;
+        if (isExcludedComment(comment)) continue;
         const date = (r['DateTime.Typed'] || '').slice(0, 10);
         const amt = Number(r['Sum.Incoming']) || 0;
         if (!date || amt <= 0) continue;
@@ -390,12 +362,13 @@ function mergeInvoicesIntoData(data, invoices) {
 }
 
 export default async function handler(req, res) {
-  // Защита: без CRON_SECRET любой в интернете смог бы дёргать эндпоинт и плодить записи.
+  // Защита: без CRON_SECRET любой в интернете смог бы дёргать эндпоинт и плодить
+  // записи (fail-closed: если секрет не настроен на сервере, эндпоинт отказывает
+  // ВСЕМ, а не пропускает всех без проверки).
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = req.headers.authorization || '';
-    if (auth !== `Bearer ${cronSecret}`) { res.status(401).json({ error: 'Unauthorized' }); return; }
-  }
+  if (!cronSecret) { res.status(500).json({ error: 'CRON_SECRET не настроен на сервере — эндпоинт отключён из соображений безопасности.' }); return; }
+  const auth = req.headers.authorization || '';
+  if (!timingSafeStringEqual(auth, `Bearer ${cronSecret}`)) { res.status(401).json({ error: 'Unauthorized' }); return; }
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

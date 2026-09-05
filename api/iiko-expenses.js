@@ -10,15 +10,11 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
+import { isExcludedComment } from './_lib/expense-rules.js';
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
 }
-
-// Комментарий "зп" может быть с именем сотрудника ("зп курьер", "зп орхан",
-// "рома зп") — считаем зарплатной выплатой, если "зп" встречается отдельным словом
-// в любом месте комментария, а не только когда комментарий равен ровно "зп".
-const isSalaryComment = (s) => String(s || '').toLowerCase().trim().split(/\s+/).includes('зп');
 
 async function iikoAuth(serverUrl, login, password) {
   const url = `${serverUrl.replace(/\/$/, '')}/resto/api/auth?login=${encodeURIComponent(login)}&pass=${sha1Hex(password)}`;
@@ -95,7 +91,7 @@ export default async function handler(req, res) {
         comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
-      .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && !isSalaryComment(e.comment) && e.comment !== 'бк' && e.comment !== 'ошибка' && !e.comment.startsWith('закрытие кассовой смены')) // "дб" — не расход, "зп"-выплаты (в т.ч. с именем сотрудника) — уже учтены в ФОТ отдельно, "бк" — перенос остатка между сменами, "закрытие кассовой смены" — системная запись
+      .filter((e) => e.amount > 0 && e.date && !isExcludedComment(e.comment)) // "дб" — не расход, "зп"-выплаты (в т.ч. с именем сотрудника) — уже учтены в ФОТ отдельно, "бк" — перенос остатка между сменами, "закрытие кассовой смены" — системная запись
       .sort((a, b) => a.date.localeCompare(b.date));
 
     res.status(200).json({ from, to, expenses });

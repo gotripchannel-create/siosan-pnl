@@ -8,6 +8,7 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
+import { isExcludedComment } from './_lib/expense-rules.js';
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
@@ -46,11 +47,6 @@ async function getIikoToken(serverUrl, login, password, forceFresh = false) {
 async function iikoLogout(serverUrl, token) {
   try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
 }
-
-// Комментарий "зп" может быть с именем сотрудника ("зп курьер", "зп орхан",
-// "рома зп") — считаем зарплатной выплатой, если "зп" встречается отдельным словом
-// в любом месте комментария, а не только когда комментарий равен ровно "зп".
-const isSalaryComment = (s) => String(s || '').toLowerCase().trim().split(/\s+/).includes('зп');
 
 async function olapQuery(serverUrl, token, body) {
   const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/v2/reports/olap?key=${encodeURIComponent(token)}`, {
@@ -344,7 +340,7 @@ export default async function handler(req, res) {
         const txJson = JSON.parse(txText);
         if (txResp.ok) {
           const allRows = txJson?.data || [];
-          const isExcluded = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || isSalaryComment(c) || c === 'бк' || c === 'ошибка' || c.startsWith('закрытие кассовой смены'); };
+          const isExcluded = (r) => isExcludedComment(r['Comment']);
           const rows = allRows.filter(r => !isExcluded(r));
           const payIncome = rows.reduce((s, r) => s + (Number(r['Sum.Incoming']) || 0), 0);
           // Полная разбивка по комментарию (включая уже исключённые) — чтобы можно было
@@ -388,7 +384,7 @@ export default async function handler(req, res) {
         const poText = await poResp.text();
         const poJson = JSON.parse(poText);
         if (poResp.ok) {
-          const isExcludedPo = (r) => { const c = String(r['Comment'] || '').trim().toLowerCase(); return c === 'дб' || isSalaryComment(c) || c === 'бк' || c === 'ошибка' || c.startsWith('закрытие кассовой смены'); };
+          const isExcludedPo = (r) => isExcludedComment(r['Comment']);
           result.payoutDetails = (poJson?.data || [])
             .map(r => ({ comment: r['Comment'] || '(без комментария)', amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100, excluded: isExcludedPo(r) }))
             .sort((a, b) => b.amount - a.amount);

@@ -18,23 +18,11 @@
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
+import { timingSafeStringEqual } from './_lib/security.js';
+import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+
 const RESTAURANT_ID = 'siosan';
 const MODEL = 'claude-haiku-4-5-20251001';
-
-// Тот же фиксированный список, что в ручном интерфейсе и в /api/parse-report — не
-// даём модели придумывать свои формулировки категории закупок кухни.
-const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
-function normalizeKitchenCategory(raw) {
-  const trimmed = String(raw || '').trim();
-  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
-  if (exact) return exact;
-  const s = trimmed.toLowerCase();
-  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
-  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
-  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
-  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
-  return 'Прочее';
-}
 
 const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» — сумма, которая физически оказалась в кассе на конец смены (сверка кассы). Это НЕ выручка и НЕ расход — клади её в отдельное поле registerCheck, никогда не добавляй в revenue/otherExpenses и не пиши в unmatchedLines (это не ошибка распознавания, а обычное сверочное поле).
 - «Итого выручка» / «выручка итого» — явно указанная итоговая сумма выручки за день, идёт в totalHint.
@@ -151,8 +139,11 @@ export default async function handler(req, res) {
   }
 
   // 2. Проверка секретного ключа — защита от чужих запросов на этот адрес.
+  // Fail-closed: если секрет не настроен на сервере, ОБРАБОТКА НЕ ИДЁТ (а не
+  // наоборот — раньше при отсутствующей переменной окружения любой запрос без
+  // секрета проходил как авторизованный).
   const expectedSecret = process.env.VK_CALLBACK_SECRET;
-  if (expectedSecret && body.secret !== expectedSecret) {
+  if (!expectedSecret || !timingSafeStringEqual(body.secret, expectedSecret)) {
     res.status(200).send('ok'); // отвечаем "ok", чтобы VK не долбил повторными попытками, но ничего не делаем
     return;
   }

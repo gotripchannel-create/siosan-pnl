@@ -6,15 +6,11 @@
 export const config = { runtime: 'nodejs' };
 
 import { createHash } from 'crypto';
+import { isSalaryComment } from './_lib/expense-rules.js';
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
 }
-
-// Комментарий "зп" может быть с именем сотрудника ("зп курьер", "зп орхан",
-// "рома зп") — считаем зарплатной выплатой, если "зп" встречается отдельным словом
-// в любом месте комментария, а не только когда комментарий равен ровно "зп".
-const isSalaryComment = (s) => String(s || '').toLowerCase().trim().split(/\s+/).includes('зп');
 
 async function iikoAuth(serverUrl, login, password) {
   const url = `${serverUrl.replace(/\/$/, '')}/resto/api/auth?login=${encodeURIComponent(login)}&pass=${sha1Hex(password)}`;
