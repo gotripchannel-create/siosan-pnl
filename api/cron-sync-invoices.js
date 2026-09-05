@@ -17,7 +17,7 @@ export const maxDuration = 60;
 
 import { createHash } from 'crypto';
 import { timingSafeStringEqual } from './_lib/security.js';
-import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment } from './_lib/expense-rules.js';
+import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
 
@@ -215,6 +215,8 @@ function mergeExpensesIntoData(data, reportsByDate) {
     const existing = month.days[date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
     const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    const dedupedKitchen = dedupeAgainstExisting(existing.kitchenExpenses, newKitchen);
+    const dedupedOther = dedupeAgainstExisting(existing.otherExpenses, newOther);
     let courierUpdate = existing.courier;
     if (report.courier?.pay) {
       const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, fixedRate);
@@ -224,10 +226,10 @@ function mergeExpensesIntoData(data, reportsByDate) {
     month.days[date] = {
       ...existing,
       courier: courierUpdate,
-      kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
-      otherExpenses: [...(existing.otherExpenses || []), ...newOther]
+      kitchenExpenses: [...(existing.kitchenExpenses || []), ...dedupedKitchen],
+      otherExpenses: [...(existing.otherExpenses || []), ...dedupedOther]
     };
-    added += newKitchen.length + newOther.length;
+    added += dedupedKitchen.length + dedupedOther.length;
   }
   return { data, added, matchedDatesUsed };
 }

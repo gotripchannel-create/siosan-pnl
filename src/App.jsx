@@ -207,6 +207,26 @@ async function fetchWithTimeout(url, options, timeoutMs = 25000) {
 // и бензин (остаток сверху). Ставка сотрудника не меняется день ото дня — курьер
 // получает фиксированную сумму, а всё, что курьеру выдали сверху, это компенсация
 // бензина.
+// Защита от задвоения расходов на уровне данных — независимо от того, по какой
+// причине один и тот же расход пытаются добавить дважды (гонка клиент/cron,
+// повторный запуск синхронизации, устаревший ключ "уже обработано" и т.п.),
+// не добавляем позицию, если точно такая же (категория + сумма, источник iiko)
+// уже есть в переданном списке. Это НАМЕРЕННО грубая защита ценой того, что две
+// РЕАЛЬНЫЕ отдельные покупки одной категории на одну и ту же сумму в один день
+// (например, две покупки "Продукты" ровно по 500₽) могут схлопнуться в одну —
+// такое совпадение крайне маловероятно и предпочтительнее гарантированного
+// задвоения при малейшей гонке.
+function dedupeAgainstExisting(existingList, newItems) {
+  const existing = existingList || [];
+  const result = [];
+  for (const item of newItems) {
+    const isDup = existing.some((e) => e.source === 'iiko' && e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5)
+      || result.some((e) => e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5);
+    if (!isDup) result.push(item);
+  }
+  return result;
+}
+
 function splitCourierPayout(totalPay, fixedRate) {
   const total = Number(totalPay) || 0;
   const fixed = Number(fixedRate) || 2500;
@@ -1412,8 +1432,15 @@ function Dashboard({ ctx, setPage }) {
           setMonths((prev) => {
             const curMonth = prev[mk] || emptyMonth(settings, null);
             const day = { ...getDay(curMonth, date) };
-            day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-            day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+            // Жёсткая защита от задвоения на уровне данных (а не только по ключу
+            // "уже обработано") — ключи синхронизации не спасают от гонки между
+            // клиентом и фоновым cron, если оба почти одновременно читают ещё не
+            // обновлённое состояние. Здесь читаем САМОЕ СВЕЖЕЕ состояние (React
+            // гарантирует это для функционального updater'а) и не добавляем позицию,
+            // если точно такая же (категория+сумма, от iiko) уже есть в этом дне —
+            // независимо от того, откуда взялась гонка.
+            day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupeAgainstExisting(day.kitchenExpenses, newKitchen)];
+            day.otherExpenses = [...(day.otherExpenses || []), ...dedupeAgainstExisting(day.otherExpenses, newOther)];
             if (report.courier?.pay) {
               const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
               const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
@@ -1576,6 +1603,44 @@ function Dashboard({ ctx, setPage }) {
           if (kitchenFiltered.length !== kitchen.length || otherFiltered.length !== other.length) {
             monthChanged = true; changedAny = true;
             days[ds] = { ...day, kitchenExpenses: kitchenFiltered, otherExpenses: otherFiltered };
+          } else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая чистка уже задвоенных расходов — гонка между клиентом и cron (или
+  // повторные запуски синхронизации) иногда добавляла одну и ту же позицию
+  // (категория+сумма от iiko) дважды в один день. Новые добавления теперь
+  // защищены (см. dedupeAgainstExisting), но уже накопленные дубликаты сами не
+  // исчезнут — схлопываем их в одну запись один раз при загрузке.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const dedupeBucket = (list) => {
+            const seen = [];
+            const kept = [];
+            for (const item of list || []) {
+              if (item.source === 'iiko' && seen.some((s) => s.category === item.category && Math.abs((Number(s.amount) || 0) - (Number(item.amount) || 0)) < 0.5)) continue;
+              seen.push(item);
+              kept.push(item);
+            }
+            return kept;
+          };
+          const kitchenDeduped = dedupeBucket(day.kitchenExpenses);
+          const otherDeduped = dedupeBucket(day.otherExpenses);
+          const kitchen = day.kitchenExpenses || [];
+          const other = day.otherExpenses || [];
+          if (kitchenDeduped.length !== kitchen.length || otherDeduped.length !== other.length) {
+            monthChanged = true; changedAny = true;
+            days[ds] = { ...day, kitchenExpenses: kitchenDeduped, otherExpenses: otherDeduped };
           } else days[ds] = day;
         }
         next[mk] = monthChanged ? { ...m, days } : m;
@@ -5902,14 +5967,16 @@ function IncomingReportsPage({ ctx }) {
           const day = { ...getDay(curMonth, report.date) };
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          const dedupedKitchen = dedupeAgainstExisting(day.kitchenExpenses, newKitchen);
+          const dedupedOther = dedupeAgainstExisting(day.otherExpenses, newOther);
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupedKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...dedupedOther];
           if (report.courier?.pay) {
             const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
             const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
             day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
           }
-          addedCount += newKitchen.length + newOther.length;
+          addedCount += dedupedKitchen.length + dedupedOther.length;
           next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
         }
         return next;

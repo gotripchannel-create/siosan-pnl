@@ -37,6 +37,24 @@ export function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
+// Защита от задвоения расходов на уровне данных — независимо от причины (гонка
+// между клиентом и этим же cron-заданием, повторный запуск, устаревший ключ "уже
+// обработано"), не добавляем позицию, если точно такая же (категория + сумма,
+// источник iiko) уже есть в существующем списке. Намеренно грубая защита: две
+// РЕАЛЬНЫЕ разные покупки одной категории на одну и ту же сумму в один день
+// схлопнутся в одну — такое совпадение маловероятнее гарантированного задвоения
+// при гонке.
+export function dedupeAgainstExisting(existingList, newItems) {
+  const existing = existingList || [];
+  const result = [];
+  for (const item of newItems) {
+    const isDup = existing.some((e) => e.source === 'iiko' && e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5)
+      || result.some((e) => e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5);
+    if (!isDup) result.push(item);
+  }
+  return result;
+}
+
 // Общий фильтр "не расход/не выручка" для сырых проводок из iiko: "дб" — сверка
 // кассы, "зп..." — зарплата (учитывается отдельно через ФОТ), "бк" — перенос остатка
 // между сменами, "ошибка" — кассир сам пометил операцию как ошибочную, "закрытие
