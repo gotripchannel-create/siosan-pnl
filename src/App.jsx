@@ -4457,7 +4457,7 @@ function DrillModal({ kind, pnl, onClose }) {
 /* ============================== SETTINGS ============================== */
 
 function SettingsPage({ ctx }) {
-  const { settings, setSettings } = ctx;
+  const { settings, setSettings, months, session } = ctx;
   const [tab, setTab] = useState('channels');
 
   const update = (fn) => setSettings((s) => fn({ ...s }));
@@ -4562,23 +4562,131 @@ function SettingsPage({ ctx }) {
       )}
 
       {tab === 'anomaly' && (
-        <Card>
-          <div className="rp-form-grid">
-            <Field label="Порог отклонения для предупреждения, %">
-              <input type="number" min="5" step="5" value={settings.anomalyThresholdPct} onChange={(e) => update((s) => { s.anomalyThresholdPct = Number(e.target.value); return s; })} />
-            </Field>
-          </div>
-          <p className="rp-muted">
-            На странице «День» приложение сравнивает сегодняшнюю выручку, расходы кухни/бара, курьера и промо со средним значением
-            за последние 7 дней с данными (нужно минимум 3 дня для сравнения). Если отклонение больше указанного процента — показывается
-            некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
-          </p>
-        </Card>
+        <>
+          <Card>
+            <div className="rp-form-grid">
+              <Field label="Порог отклонения для предупреждения, %">
+                <input type="number" min="5" step="5" value={settings.anomalyThresholdPct} onChange={(e) => update((s) => { s.anomalyThresholdPct = Number(e.target.value); return s; })} />
+              </Field>
+            </div>
+            <p className="rp-muted">
+              На странице «День» приложение сравнивает сегодняшнюю выручку, расходы кухни/бара, курьера и промо со средним значением
+              за последние 7 дней с данными (нужно минимум 3 дня для сравнения). Если отклонение больше указанного процента — показывается
+              некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
+            </p>
+          </Card>
+          <ExpenseReconciliationPanel months={months} session={session} />
+        </>
       )}
 
       {tab === 'backup' && <BackupPanel ctx={ctx} />}
       {tab === 'integrations' && <IikoIntegrationPanel ctx={ctx} />}
     </div>
+  );
+}
+
+// Инструмент сверки — читает все дни за последние 6 месяцев из текущего локального
+// состояния (months) и сравнивает уже сохранённые "иикошные" расходы (source:'iiko')
+// с ОДНИМ актуальным запросом сырых изъятий из iiko за весь период (не 180 отдельных
+// запросов по дням — один запрос диапазона через /api/iiko-expenses). Только
+// ПОКАЗЫВАЕТ расхождения, ничего не удаляет и не меняет сам — после инцидента с
+// автосверкой на странице "День" (см. историю) массовые автоматические изменения
+// финансовых данных без явного разбора конкретного дня — плохая идея.
+function ExpenseReconciliationPanel({ months, session }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  const runCheck = async () => {
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const today = todayObj();
+      const fromD = new Date(today.y, today.m - 6, today.d);
+      const from = dateStr(fromD.getFullYear(), fromD.getMonth(), fromD.getDate());
+      const to = todayStr();
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+      const resp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const data = await resp.json();
+      if (!resp.ok) { setError(data?.error || 'Не удалось получить изъятия из iiko.'); return; }
+
+      // Живые изъятия за весь период, сгруппированные по дате (уже без "дб"/"зп"/"бк"/
+      // "ошибка"/закрытия смены — это отсекается на сервере в /api/iiko-expenses).
+      const liveByDate = new Map();
+      for (const e of (data.expenses || [])) {
+        if (!liveByDate.has(e.date)) liveByDate.set(e.date, []);
+        liveByDate.get(e.date).push(e.amount);
+      }
+
+      const issues = [];
+      let checkedDays = 0;
+      for (const [mk, m] of Object.entries(months || {})) {
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          if (ds < from || ds > to) continue;
+          const hasIikoStored = (day.kitchenExpenses || []).some((e) => e.source === 'iiko') || (day.otherExpenses || []).some((e) => e.source === 'iiko');
+          const hasLive = liveByDate.has(ds);
+          if (!hasIikoStored && !hasLive) continue; // обычный день без иикошных операций вообще — не о чем сообщать
+          checkedDays += 1;
+
+          const pool = [...(liveByDate.get(ds) || [])];
+          const stored = [
+            ...(day.kitchenExpenses || []).filter((e) => e.source === 'iiko').map((e) => ({ ...e, _b: 'Закупки' })),
+            ...(day.otherExpenses || []).filter((e) => e.source === 'iiko').map((e) => ({ ...e, _b: 'Прочее' })),
+          ];
+          const orphaned = [];
+          for (const item of stored) {
+            const idx = pool.findIndex((a) => Math.abs(a - item.amount) < 0.5);
+            if (idx >= 0) pool.splice(idx, 1);
+            else orphaned.push(item);
+          }
+          // pool теперь — живые суммы, для которых НЕ нашлось сохранённого расхода.
+          if (orphaned.length > 0 || pool.length > 0) {
+            issues.push({ date: ds, orphaned, unsynced: pool });
+          }
+        }
+      }
+      setResult({ issues: issues.sort((a, b) => a.date.localeCompare(b.date)), checkedDays, totalLiveDays: liveByDate.size, from, to });
+    } catch (e) {
+      setError(e?.message || 'Не удалось выполнить проверку.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card style={{ marginTop: 16 }}>
+      <div className="rp-card-title">Сверка расходов с iiko за последние 6 месяцев</div>
+      <p className="rp-muted" style={{ marginBottom: 12 }}>
+        Сравнивает уже сохранённые у вас расходы (пришедшие из iiko) с текущим актуальным списком изъятий в iiko за тот же день.
+        Только показывает расхождения — ничего не меняет автоматически.
+      </p>
+      <button className="rp-btn" onClick={runCheck} disabled={loading}>{loading ? 'Проверяю…' : 'Запустить проверку'}</button>
+      {error && <div className="rp-inline-warn" style={{ marginTop: 12 }}><AlertTriangle size={13} /> {error}</div>}
+      {result && (
+        <div style={{ marginTop: 16 }}>
+          <p className="rp-muted">
+            Проверено {result.checkedDays} дней с иикошными операциями за период {result.from.split('-').reverse().join('.')} — {result.to.split('-').reverse().join('.')}.
+          </p>
+          {result.issues.length === 0 ? (
+            <div className="rp-cash-check" style={{ marginTop: 8 }}><Info size={13} /> Расхождений не найдено — всё сходится.</div>
+          ) : (
+            <div className="rp-table-wrap" style={{ marginTop: 8 }}>
+              <table className="rp-table">
+                <thead><tr><th>Дата</th><th>Сохранено, но нет в iiko (осиротело)</th><th>Есть в iiko, но не засинхронизировано</th></tr></thead>
+                <tbody>
+                  {result.issues.map((iss) => (
+                    <tr key={iss.date}>
+                      <td>{iss.date.split('-').reverse().join('.')}</td>
+                      <td>{iss.orphaned.length === 0 ? '—' : iss.orphaned.map((o, i) => <div key={i}>{o._b}: {fmtRub(o.amount)}</div>)}</td>
+                      <td>{iss.unsynced.length === 0 ? '—' : iss.unsynced.map((a, i) => <div key={i}>{fmtRub(a)}</div>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
