@@ -256,11 +256,24 @@ function normalizeKitchenCategory(raw) {
 function matchIikoCashierToEmployee(iikoName, employees) {
   if (!iikoName) return null;
   const normalized = String(iikoName).toLowerCase().trim();
+  // Раньше матчилось по ЛЮБОМУ вхождению подстроки (normalized.includes(firstName))
+  // и возвращался ПЕРВЫЙ подходящий сотрудник по порядку в массиве — это могло
+  // ошибочно сработать на случайное вхождение короткого имени внутри более длинного
+  // слова, а при нескольких похожих совпадениях результат зависел от порядка в
+  // списке сотрудников, а не от того, какое совпадение точнее. Теперь: 1) имя
+  // сотрудника ищется как ОТДЕЛЬНОЕ СЛОВО (по границам слова), а не как подстрока
+  // где угодно; 2) если подходит несколько сотрудников, выбираем того, чьё имя
+  // длиннее (более специфичное, менее случайное совпадение).
+  const words = normalized.split(/[^а-яёa-z0-9]+/i).filter(Boolean);
+  let best = null;
   for (const emp of employees) {
     const firstName = String(emp.name || '').trim().toLowerCase().split(/\s+/)[0];
-    if (firstName && firstName.length > 1 && normalized.includes(firstName)) return emp;
+    if (!firstName || firstName.length < 2) continue;
+    if (words.includes(firstName) && (!best || firstName.length > best.firstName.length)) {
+      best = { emp, firstName };
+    }
   }
-  return null;
+  return best ? best.emp : null;
 }
 
 function matchIikoPayTypeToChannel(payType, channels) {
