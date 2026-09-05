@@ -1201,6 +1201,44 @@ function Dashboard({ ctx, setPage }) {
     return () => { cancelled = true; clearTimeout(t); setDayLiveSyncLoading(false); };
   }, [dayDate, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Сверка уже сохранённых "иикошных" расходов дня с текущим списком изъятий из
+  // iiko — если какое-то изъятие с тех пор удалили/исправили в iikoFront (кассир
+  // ошибся и поправил), у нас в приложении оно бы осталось "осиротевшим" навсегда
+  // (наша синхронизация только ДОБАВЛЯЕТ новые расходы, никогда не проверяет, не
+  // исчезли ли уже добавленные). Сопоставляем по сумме (мультимножество — с учётом
+  // повторов одинаковых сумм), НИКОГДА не трогаем вручную добавленные записи
+  // (source !== 'iiko'). Курьера (day.courier) это не касается — отдельная сущность.
+  useEffect(() => {
+    if (!iikoDayDetails?.payoutDetails || !dayDate) return;
+    const liveAmounts = iikoDayDetails.payoutDetails.filter((r) => !r.excluded).map((r) => Math.round((Number(r.amount) || 0) * 100) / 100);
+    const mk = dayDate.slice(0, 7);
+    setMonths((prev) => {
+      const m = prev[mk];
+      const day = m?.days?.[dayDate];
+      if (!day) return prev;
+      const kitchen = day.kitchenExpenses || [];
+      const other = day.otherExpenses || [];
+      const combined = [
+        ...kitchen.map((e) => ({ ...e, _bucket: 'k' })),
+        ...other.map((e) => ({ ...e, _bucket: 'o' })),
+      ];
+      const pool = [...liveAmounts];
+      const survivors = [];
+      let removed = 0;
+      for (const item of combined) {
+        if (item.source !== 'iiko') { survivors.push(item); continue; }
+        const idx = pool.findIndex((a) => Math.abs(a - item.amount) < 0.5);
+        if (idx >= 0) { pool.splice(idx, 1); survivors.push(item); }
+        else { removed += 1; }
+      }
+      if (removed === 0) return prev;
+      const strip = ({ _bucket, ...rest }) => rest;
+      const newKitchen = survivors.filter((x) => x._bucket === 'k').map(strip);
+      const newOther = survivors.filter((x) => x._bucket === 'o').map(strip);
+      return { ...prev, [mk]: { ...m, days: { ...m.days, [dayDate]: { ...day, kitchenExpenses: newKitchen, otherExpenses: newOther } } } };
+    });
+  }, [iikoDayDetails, dayDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Синхронизация расходов из iiko прямо с Дашборда (та же логика, что на странице
   // «Входящие отчёты») — чтобы не уходить в другой раздел за этим. Работает за
   // текущий открытый месяц; для конкретного дня расходы попадут в тот же день.
