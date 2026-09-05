@@ -1025,12 +1025,9 @@ export default function App() {
               : <button className="rp-chip" onClick={() => { updateMonth((m) => ({ ...m, closed: true })); logAudit({ what: 'Месяц закрыт', month: monthKey }); }}><Unlock size={13} /> Закрыть месяц</button>}
           </div>
           <div className="rp-topbar-right">
-            <button className="rp-btn rp-btn-ghost" onClick={() => setSyncOpen(true)}><RefreshCw size={14} /> Синхронизация</button>
             <ExportMenu ctx={ctx} />
           </div>
         </header>
-
-        {syncOpen && <SyncModal ctx={ctx} onClose={() => setSyncOpen(false)} />}
 
         <main className="rp-content">
           {page === 'dashboard' && <Dashboard ctx={ctx} setPage={setPage} />}
@@ -1682,7 +1679,6 @@ function Dashboard({ ctx, setPage }) {
               <RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Синхронизирую с iiko…
             </span>
           )}
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setHistorySyncOpen(true)} disabled={revSyncLoading || expSyncLoading}><Calendar size={13}/> Загрузить историю</button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
