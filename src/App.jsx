@@ -754,6 +754,10 @@ export default function App() {
   const saveTimer = useRef(null);
   const cloudRowId = useRef(null);
   const hydrated = useRef(false);
+  // Последний ИЗВЕСТНЫЙ нам момент изменения строки в базе — используется перед
+  // сохранением, чтобы обнаружить, не поменял ли данные кто-то ещё (другой браузер,
+  // фоновый cron) после того, как мы их загрузили. См. save-эффект ниже.
+  const lastKnownUpdatedAt = useRef(null);
 
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
@@ -770,7 +774,7 @@ export default function App() {
       try {
         const { data: rows, error } = await supabase
           .from('restaurant_data')
-          .select('id,data')
+          .select('id,data,updated_at')
           .eq('restaurant_id', RESTAURANT_ID)
           .limit(1);
         if (error) throw error;
@@ -859,16 +863,18 @@ export default function App() {
           setAuditLog([]);
         }
 
-        if (row) cloudRowId.current = row.id;
+        if (row) { cloudRowId.current = row.id; lastKnownUpdatedAt.current = row.updated_at; }
         else {
           const initial = parsed || { settings: defaultSettings(), employees: seedEmployees(), suppliers: seedSuppliers(), months: {}, auditLog: [] };
+          const nowIso = new Date().toISOString();
           const { data: inserted, error: insErr } = await supabase
             .from('restaurant_data')
-            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: new Date().toISOString() })
+            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: nowIso })
             .select('id')
             .single();
           if (insErr) throw insErr;
           cloudRowId.current = inserted.id;
+          lastKnownUpdatedAt.current = nowIso;
         }
       } catch (e) {
         setSyncError(e?.message || 'Ошибка загрузки общей базы');
@@ -885,12 +891,57 @@ export default function App() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
+        // Защита от гонки записи: вся база хранится одним JSON-полем, и раньше
+        // сохранение просто перезаписывало его целиком, не проверяя, не изменил ли
+        // кто-то данные (фоновый cron, другая открытая вкладка) уже ПОСЛЕ того, как
+        // мы их загрузили — что могло молча стереть чужие изменения (см. аудит,
+        // инциденты с задвоением курьера и "осиротевшими" расходами).
+        //
+        // Атомарная запись "только если updated_at всё ещё тот же, что мы видели
+        // при загрузке" (compare-and-swap на уровне одного SQL-запроса — без
+        // отдельного запроса-проверки, между которым и записью мог бы остаться
+        // зазор для гонки). Если строку уже кто-то поменял — .eq(...) не найдёт
+        // совпадений, обновится 0 строк, и мы это увидим по пустому результату.
         const payload = { settings, employees, suppliers, months, auditLog };
-        const { error } = await supabase
+        const nowIso = new Date().toISOString();
+        const query = supabase
           .from('restaurant_data')
-          .update({ data: payload, updated_at: new Date().toISOString() })
+          .update({ data: payload, updated_at: nowIso })
           .eq('id', cloudRowId.current);
+        const { data: updatedRows, error } = lastKnownUpdatedAt.current
+          ? await query.eq('updated_at', lastKnownUpdatedAt.current).select('id')
+          : await query.select('id'); // первое сохранение после создания строки — updated_at ещё не зафиксирован
         if (error) throw error;
+
+        if (!updatedRows || updatedRows.length === 0) {
+          // 0 обновлённых строк = кто-то другой сохранил данные между нашей
+          // загрузкой и этой попыткой записи. НЕ перезаписываем вслепую поверх —
+          // подтягиваем свежую версию и показываем её. Наше самое последнее
+          // локальное изменение в этом случае, к сожалению, придётся внести ещё
+          // раз — но это гораздо лучше, чем молча стереть чужие данные (например,
+          // только что подтянутые автосинхронизацией расходы).
+          const { data: fresh, error: freshError } = await supabase
+            .from('restaurant_data')
+            .select('data,updated_at')
+            .eq('id', cloudRowId.current)
+            .single();
+          if (freshError) throw freshError;
+          console.error('Обнаружен конфликт одновременного сохранения — подтянуты более свежие данные вместо перезаписи.');
+          if (fresh?.data) {
+            const freshData = fresh.data;
+            setSettings(freshData.settings || defaultSettings());
+            setEmployees(freshData.employees || seedEmployees());
+            setSuppliers(freshData.suppliers || seedSuppliers());
+            setMonths(freshData.months || {});
+            setAuditLog(freshData.auditLog || []);
+          }
+          lastKnownUpdatedAt.current = fresh?.updated_at || nowIso;
+          setSyncError('Данные обновились в фоне (например, автосинхронизация) — показаны самые свежие. Если вы только что что-то меняли, откройте эту страницу заново и повторите изменение.');
+          setSaving(false);
+          return;
+        }
+
+        lastKnownUpdatedAt.current = nowIso;
         window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
         setSyncError('');
       } catch (e) {
