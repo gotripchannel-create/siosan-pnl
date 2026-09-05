@@ -1446,7 +1446,21 @@ function Dashboard({ ctx, setPage }) {
               const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
               day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
             }
-            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [date]: day } } };
+            // Изъятия вида "рома зп"/"леша аванс" — ИИ уже сопоставил имя с
+            // конкретным сотрудником (employeeId). Добавляем как аванс этому
+            // сотруднику за соответствующую половину месяца. Несопоставленные
+            // (employeeId=null, имя не узнано) пропускаем — они видны в
+            // unmatchedLines для ручной проверки, но не создаём мусорную запись.
+            const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+            const newAdvances = (report.advances || [])
+              .filter((a) => a.employeeId && Number(a.amount) > 0)
+              .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
+            const existingAdj = curMonth.adjustments || [];
+            const dedupedAdvances = newAdvances.filter((na) =>
+              !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+            );
+            const monthWithAdvances = dedupedAdvances.length > 0 ? { ...curMonth, adjustments: [...existingAdj, ...dedupedAdvances] } : curMonth;
+            return { ...prev, [mk]: { ...monthWithAdvances, days: { ...monthWithAdvances.days, [date]: day } } };
           });
           addedCount += newKitchen.length + newOther.length;
           successfulDates.push(date);

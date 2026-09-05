@@ -17,7 +17,7 @@ export const maxDuration = 60;
 
 import { createHash } from 'crypto';
 import { timingSafeStringEqual } from './_lib/security.js';
-import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
+import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment, isNoiseComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
 
@@ -148,7 +148,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
       comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
       amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
     }))
-    .filter((e) => e.amount > 0 && e.date && !isExcludedComment(e.comment));
+    .filter((e) => e.amount > 0 && e.date && !isNoiseComment(e.comment));
 }
 
 // Категоризация расходов через уже существующий ИИ-парсер (/api/parse-report) —
@@ -230,6 +230,25 @@ function mergeExpensesIntoData(data, reportsByDate) {
       otherExpenses: [...(existing.otherExpenses || []), ...dedupedOther]
     };
     added += dedupedKitchen.length + dedupedOther.length;
+
+    // Изъятия вида "рома зп"/"леша аванс" — parse-report уже сопоставил имя с
+    // employeeId по списку сотрудников. Добавляем как аванс конкретному
+    // сотруднику за соответствующую половину месяца, с защитой от задвоения
+    // (тот же принцип, что и для расходов — сверяем по employeeId+сумма+дата).
+    const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+    const newAdvances = (report.advances || [])
+      .filter((a) => a.employeeId && Number(a.amount) > 0)
+      .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
+    if (newAdvances.length > 0) {
+      const existingAdj = month.adjustments || [];
+      const dedupedAdvances = newAdvances.filter((na) =>
+        !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+      );
+      if (dedupedAdvances.length > 0) {
+        month.adjustments = [...existingAdj, ...dedupedAdvances];
+        added += dedupedAdvances.length;
+      }
+    }
   }
   return { data, added, matchedDatesUsed };
 }

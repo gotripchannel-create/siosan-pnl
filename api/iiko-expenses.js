@@ -10,7 +10,7 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
-import { isExcludedComment } from './_lib/expense-rules.js';
+import { isNoiseComment } from './_lib/expense-rules.js';
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
@@ -91,7 +91,7 @@ export default async function handler(req, res) {
         comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
-      .filter((e) => e.amount > 0 && e.date && !isExcludedComment(e.comment)) // "дб" — не расход, "зп"-выплаты (в т.ч. с именем сотрудника) — уже учтены в ФОТ отдельно, "бк" — перенос остатка между сменами, "закрытие кассовой смены" — системная запись
+      .filter((e) => e.amount > 0 && e.date && !isNoiseComment(e.comment)) // "дб"/"бк"/"ошибка"/"закрытие смены" — точно не расход и не полезны; "зп"-выплаты с именем сотрудника НЕ отсекаем здесь — их разбирает ИИ (авансы конкретному сотруднику или курьеру)
       .sort((a, b) => a.date.localeCompare(b.date));
 
     res.status(200).json({ from, to, expenses });
