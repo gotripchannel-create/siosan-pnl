@@ -812,6 +812,19 @@ export default function App() {
           if ((loadedSettings.iikoExpensesSyncedKeys || []).some((k) => incidentKeys.includes(k))) {
             loadedSettings.iikoExpensesSyncedKeys = (loadedSettings.iikoExpensesSyncedKeys || []).filter((k) => !incidentKeys.includes(k));
           }
+          // Массив ключей "уже обработано" (v3::дата::комментарий::сумма) растёт
+          // бесконечно и никогда не чистится — через годы работы это тысячи строк
+          // в JSON-поле settings, которое целиком перезаписывается при каждом
+          // сохранении. Дата зашита в самом ключе — подрезаем всё старше ~14 месяцев
+          // (с запасом: даже если когда-нибудь вернуть ручной бэкфилл истории, это
+          // не должно понадобиться на данные старше года).
+          const KEY_RETENTION_DAYS = 420;
+          const keyDateCutoff = new Date(); keyDateCutoff.setDate(keyDateCutoff.getDate() - KEY_RETENTION_DAYS);
+          const cutoffStr = dateStr(keyDateCutoff.getFullYear(), keyDateCutoff.getMonth(), keyDateCutoff.getDate());
+          loadedSettings.iikoExpensesSyncedKeys = (loadedSettings.iikoExpensesSyncedKeys || []).filter((k) => {
+            const m = /^v3::(\d{4}-\d{2}-\d{2})::/.exec(k);
+            return !m || m[1] >= cutoffStr; // ключи неожиданного формата не трогаем — оставляем как есть
+          });
           setSettings(loadedSettings);
           setEmployees(parsed.employees || seedEmployees());
           setSuppliers(parsed.suppliers || seedSuppliers());
