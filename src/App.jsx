@@ -3165,6 +3165,17 @@ function SuppliersPage({ ctx }) {
   const [itemsFor, setItemsFor] = useState(null);
 
   const ledger = useMemo(() => supplierLedger(months, suppliers, year, monthIdx), [months, suppliers, year, monthIdx]);
+  // Раньше в основном списке показывалась сумма нарастающим итогом за всю историю
+  // (то же значение, что и в верхней плашке "Заявлено всего") — из-за этого список
+  // выглядел так, будто в текущем месяце заказали намного больше, чем на самом деле.
+  // Список теперь показывает суммы ТОЛЬКО за выбранный месяц.
+  const monthOrderedBySupplier = useMemo(() => {
+    const map = {};
+    for (const o of (month.supplierOrders || [])) {
+      map[o.supplierId] = (map[o.supplierId] || 0) + (Number(o.amount) || 0);
+    }
+    return map;
+  }, [month.supplierOrders]);
   const activeSuppliers = suppliers.filter((s) => !s.archived);
   const visibleSuppliers = showArchived ? suppliers : activeSuppliers;
 
@@ -3350,7 +3361,7 @@ function SuppliersPage({ ctx }) {
 
   return (
     <div className="rp-page">
-      <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Заявки, оплаты и задолженность (нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year})</div></div>
+      <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Список — за {MONTHS_RU[monthIdx].toLowerCase()} {year}; задолженность и итоги вверху — нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year}</div></div>
 
       <div className="rp-grid-4">
         <Stat label="Заявлено всего" value={fmtRub(totalOrdered)} />
@@ -3405,14 +3416,14 @@ function SuppliersPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Поставщик</th><th>Заявлено</th><th /></tr></thead>
+          <thead><tr><th>Поставщик</th><th>Заявлено за {MONTHS_RU[monthIdx].toLowerCase()}</th><th /></tr></thead>
           <tbody>
             {visibleSuppliers.map((s) => {
-              const l = ledger[s.id] || { ordered: 0, paid: 0 };
+              const monthOrdered = monthOrderedBySupplier[s.id] || 0;
               return (
                 <tr key={s.id} style={s.archived ? { opacity: 0.55 } : {}}>
                   <td className="rp-strong rp-link" onClick={() => setHistoryFor(s.id)}>{s.name}{s.archived && <span className="rp-badge off" style={{ marginLeft: 6 }}>архив</span>}</td>
-                  <td className="rp-num">{fmtRub(l.ordered)}</td>
+                  <td className="rp-num">{fmtRub(monthOrdered)}</td>
                   <td>
                     {!s.archived && (
                       <>
