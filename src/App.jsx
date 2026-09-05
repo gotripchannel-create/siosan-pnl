@@ -795,6 +795,23 @@ export default function App() {
           if (missing.length > 0) {
             loadedSettings.expenseCategories = [...(loadedSettings.expenseCategories || []), ...missing];
           }
+          // Разовое исправление конкретного инцидента: баг в первой версии автосверки
+          // расходов дня (см. reconciliation useEffect ниже) один раз ошибочно стёр
+          // настоящие расходы за 04.09.2026 (посчитал пустой/неполный ответ iiko за
+          // "все изъятия исчезли"). Обычная повторная синхронизация их не вернёт —
+          // ключи этих 4 операций уже отмечены "обработано" в iikoExpensesSyncedKeys.
+          // Снимаем именно эти 4 ключа один раз, чтобы следующая синхронизация снова
+          // их подхватила и правильно закатегоризировала.
+          const incidentDate = '2026-09-04';
+          const incidentKeys = [
+            `v3::${incidentDate}::закуп магнит::11096`,
+            `v3::${incidentDate}::вода::1000`,
+            `v3::${incidentDate}::сантехник::500`,
+            `v3::${incidentDate}::закуп::52`,
+          ];
+          if ((loadedSettings.iikoExpensesSyncedKeys || []).some((k) => incidentKeys.includes(k))) {
+            loadedSettings.iikoExpensesSyncedKeys = (loadedSettings.iikoExpensesSyncedKeys || []).filter((k) => !incidentKeys.includes(k));
+          }
           setSettings(loadedSettings);
           setEmployees(parsed.employees || seedEmployees());
           setSuppliers(parsed.suppliers || seedSuppliers());
@@ -1211,6 +1228,13 @@ function Dashboard({ ctx, setPage }) {
   useEffect(() => {
     if (!iikoDayDetails?.payoutDetails || !dayDate) return;
     const liveAmounts = iikoDayDetails.payoutDetails.filter((r) => !r.excluded).map((r) => Math.round((Number(r.amount) || 0) * 100) / 100);
+    // Защита от ложного удаления: если живой список изъятий пришёл ПУСТЫМ, это
+    // почти наверняка означает, что запрос к iiko в этот раз не удался/вернул
+    // неполные данные (OLAP-отчёты на локальном сервере ресторана иногда подглючивают),
+    // а НЕ что все изъятия за день внезапно исчезли. В таком случае лучше вообще
+    // ничего не трогать и попробовать сверку при следующей загрузке страницы, чем
+    // рисковать стереть настоящие расходы из-за одной неудачной попытки.
+    if (liveAmounts.length === 0) return;
     const mk = dayDate.slice(0, 7);
     setMonths((prev) => {
       const m = prev[mk];
@@ -1225,13 +1249,21 @@ function Dashboard({ ctx, setPage }) {
       const pool = [...liveAmounts];
       const survivors = [];
       let removed = 0;
+      let iikoSourcedCount = 0;
       for (const item of combined) {
         if (item.source !== 'iiko') { survivors.push(item); continue; }
+        iikoSourcedCount += 1;
         const idx = pool.findIndex((a) => Math.abs(a - item.amount) < 0.5);
         if (idx >= 0) { pool.splice(idx, 1); survivors.push(item); }
         else { removed += 1; }
       }
       if (removed === 0) return prev;
+      // Ещё одна защита: если сверка вдруг "хочет" убрать больше половины уже
+      // сохранённых иикошных записей за один раз — это больше похоже на сбой/неполные
+      // данные при этой конкретной загрузке, чем на то, что кассир и правда отменил
+      // половину операций за день. В таком подозрительном случае лучше ничего не
+      // трогать и переспросить при следующей загрузке, чем массово стереть расходы.
+      if (removed > iikoSourcedCount / 2) return prev;
       const strip = ({ _bucket, ...rest }) => rest;
       const newKitchen = survivors.filter((x) => x._bucket === 'k').map(strip);
       const newOther = survivors.filter((x) => x._bucket === 'o').map(strip);
