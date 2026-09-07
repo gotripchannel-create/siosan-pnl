@@ -4285,7 +4285,7 @@ function PurchaseAnalyticsPage({ ctx }) {
 /* ============================== AI-помощник ============================== */
 
 async function buildAiContext(ctx, session) {
-  const { pnl, prevPnl, year, monthIdx, months, suppliers } = ctx;
+  const { pnl, prevPnl, year, monthIdx, months, suppliers, employees } = ctx;
   const prevDateObj = new Date(year, monthIdx - 1, 1);
   const monthLabel = `${MONTHS_RU[monthIdx]} ${year}`;
   const prevMonthLabel = `${MONTHS_RU[prevDateObj.getMonth()]} ${prevDateObj.getFullYear()}`;
@@ -4366,6 +4366,8 @@ async function buildAiContext(ctx, session) {
   return {
     месяц: monthLabel,
     предыдущийМесяц: prevMonthLabel,
+    сегодня: todayStr(),
+    сотрудники: (employees || []).filter((e) => e.status === 'active').map((e) => ({ id: e.id, имя: e.name, должность: e.position })),
     выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА: iikoRevenue,
     прибыльПоРучномуУчётуРасходов: { этотМесяц: Math.round(pnl.profit), прошлыйМесяц: Math.round(prevPnl.profit) },
     примечаниеПроПрибыльИМаржу: 'Прибыль и маржа посчитаны в приложении на основе ручного ввода выручки в разделе «Кассовая смена (день)», который отдельный от кассы iiko и часто не заполняется — если он пустой, прибыль/маржа ниже будут некорректны. Для реальной выручки используй поле выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА.',
@@ -4446,7 +4448,7 @@ function AiAssistantPage({ ctx }) {
 // при полной перезагрузке вкладки). Контекст (P&L, закупки) всегда актуален для
 // текущего выбранного вверху месяца, независимо от того, какая страница открыта.
 function AiChatWidget({ ctx }) {
-  const { session } = ctx;
+  const { session, employees, setMonths } = ctx;
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -4472,12 +4474,77 @@ function AiChatWidget({ ctx }) {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+      const actions = (data.actions || []).map((a) => ({ ...a, status: 'pending' }));
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer, actions }]);
     } catch (e) {
       setChatError(e.message);
     } finally {
       setChatLoading(false);
     }
+  };
+
+  // Применение предложенного ассистентом действия — ТОЛЬКО после явного нажатия
+  // "Подтвердить" пользователем (см. ai-assistant.js: сервер лишь предлагает,
+  // ничего не меняет сам). Имя сотрудника сопоставляется с id тем же алгоритмом,
+  // что и для сопоставления кассира iiko — единая логика поиска по имени.
+  const applyAction = (msgIndex, actionId) => {
+    setMessages((prev) => {
+      const msg = prev[msgIndex];
+      const action = msg.actions.find((a) => a.id === actionId);
+      if (!action) return prev;
+      const emp = matchIikoCashierToEmployee(action.input.employee_name, employees);
+      if (!emp) {
+        return prev.map((m, i) => i !== msgIndex ? m : {
+          ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'error', error: `Не нашёл сотрудника «${action.input.employee_name}» в справочнике.` } : a)
+        });
+      }
+      const date = action.input.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+        return prev.map((m, i) => i !== msgIndex ? m : {
+          ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'error', error: `Не понял дату «${date}».` } : a)
+        });
+      }
+      const mk = date.slice(0, 7);
+      setMonths((prevMonths) => {
+        const curMonth = prevMonths[mk] || emptyMonth(ctx.settings, null);
+        if (action.name === 'set_shift') {
+          const empShifts = { ...(curMonth.shifts?.[emp.id] || {}) };
+          const hours = Number(action.input.hours) || 0;
+          if (hours === 0) delete empShifts[date]; else empShifts[date] = hours;
+          return { ...prevMonths, [mk]: { ...curMonth, shifts: { ...curMonth.shifts, [emp.id]: empShifts } } };
+        }
+        if (action.name === 'add_adjustment') {
+          const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+          const adj = { id: uid(), employeeId: emp.id, type: action.input.type, half, amount: Number(action.input.amount) || 0, comment: action.input.comment || 'Через AI-помощника', date };
+          return { ...prevMonths, [mk]: { ...curMonth, adjustments: [...(curMonth.adjustments || []), adj] } };
+        }
+        return prevMonths;
+      });
+      return prev.map((m, i) => i !== msgIndex ? m : {
+        ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'applied', employeeName: emp.name } : a)
+      });
+    });
+  };
+
+  const rejectAction = (msgIndex, actionId) => {
+    setMessages((prev) => prev.map((m, i) => i !== msgIndex ? m : {
+      ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'rejected' } : a)
+    }));
+  };
+
+  const describeAction = (action) => {
+    const dateFmt = String(action.input.date || '').split('-').reverse().join('.');
+    if (action.name === 'set_shift') {
+      const hours = Number(action.input.hours) || 0;
+      return hours === 0
+        ? `Убрать смену: ${action.input.employee_name}, ${dateFmt}`
+        : `Смена: ${action.input.employee_name}, ${dateFmt}, ${hours} ч`;
+    }
+    if (action.name === 'add_adjustment') {
+      const typeLabel = { bonus: 'Премия', penalty: 'Штраф', advance: 'Аванс' }[action.input.type] || action.input.type;
+      return `${typeLabel}: ${action.input.employee_name}, ${fmtRub(action.input.amount)}, ${dateFmt}${action.input.comment ? ` — ${action.input.comment}` : ''}`;
+    }
+    return action.name;
   };
 
   return (
@@ -4499,8 +4566,22 @@ function AiChatWidget({ ctx }) {
               </div>
             )}
             {messages.map((m, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                <div className={`rp-ai-bubble ${m.role === 'user' ? 'rp-ai-bubble-user' : 'rp-ai-bubble-assistant'}`}>{m.content}</div>
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', gap: 6 }}>
+                {m.content && <div className={`rp-ai-bubble ${m.role === 'user' ? 'rp-ai-bubble-user' : 'rp-ai-bubble-assistant'}`}>{m.content}</div>}
+                {(m.actions || []).map((a) => (
+                  <div key={a.id} className="rp-ai-action-card">
+                    <div style={{ fontSize: 13 }}>{describeAction(a)}</div>
+                    {a.status === 'pending' && (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <button className="rp-btn rp-btn-sm" onClick={() => applyAction(i, a.id)}>Подтвердить</button>
+                        <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => rejectAction(i, a.id)}>Отклонить</button>
+                      </div>
+                    )}
+                    {a.status === 'applied' && <div className="rp-muted" style={{ fontSize: 12, marginTop: 6, color: COLORS.accent }}>✓ Применено</div>}
+                    {a.status === 'rejected' && <div className="rp-muted" style={{ fontSize: 12, marginTop: 6 }}>Отклонено</div>}
+                    {a.status === 'error' && <div className="rp-inline-warn" style={{ marginTop: 6 }}><AlertTriangle size={12} /> {a.error}</div>}
+                  </div>
+                ))}
               </div>
             ))}
             {chatLoading && <div className="rp-muted" style={{ fontSize: 13 }}>Думаю…</div>}

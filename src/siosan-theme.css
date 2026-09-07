@@ -582,6 +582,10 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
 }
 .rp-ai-bubble-user { background: var(--surface-2); }
 .rp-ai-bubble-assistant { background: var(--pos-bg); color: var(--pos-ink); }
+.rp-ai-action-card {
+  max-width: 84%; border-radius: 12px; padding: 10px 12px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--line);
+}
 .rp-ai-panel-input {
   display: flex; gap: 8px; padding: 12px 14px; border-top: 0.5px solid var(--line); flex-shrink: 0;
 }
