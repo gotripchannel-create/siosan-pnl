@@ -4943,14 +4943,23 @@ function ExpenseReconciliationPanel({ months, session }) {
       const data = await resp.json();
       if (!resp.ok) { setError(data?.error || 'Не удалось получить изъятия из iiko.'); return; }
 
-      // Живые изъятия за весь период, сгруппированные по дате (уже без "дб"/"зп"/"бк"/
-      // "ошибка"/закрытия смены — это отсекается на сервере в /api/iiko-expenses).
+      // Живые изъятия за весь период, сгруппированные по дате (уже без "дб"/"бк"/
+      // "ошибка"/закрытия смены — это отсекается на сервере в /api/iiko-expenses;
+      // "зп"-строки НЕ отсечены, поэтому отдельно вынимаем из них курьерские).
       const liveByDate = new Map();
+      const courierLiveByDate = new Map();
       for (const e of (data.expenses || [])) {
+        if (/курьер/i.test(e.comment)) {
+          if (!courierLiveByDate.has(e.date)) courierLiveByDate.set(e.date, []);
+          courierLiveByDate.get(e.date).push(e.amount);
+          continue; // курьерские суммы не участвуют в сверке обычных расходов ниже
+        }
+        if (e.comment.trim().split(/\s+/).includes('зп')) continue; // "зп имя" без "курьер" — это аванс сотруднику, не расход и не курьер, сверять не с чем
         if (!liveByDate.has(e.date)) liveByDate.set(e.date, []);
         liveByDate.get(e.date).push(e.amount);
       }
 
+      const courierIssues = [];
       const issues = [];
       let checkedDays = 0;
       for (const [mk, m] of Object.entries(months || {})) {
@@ -4976,9 +4985,25 @@ function ExpenseReconciliationPanel({ months, session }) {
           if (orphaned.length > 0 || pool.length > 0) {
             issues.push({ date: ds, orphaned, unsynced: pool });
           }
+
+          // Отдельная проверка курьера: сумма живых курьерских изъятий за день
+          // должна совпадать с тем, что сохранено (либо в новом формате
+          // courierAuto, либо ещё в старом day.courier.pay/fuel — для дней,
+          // которые ещё не были синхронизированы после перехода на новый формат).
+          const liveCourierSum = (courierLiveByDate.get(ds) || []).reduce((s, a) => s + a, 0);
+          const storedCourierAuto = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+          const storedCourierOld = (Number(day.courier?.pay) || 0) + (Number(day.courier?.fuel) || 0);
+          const storedCourierTotal = storedCourierAuto + storedCourierOld;
+          if ((liveCourierSum > 0 || storedCourierTotal > 0) && Math.abs(liveCourierSum - storedCourierTotal) > 0.5) {
+            courierIssues.push({ date: ds, live: liveCourierSum, stored: storedCourierTotal });
+          }
         }
       }
-      setResult({ issues: issues.sort((a, b) => a.date.localeCompare(b.date)), checkedDays, totalLiveDays: liveByDate.size, from, to });
+      setResult({
+        issues: issues.sort((a, b) => a.date.localeCompare(b.date)),
+        courierIssues: courierIssues.sort((a, b) => a.date.localeCompare(b.date)),
+        checkedDays, totalLiveDays: liveByDate.size, from, to
+      });
     } catch (e) {
       setError(e?.message || 'Не удалось выполнить проверку.');
     } finally {
@@ -5016,6 +5041,29 @@ function ExpenseReconciliationPanel({ months, session }) {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          <p className="rp-muted" style={{ marginTop: 20 }}>Отдельно — курьер (проверка на задвоение после перехода на новый формат хранения):</p>
+          {result.courierIssues.length === 0 ? (
+            <div className="rp-cash-check" style={{ marginTop: 8 }}><Info size={13} /> Расхождений по курьеру не найдено.</div>
+          ) : (
+            <div className="rp-table-wrap" style={{ marginTop: 8 }}>
+              <table className="rp-table">
+                <thead><tr><th>Дата</th><th>Сохранено у нас</th><th>Сейчас в iiko</th></tr></thead>
+                <tbody>
+                  {result.courierIssues.map((iss) => (
+                    <tr key={iss.date}>
+                      <td>{iss.date.split('-').reverse().join('.')}</td>
+                      <td className="rp-num">{fmtRub(iss.stored)}</td>
+                      <td className="rp-num">{fmtRub(iss.live)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="rp-muted" style={{ fontSize: 11, marginTop: 8 }}>
+                Если «Сохранено у нас» ровно в 2 раза больше «Сейчас в iiko» — это старое задвоение (напишите мне дату, поправлю точечно). Если меньше — значит это изъятие ещё не синхронизировано.
+              </p>
             </div>
           )}
         </div>
