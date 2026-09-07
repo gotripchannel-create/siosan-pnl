@@ -4791,7 +4791,7 @@ function DrillModal({ kind, pnl, onClose }) {
 /* ============================== SETTINGS ============================== */
 
 function SettingsPage({ ctx }) {
-  const { settings, setSettings, months, session } = ctx;
+  const { settings, setSettings, months, setMonths, session } = ctx;
   const [tab, setTab] = useState('channels');
 
   const update = (fn) => setSettings((s) => fn({ ...s }));
@@ -4909,7 +4909,7 @@ function SettingsPage({ ctx }) {
               некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
             </p>
           </Card>
-          <ExpenseReconciliationPanel months={months} session={session} />
+          <ExpenseReconciliationPanel months={months} setMonths={setMonths} session={session} />
         </>
       )}
 
@@ -4926,10 +4926,12 @@ function SettingsPage({ ctx }) {
 // ПОКАЗЫВАЕТ расхождения, ничего не удаляет и не меняет сам — после инцидента с
 // автосверкой на странице "День" (см. историю) массовые автоматические изменения
 // финансовых данных без явного разбора конкретного дня — плохая идея.
-function ExpenseReconciliationPanel({ months, session }) {
+function ExpenseReconciliationPanel({ months, setMonths, session }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixMessage, setFixMessage] = useState('');
 
   const runCheck = async () => {
     setLoading(true); setError(''); setResult(null);
@@ -5011,6 +5013,41 @@ function ExpenseReconciliationPanel({ months, session }) {
     }
   };
 
+  // Массовое исправление всех найденных расхождений по курьеру одним действием —
+  // ручной разбор по одной дате нереален, когда расхождений полсотни. Источником
+  // истины считаем ЖИВЫЕ данные из iiko (result.courierIssues[].live уже содержит
+  // текущую сумму курьерских изъятий за эту дату) — заменяем ими старое значение
+  // целиком, переводя сразу в новый (защищённый от задвоения) формат courierAuto.
+  const fixAllCourierIssues = () => {
+    if (!result?.courierIssues?.length) return;
+    const n = result.courierIssues.length;
+    const ok = window.confirm(
+      `Исправить курьера за ${n} дней? Сохранённая сумма для каждой даты будет заменена на текущую сумму курьерских изъятий из iiko. Это затронет только поле "курьер" в этих ${n} днях, остальные данные не тронет.`
+    );
+    if (!ok) return;
+    setFixing(true);
+    setMonths((prev) => {
+      const next = { ...prev };
+      for (const issue of result.courierIssues) {
+        const mk = issue.date.slice(0, 7);
+        const month = next[mk];
+        if (!month) continue;
+        const day = month.days?.[issue.date];
+        if (!day) continue;
+        const newDay = {
+          ...day,
+          courier: { ...day.courier, pay: 0, fuel: 0 },
+          courierAuto: issue.live > 0 ? [{ id: uid(), amount: issue.live, source: 'iiko' }] : [],
+        };
+        next[mk] = { ...month, days: { ...month.days, [issue.date]: newDay } };
+      }
+      return next;
+    });
+    setFixMessage(`Исправлено дней: ${n}. Запустите проверку ещё раз, чтобы убедиться — расхождений по курьеру быть не должно.`);
+    setResult(null);
+    setFixing(false);
+  };
+
   return (
     <Card style={{ marginTop: 16 }}>
       <div className="rp-card-title">Сверка расходов с iiko за последние 6 месяцев</div>
@@ -5062,10 +5099,14 @@ function ExpenseReconciliationPanel({ months, session }) {
                 </tbody>
               </table>
               <p className="rp-muted" style={{ fontSize: 11, marginTop: 8 }}>
-                Если «Сохранено у нас» ровно в 2 раза больше «Сейчас в iiko» — это старое задвоение (напишите мне дату, поправлю точечно). Если меньше — значит это изъятие ещё не синхронизировано.
+                «Сохранено у нас» вдвое больше «Сейчас в iiko» — старое задвоение. Меньше — изъятие ещё не синхронизировано. Кнопка ниже приведёт всё к текущим данным из iiko разом.
               </p>
+              <button className="rp-btn" style={{ marginTop: 8 }} onClick={fixAllCourierIssues} disabled={fixing}>
+                {fixing ? 'Исправляю…' : `Исправить все ${result.courierIssues.length} дней по курьеру`}
+              </button>
             </div>
           )}
+          {fixMessage && <div className="rp-cash-check" style={{ marginTop: 12 }}><Info size={13} /> {fixMessage}</div>}
         </div>
       )}
     </Card>
