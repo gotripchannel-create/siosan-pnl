@@ -17,7 +17,7 @@ export const maxDuration = 60;
 
 import { createHash } from 'crypto';
 import { timingSafeStringEqual } from './_lib/security.js';
-import { normalizeKitchenCategory, splitCourierPayout, isExcludedComment, isNoiseComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
+import { normalizeKitchenCategory, isExcludedComment, isNoiseComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
 
@@ -203,7 +203,6 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees, s
 function mergeExpensesIntoData(data, reportsByDate) {
   data.months = data.months || {};
   data.settings = data.settings || {};
-  const fixedRate = data.settings.courierFixedRate || 2500;
   let added = 0;
   const matchedDatesUsed = [];
   for (const [date, report] of reportsByDate.entries()) {
@@ -217,15 +216,20 @@ function mergeExpensesIntoData(data, reportsByDate) {
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const dedupedKitchen = dedupeAgainstExisting(existing.kitchenExpenses, newKitchen);
     const dedupedOther = dedupeAgainstExisting(existing.otherExpenses, newOther);
-    let courierUpdate = existing.courier;
+    // Раньше суммы курьера накапливались через "+=" прямо в existing.courier —
+    // при повторной обработке того же изъятия (гонка с клиентом или с самим этим
+    // cron-заданием) сумма молча задваивалась и оставалась задвоенной навсегда.
+    // Теперь храним каждое распознанное изъятие отдельной записью в массиве
+    // (source:'iiko') с той же дедупликацией по сумме, что и для остальных
+    // расходов — повторная обработка больше не может задвоить итог.
+    let courierAutoUpdate = existing.courierAuto || [];
     if (report.courier?.pay) {
-      const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, fixedRate);
-      const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-      courierUpdate = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+      const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+      courierAutoUpdate = [...courierAutoUpdate, ...dedupeAgainstExisting(courierAutoUpdate, newCourierPayment)];
     }
     month.days[date] = {
       ...existing,
-      courier: courierUpdate,
+      courierAuto: courierAutoUpdate,
       kitchenExpenses: [...(existing.kitchenExpenses || []), ...dedupedKitchen],
       otherExpenses: [...(existing.otherExpenses || []), ...dedupedOther]
     };

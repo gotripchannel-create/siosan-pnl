@@ -325,22 +325,31 @@ function monthOtherExpenseTotal(month, y, mIdx) {
   return { total, items };
 }
 
-function monthCourierStats(month, y, mIdx, fuelRate) {
+function monthCourierStats(month, y, mIdx, fuelRate, fixedRate) {
   const nd = daysInMonth(y, mIdx); let pay = 0, deliveries = 0, km = 0, fuelSum = 0; const items = [];
   for (let d = 1; d <= nd; d++) {
     const ds = dateStr(y, mIdx, d);
     const day = getDay(month, ds);
     const c = day.courier || {};
-    const dayPay = Number(c.pay) || 0;
+    const manualPay = Number(c.pay) || 0;
     const dayKm = Number(c.km) || 0;
+    // Авто-синхронизированные из iiko изъятия курьера теперь хранятся отдельными
+    // записями в массиве (как и остальные расходы) — раньше это было одно
+    // накапливаемое через "+=" число, которое могло задвоиться при повторной
+    // обработке того же изъятия (гонка клиент/cron). Складываем все записи за
+    // день и делим на ставку/бензин ОДИН раз, как единую сумму.
+    const autoSum = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const { pay: autoPay, fuel: autoFuelFromSplit } = splitCourierPayout(autoSum, fixedRate);
+    const dayPay = manualPay + autoPay;
     // Если бензин известен напрямую (например, из авторазбора iiko: сумма изъятия
     // минус фиксированная ставка) — используем его, а не расчёт по километрам.
-    const dayFuel = c.fuel != null ? (Number(c.fuel) || 0) : dayKm * fuelRate;
+    const manualFuel = c.fuel != null ? (Number(c.fuel) || 0) : dayKm * fuelRate;
+    const dayFuel = manualFuel + autoFuelFromSplit;
     pay += dayPay;
     km += dayKm;
     fuelSum += dayFuel;
     deliveries += Number(c.deliveries) || 0;
-    if (dayPay || dayKm || c.deliveries || c.fuel) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
+    if (dayPay || dayKm || c.deliveries || dayFuel) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
   }
   const fuelTotal = fuelSum;
   return { pay, km, fuelTotal, total: pay + fuelTotal, deliveries, items, avgPerDelivery: deliveries ? (pay + fuelTotal) / deliveries : 0 };
@@ -551,7 +560,7 @@ function computePnL(data, y, mIdx) {
 
   const kitchen = monthKitchenExpenseTotal(month, y, mIdx);
   const otherVar = monthOtherExpenseTotal(month, y, mIdx);
-  const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7);
+  const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7, settings.courierFixedRate || 2500);
   const promo = monthPromoTotal(month, y, mIdx);
   const supplierPay = monthSupplierPaymentsTotal(month, suppliers);
   const supplierOrd = monthSupplierOrdersTotal(month, suppliers);
@@ -886,6 +895,28 @@ export default function App() {
             };
           }
           setMonths(loadedMonths);
+          // Второй такой же инцидент: 01.09.2026 то же самое изъятие курьера
+          // (реально 3613 ₽ = 2500 ставка + 1113 бензин) обработалось дважды —
+          // сохранённая сумма задвоилась до 5000 ₽ ставки + 2226 ₽ бензина. Чиним
+          // и сразу переносим в новый надёжный формат (courierAuto — массив с
+          // защитой от задвоения, см. monthCourierStats), а не оставляем в старом
+          // накапливаемом day.courier.pay/fuel.
+          const courierIncident2Month = loadedMonths['2026-09'];
+          const courierIncident2Day = courierIncident2Month?.days?.['2026-09-01'];
+          if (courierIncident2Day && Math.round((Number(courierIncident2Day.courier?.pay) || 0)) === 5000 && Math.round((Number(courierIncident2Day.courier?.fuel) || 0)) === 2226) {
+            loadedMonths['2026-09'] = {
+              ...courierIncident2Month,
+              days: {
+                ...courierIncident2Month.days,
+                '2026-09-01': {
+                  ...courierIncident2Day,
+                  courier: { ...courierIncident2Day.courier, pay: 0, fuel: 0 },
+                  courierAuto: [{ id: uid(), amount: 3613, source: 'iiko' }],
+                },
+              },
+            };
+            setMonths(loadedMonths);
+          }
           setAuditLog(parsed.auditLog || []);
         } else {
           setSettings(defaultSettings());
@@ -1455,9 +1486,15 @@ function Dashboard({ ctx, setPage }) {
             day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupeAgainstExisting(day.kitchenExpenses, newKitchen)];
             day.otherExpenses = [...(day.otherExpenses || []), ...dedupeAgainstExisting(day.otherExpenses, newOther)];
             if (report.courier?.pay) {
-              const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-              const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-              day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+              // Раньше суммы курьера накапливались через "+=" прямо в day.courier —
+              // если одно и то же изъятие обрабатывалось дважды (гонка клиент/cron),
+              // сумма молча задваивалась и оставалась задвоенной навсегда. Теперь
+              // храним КАЖДОЕ распознанное изъятие курьера отдельной записью в
+              // массиве (source:'iiko') с той же дедупликацией по сумме, что и для
+              // остальных расходов — повторная обработка того же изъятия больше не
+              // может задвоить итог.
+              const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+              day.courierAuto = [...(day.courierAuto || []), ...dedupeAgainstExisting(day.courierAuto, newCourierPayment)];
             }
             // Изъятия вида "рома зп"/"леша аванс" — ИИ уже сопоставил имя с
             // конкретным сотрудником (employeeId). Добавляем как аванс этому
@@ -1717,21 +1754,22 @@ function Dashboard({ ctx, setPage }) {
   const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
   const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const dayOther = (dayObj.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  // Курьер: сохранённое day.courier.pay/fuel накапливается (+=) при каждой
-  // синхронизации — если одно и то же изъятие обработалось дважды (например,
-  // из-за гонки между ручной синхронизацией и фоновым cron), сумма задваивается
-  // и остаётся задвоенной навсегда, никак не проверяясь позже. Поэтому здесь,
-  // когда мы СЕЙЧАС смотрим именно этот день и уже загрузили по нему живые данные
-  // из iiko, ДОВЕРЯЕМ живому изъятию с комментарием "курьер", а не накопленному
-  // числу — оно не может задвоиться, потому что каждый раз считается заново с нуля
-  // прямо из iiko. Сохранённое значение остаётся резервным вариантом только для
-  // дней, которые сейчас не открыты (агрегаты за месяц и т.п.), где живых данных ещё
-  // нет.
-  const liveCourierForThisDay = iikoDayDetails?.date === dayDate
+  // Курьер: авто-синхронизированные из iiko изъятия теперь хранятся отдельными
+  // записями в массиве day.courierAuto (как и остальные расходы), а не одним
+  // накапливаемым через "+=" числом — раньше повторная обработка того же
+  // изъятия (гонка ручной синхронизации с фоновым cron) могла задвоить сумму
+  // навсегда. Если день ещё не успел синхронизироваться (courierAuto пуст), но
+  // мы сейчас смотрим именно на него и уже загрузили живые данные из iiko —
+  // подстраховываемся живым изъятием с комментарием "курьер" для мгновенной
+  // обратной связи, не дожидаясь синхронизации.
+  const dayCourierAutoSum = (dayObj.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const liveCourierForThisDay = (dayCourierAutoSum === 0 && iikoDayDetails?.date === dayDate)
     ? (iikoDayDetails.payoutDetails || []).find((r) => /курьер/i.test(String(r.comment || '')))
     : null;
-  const dayCourierPay = liveCourierForThisDay ? liveCourierForThisDay.amount : (Number(dayObj.courier?.pay) || 0);
-  const dayCourierFuel = liveCourierForThisDay ? 0 : (dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7));
+  const effectiveCourierSum = dayCourierAutoSum || (liveCourierForThisDay ? liveCourierForThisDay.amount : 0);
+  const { pay: courierAutoPay, fuel: courierAutoFuel } = splitCourierPayout(effectiveCourierSum, settings.courierFixedRate);
+  const dayCourierPay = (Number(dayObj.courier?.pay) || 0) + courierAutoPay;
+  const dayCourierFuel = (dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7)) + courierAutoFuel;
   const dayPromo = Number(dayObj.promo?.pay) || 0;
   // Курьер сознательно НЕ входит в "Расходы итого"/donut — он относится к затратам
   // на персонал, а не к закупкам/прочим расходам, и должен считаться только в
@@ -4669,6 +4707,10 @@ function PnLPage({ ctx }) {
         <Row label="Промо" value={pnl.promo.total} indent onClick={() => setDrill('promo')} />
         <Row label="Налоги на сотрудников" value={pnl.fotTaxTotal} indent />
         <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total + pnl.fotTaxTotal} bold />
+        <p className="rp-muted" style={{ fontSize: 11, marginTop: 4, paddingLeft: 20 }}>
+          «Курьеры (ставка, справочно)» и «Промо» здесь показаны ещё раз для расчёта доли ФОТ от выручки — в общую сумму расходов они уже включены один раз, строкой выше в «Переменных расходах». Этот блок сам по себе в прибыль не вычитается второй раз.
+        </p>
+
 
         <div className="rp-pnl-section-title">Постоянные расходы {locked && <span className="rp-muted-sm">(месяц закрыт — только просмотр)</span>}</div>
         {pnl.fixedItems.map(EditableFixedRow)}
@@ -6081,9 +6123,8 @@ function IncomingReportsPage({ ctx }) {
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupedKitchen];
           day.otherExpenses = [...(day.otherExpenses || []), ...dedupedOther];
           if (report.courier?.pay) {
-            const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-            const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-            day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+            const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+            day.courierAuto = [...(day.courierAuto || []), ...dedupeAgainstExisting(day.courierAuto, newCourierPayment)];
           }
           addedCount += dedupedKitchen.length + dedupedOther.length;
           next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
