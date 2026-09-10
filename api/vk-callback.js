@@ -18,6 +18,9 @@
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
+import { timingSafeStringEqual } from './_lib/security.js';
+import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+
 const RESTAURANT_ID = 'siosan';
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -26,6 +29,10 @@ const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» 
 - Число может стоять до или после названия поля («22352,2 Наличные» и «Наличные 22352,2» — одно и то же).
 - Строки вида «11доставок» (без пробела) — то же самое, что «11 доставок».
 - «Курьер ЗП» / «зп курьер» / «Курьер» с числом рядом — оплата курьеру за смену (courier.pay).
+- ЛЮБОЙ комментарий, где отдельным словом встречается «зп» или «аванс» (например «зп орхан», «рома зп», «леша аванс», просто «зп») — это выплата конкретному сотруднику. НИКОГДА не добавляй такую строку в kitchenExpenses или otherExpenses (и не выдумывай для неё категорию вида «Зарплата») — вместо этого:
+  * если это явно оплата именно курьеру («зп курьер», «курьер» с суммой) — в поле courier.pay;
+  * если после «зп»/«аванс» есть имя (или имя стоит перед словом) — добавь в advances с этим именем (name) и суммой (amount); имя бери БЕЗ слов «зп»/«аванс» — только само имя, например из «рома зп» → name="Рома", из «леша аванс 3000» → name="Леша", amount=3000; сопоставляй employeeId по списку сотрудников ниже так же, как для roster;
+  * если это просто «зп» без какого-либо опознаваемого имени — тогда действительно полностью игнорируй, как «дб».
 - «км» рядом с числом (например «75км», «36 км») — пробег курьера (courier.km).
 - Расходы на закупку продуктов/товаров для кухни могут идти отдельными строками без общего заголовка «Покупки» — например «Магнит 535» (магазин), «Шариковые ручки 62», «Скрепки для степлера 140». Это относится к kitchenExpenses или otherExpenses в зависимости от того, похоже ли это на продукты/сырьё (kitchenExpenses) или на хозтовары/канцелярию/непродуктовое (otherExpenses).
 - В конце отчёта иногда встречается список имён без сумм (например «Вика Леша Рома теть Оля») — это roster (кто работал в смену), не advances.`;
@@ -59,6 +66,7 @@ function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fall
   const employeesList = employees.map((e) => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
+  const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
   return `Ты разбираешь ОДНО сообщение из рабочего чата ВК кафе. Найди в нём финансовый отчёт (обычно есть «наличные», «карта» и «итого выручка» с числами) и верни его через submit_parsed_reports. Если это не отчёт (обычная переписка, вопрос, приветствие) — верни пустой массив reports, ничего не выдумывай.
 
 Сегодняшняя дата (если в тексте нет явной даты): ${fallbackDate}
@@ -70,6 +78,9 @@ ${channelsList}
 ${employeesList}
 
 Известные категории прочих расходов: ${categoriesList}
+
+Категории закупок для кухни/бара (поле category у kitchenExpenses) — ОБЯЗАТЕЛЬНО используй РОВНО одно из этих названий, ничего не придумывай своими словами:
+${kitchenCategoriesList}
 
 Словарь терминов и правил:
 ${fullGlossary}
@@ -92,7 +103,7 @@ function postprocess(raw, { revenueChannels, employees }) {
     date: raw.date || null, revenue,
     courier: { pay: raw.courier?.pay ?? null, km: raw.courier?.km ?? null, deliveries: raw.courier?.deliveries ?? null },
     promo: { pay: raw.promo?.pay ?? null },
-    kitchenExpenses: (raw.kitchenExpenses || []).map((e) => ({ category: e.category || 'Покупки', amount: Number(e.amount) || 0 })),
+    kitchenExpenses: (raw.kitchenExpenses || []).map((e) => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0 })),
     otherExpenses: (raw.otherExpenses || []).map((e) => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0 })),
     advances, rosterMatches,
     unmatchedLines: raw.unmatchedLines || [],
@@ -131,8 +142,11 @@ export default async function handler(req, res) {
   }
 
   // 2. Проверка секретного ключа — защита от чужих запросов на этот адрес.
+  // Fail-closed: если секрет не настроен на сервере, ОБРАБОТКА НЕ ИДЁТ (а не
+  // наоборот — раньше при отсутствующей переменной окружения любой запрос без
+  // секрета проходил как авторизованный).
   const expectedSecret = process.env.VK_CALLBACK_SECRET;
-  if (expectedSecret && body.secret !== expectedSecret) {
+  if (!expectedSecret || !timingSafeStringEqual(body.secret, expectedSecret)) {
     res.status(200).send('ok'); // отвечаем "ok", чтобы VK не долбил повторными попытками, но ничего не делаем
     return;
   }

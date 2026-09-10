@@ -29,7 +29,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 export default async function handler(req, res) {
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
     });
     const text = await resp.text();
     let json = null;
-    try { json = JSON.parse(text); } catch (_) {}
+    try { json = JSON.parse(text); } catch (e) { console.error('Ответ iiko не является JSON:', text.slice(0, 300)); }
 
     if (!resp.ok) {
       res.status(502).json({ error: `Сервер iiko ответил ошибкой (${resp.status}).`, raw: json || text.slice(0, 1000) });
@@ -135,7 +135,7 @@ export default async function handler(req, res) {
         }
       }
       // Ошибку состава не считаем фатальной для всего эндпоинта — сумма важнее.
-    } catch (_) {}
+    } catch (e) { console.error('Не удалось получить состав накладной:', e); }
 
     for (const inv of invoices) {
       inv.items = itemsByKey[`${inv.date}::${inv.supplier}`] || [];

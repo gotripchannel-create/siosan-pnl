@@ -10,6 +10,7 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
+import { isNoiseComment } from './_lib/expense-rules.js';
 
 function sha1Hex(str) {
   return createHash('sha1').update(str, 'utf8').digest('hex');
@@ -24,7 +25,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 export default async function handler(req, res) {
@@ -76,7 +77,7 @@ export default async function handler(req, res) {
     });
     const text = await resp.text();
     let json = null;
-    try { json = JSON.parse(text); } catch (_) {}
+    try { json = JSON.parse(text); } catch (e) { console.error('Ответ iiko не является JSON:', text.slice(0, 300)); }
 
     if (!resp.ok) {
       res.status(502).json({ error: `Сервер iiko ответил ошибкой (${resp.status}).`, raw: json || text.slice(0, 1000) });
@@ -90,7 +91,7 @@ export default async function handler(req, res) {
         comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
         amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
       }))
-      .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп' && e.comment !== 'бк' && e.comment !== 'ошибка' && !e.comment.startsWith('закрытие кассовой смены')) // "дб" — не расход, "зп" — уже учтена в ФОТ отдельно, "бк" — перенос остатка между сменами, "закрытие кассовой смены" — системная запись
+      .filter((e) => e.amount > 0 && e.date && !isNoiseComment(e.comment)) // "дб"/"бк"/"ошибка"/"закрытие смены" — точно не расход и не полезны; "зп"-выплаты с именем сотрудника НЕ отсекаем здесь — их разбирает ИИ (авансы конкретному сотруднику или курьеру)
       .sort((a, b) => a.date.localeCompare(b.date));
 
     res.status(200).json({ from, to, expenses });

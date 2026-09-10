@@ -143,7 +143,7 @@
 .rp-muted-sm { color: var(--ink-2); font-size: 12px; }
 .rp-divider-line { height: 1px; background: var(--line); margin: 24px 0; }
 .rp-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
-.rp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.rp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; align-items: start; }
 
 /* ============ показатели ============ */
 .rp-stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 18px 20px; }
@@ -582,6 +582,10 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
 }
 .rp-ai-bubble-user { background: var(--surface-2); }
 .rp-ai-bubble-assistant { background: var(--pos-bg); color: var(--pos-ink); }
+.rp-ai-action-card {
+  max-width: 84%; border-radius: 12px; padding: 10px 12px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--line);
+}
 .rp-ai-panel-input {
   display: flex; gap: 8px; padding: 12px 14px; border-top: 0.5px solid var(--line); flex-shrink: 0;
 }

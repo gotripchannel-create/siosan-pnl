@@ -8,6 +8,8 @@
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
+import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+
 const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей из текста
 const MODEL_VISION = 'claude-sonnet-4-6'; // для фото Z-отчётов — нужнее точность распознавания мелкого текста на чеке, чем скорость
 
@@ -19,6 +21,10 @@ const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» 
 - Число может стоять до или после названия поля («22352,2 Наличные» и «Наличные 22352,2» — одно и то же).
 - Строки вида «11доставок» (без пробела) — то же самое, что «11 доставок».
 - «Курьер ЗП» / «зп курьер» / «Курьер» с числом рядом — оплата курьеру за смену (courier.pay).
+- ЛЮБОЙ комментарий, где отдельным словом встречается «зп» или «аванс» (например «зп орхан», «рома зп», «леша аванс», просто «зп») — это выплата конкретному сотруднику. НИКОГДА не добавляй такую строку в kitchenExpenses или otherExpenses (и не выдумывай для неё категорию вида «Зарплата») — вместо этого:
+  * если это явно оплата именно курьеру («зп курьер», «курьер» с суммой) — в поле courier.pay;
+  * если после «зп»/«аванс» есть имя (или имя стоит перед словом) — добавь в advances с этим именем (name) и суммой (amount); имя бери БЕЗ слов «зп»/«аванс» — только само имя, например из «рома зп» → name="Рома", из «леша аванс 3000» → name="Леша", amount=3000; сопоставляй employeeId по списку сотрудников ниже так же, как для roster;
+  * если это просто «зп» без какого-либо опознаваемого имени — тогда действительно полностью игнорируй, как «дб».
 - «км» рядом с числом (например «75км», «36 км») — пробег курьера (courier.km).
 - Расходы на закупку продуктов/товаров для кухни могут идти отдельными строками без общего заголовка «Покупки» — например «Магнит 535» (магазин), «Шариковые ручки 62», «Скрепки для степлера 140». Это относится к kitchenExpenses или otherExpenses в зависимости от того, похоже ли это на продукты/сырьё (kitchenExpenses) или на хозтовары/канцелярию/непродуктовое (otherExpenses).
 - В конце отчёта иногда встречается список имён без сумм (например «Вика Леша Рома теть Оля») — это roster (кто работал в смену), не advances.`;
@@ -109,11 +115,14 @@ const TOOL_SCHEMA = {
   }
 };
 
-function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate, glossary }) {
+function buildSystemPrompt({ revenueChannels, employees, expenseCategories, suppliers, fixedExpenseNames, fallbackDate, glossary }) {
   const channelsList = revenueChannels.map(c => `- id="${c.id}" name="${c.name}"`).join('\n') || '(нет настроенных каналов)';
   const employeesList = employees.map(e => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
   const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
+  const suppliersList = (suppliers || []).join(', ') || '(не заданы)';
+  const fixedNamesList = (fixedExpenseNames || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
+  const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
 
   return `Ты разбираешь либо (а) текст, скопированный из рабочего чата ВК кафе/службы доставки, либо (б) фото бумажного Z-отчёта (отчёт о закрытии смены) из кассы iiko.
 
@@ -130,6 +139,17 @@ ${channelsList}
 ${employeesList}
 
 Известные категории прочих расходов (не обязательно, но если подходит — используй): ${categoriesList}
+
+Категории закупок для кухни/бара (поле category у kitchenExpenses) — ОБЯЗАТЕЛЬНО используй РОВНО одно из этих названий, ничего не придумывай и не пиши своими словами (например «Закупка продуктов», «Закуп», «Продукты для кухни» — ВСЕГДА пиши просто «Продукты», а не варианты этой фразы):
+${kitchenCategoriesList}
+
+Известные поставщики (по названию из справочника поставщиков заведения) — если комментарий изъятия явно указывает на оплату ОДНОМУ ИЗ НИХ (например, встречается название компании или похожее сокращение), НЕ клади это в kitchenExpenses с категорией «Продукты» — вместо этого добавь в otherExpenses с category РОВНО «Поставщики» (а не название конкретного поставщика — просто «Поставщики», это отдельная сводная категория для отчёта; сам платёж уже учитывается отдельно на странице «Поставщики» приложения, здесь его только нужно ВИДЕТЬ в общем списке расходов дня, поэтому используй именно эту категорию, чтобы не путать с обычной закупкой продуктов):
+${suppliersList}
+
+Известные названия постоянных ежемесячных статей расходов заведения (аренда, коммуналка, охрана и т.п.) — если комментарий изъятия явно похож на оплату ОДНОЙ ИЗ НИХ (не обычная разовая закупка, а именно повторяющийся ежемесячный платёж), НЕ клади в kitchenExpenses — добавь в otherExpenses с category РОВНО «Постоянные (проверить)» (эта статья уже заложена в бюджет отдельно как ежемесячная сумма, а не отдельная транзакция — такую пометку человек должен вручную сверить, чтобы не задвоить расход):
+${fixedNamesList}
+
+Промо / маркетинг: если комментарий про скидки клиентам, компенсации агрегаторам за акции, флаеры, рекламу, продвижение и т.п. — это НЕ kitchenExpenses и НЕ otherExpenses, а поле promo.pay (сложи туда сумму, если в отчёте несколько таких операций за день — просто просуммируй их все в одно число promo.pay).
 
 Словарь терминов и правил, специфичных для этого бизнеса:
 ${fullGlossary}
@@ -199,7 +219,7 @@ function postprocess(raw, { revenueChannels, employees }) {
     revenue,
     courier: { pay: raw.courier?.pay ?? null, km: raw.courier?.km ?? null, deliveries: raw.courier?.deliveries ?? null },
     promo: { pay: raw.promo?.pay ?? null },
-    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: e.category || 'Покупки', amount: Number(e.amount) || 0 })),
+    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0 })),
     otherExpenses: (raw.otherExpenses || []).map(e => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0 })),
     advances,
     rosterMatches,
@@ -278,6 +298,8 @@ export default async function handler(req, res) {
     revenueChannels = [],
     employees = [],
     expenseCategories = [],
+    suppliers = [],
+    fixedExpenseNames = [],
     fallbackDate = null,
     glossary = ''
   } = req.body || {};
@@ -301,7 +323,7 @@ export default async function handler(req, res) {
   // Сервер Vercel работает в UTC — new Date().toISOString() даёт "вчера" по московскому
   // времени с полуночи до 3 утра, поэтому явно берём московскую дату как запасной вариант.
   const today = fallbackDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate: today, glossary });
+  const systemPrompt = buildSystemPrompt({ revenueChannels, employees, expenseCategories, suppliers, fixedExpenseNames, fallbackDate: today, glossary });
 
   try {
     const data = await callClaude(apiKey, systemPrompt, { text, image: hasImage ? image : null });

@@ -75,7 +75,7 @@ function defaultSettings() {
     ],
     expenseCategories: [
       'Связь', 'Канцелярия', 'Хозтовары', 'Ремонт', 'Реклама', 'Посуда',
-      'Упаковка', 'Лампочки', 'Печать', 'Avito', 'Расходники', 'Прочее',
+      'Упаковка', 'Лампочки', 'Печать', 'Avito', 'Расходники', 'Поставщики', 'Постоянные (проверить)', 'Прочее',
     ],
     fixedExpenses: [
       { id: uid(), name: 'Аренда', amount: 84000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
@@ -207,20 +207,73 @@ async function fetchWithTimeout(url, options, timeoutMs = 25000) {
 // и бензин (остаток сверху). Ставка сотрудника не меняется день ото дня — курьер
 // получает фиксированную сумму, а всё, что курьеру выдали сверху, это компенсация
 // бензина.
+// Защита от задвоения расходов на уровне данных — независимо от того, по какой
+// причине один и тот же расход пытаются добавить дважды (гонка клиент/cron,
+// повторный запуск синхронизации, устаревший ключ "уже обработано" и т.п.),
+// не добавляем позицию, если точно такая же (категория + сумма, источник iiko)
+// уже есть в переданном списке. Это НАМЕРЕННО грубая защита ценой того, что две
+// РЕАЛЬНЫЕ отдельные покупки одной категории на одну и ту же сумму в один день
+// (например, две покупки "Продукты" ровно по 500₽) могут схлопнуться в одну —
+// такое совпадение крайне маловероятно и предпочтительнее гарантированного
+// задвоения при малейшей гонке.
+function dedupeAgainstExisting(existingList, newItems) {
+  const existing = existingList || [];
+  const result = [];
+  for (const item of newItems) {
+    const isDup = existing.some((e) => e.source === 'iiko' && e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5)
+      || result.some((e) => e.category === item.category && Math.abs((Number(e.amount) || 0) - (Number(item.amount) || 0)) < 0.5);
+    if (!isDup) result.push(item);
+  }
+  return result;
+}
+
 function splitCourierPayout(totalPay, fixedRate) {
   const total = Number(totalPay) || 0;
   const fixed = Number(fixedRate) || 2500;
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
+// Фиксированный список категорий закупок кухни/бара — тот же, что в ручном
+// редакторе категории (см. ExpenseModal ниже: 'Продукты', 'Напитки', ...). Раньше
+// ИИ-категоризация (см. api/parse-report.js) писала category свободным текстом, из-за
+// чего одно и то же по смыслу («закупка продуктов» из одного изъятия и «продукты» из
+// другого) выглядело в списке как две разные категории. Промпт теперь тоже просят
+// использовать только эти названия, но эта функция — подстраховка на клиенте для уже
+// сохранённых ранее записей со старыми вольными формулировками.
+const KITCHEN_CATEGORIES = ['Продукты', 'Напитки', 'Хозтовары кухни', 'Ремонт оборудования', 'Прочее'];
+function normalizeKitchenCategory(raw) {
+  const trimmed = String(raw || '').trim();
+  const exact = KITCHEN_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact;
+  const s = trimmed.toLowerCase();
+  if (/продукт|закуп|еда|ингредиент|сырь|мясо|овощ|рыба|молоч|бакале|фрукт/.test(s)) return 'Продукты';
+  if (/напит|вода|сок\b|пиво|вино|кола|лимонад|чай|кофе/.test(s)) return 'Напитки';
+  if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
+  return 'Прочее';
+}
+
 function matchIikoCashierToEmployee(iikoName, employees) {
   if (!iikoName) return null;
   const normalized = String(iikoName).toLowerCase().trim();
+  // Раньше матчилось по ЛЮБОМУ вхождению подстроки (normalized.includes(firstName))
+  // и возвращался ПЕРВЫЙ подходящий сотрудник по порядку в массиве — это могло
+  // ошибочно сработать на случайное вхождение короткого имени внутри более длинного
+  // слова, а при нескольких похожих совпадениях результат зависел от порядка в
+  // списке сотрудников, а не от того, какое совпадение точнее. Теперь: 1) имя
+  // сотрудника ищется как ОТДЕЛЬНОЕ СЛОВО (по границам слова), а не как подстрока
+  // где угодно; 2) если подходит несколько сотрудников, выбираем того, чьё имя
+  // длиннее (более специфичное, менее случайное совпадение).
+  const words = normalized.split(/[^а-яёa-z0-9]+/i).filter(Boolean);
+  let best = null;
   for (const emp of employees) {
     const firstName = String(emp.name || '').trim().toLowerCase().split(/\s+/)[0];
-    if (firstName && firstName.length > 1 && normalized.includes(firstName)) return emp;
+    if (!firstName || firstName.length < 2) continue;
+    if (words.includes(firstName) && (!best || firstName.length > best.firstName.length)) {
+      best = { emp, firstName };
+    }
   }
-  return null;
+  return best ? best.emp : null;
 }
 
 function matchIikoPayTypeToChannel(payType, channels) {
@@ -272,22 +325,31 @@ function monthOtherExpenseTotal(month, y, mIdx) {
   return { total, items };
 }
 
-function monthCourierStats(month, y, mIdx, fuelRate) {
+function monthCourierStats(month, y, mIdx, fuelRate, fixedRate) {
   const nd = daysInMonth(y, mIdx); let pay = 0, deliveries = 0, km = 0, fuelSum = 0; const items = [];
   for (let d = 1; d <= nd; d++) {
     const ds = dateStr(y, mIdx, d);
     const day = getDay(month, ds);
     const c = day.courier || {};
-    const dayPay = Number(c.pay) || 0;
+    const manualPay = Number(c.pay) || 0;
     const dayKm = Number(c.km) || 0;
+    // Авто-синхронизированные из iiko изъятия курьера теперь хранятся отдельными
+    // записями в массиве (как и остальные расходы) — раньше это было одно
+    // накапливаемое через "+=" число, которое могло задвоиться при повторной
+    // обработке того же изъятия (гонка клиент/cron). Складываем все записи за
+    // день и делим на ставку/бензин ОДИН раз, как единую сумму.
+    const autoSum = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const { pay: autoPay, fuel: autoFuelFromSplit } = splitCourierPayout(autoSum, fixedRate);
+    const dayPay = manualPay + autoPay;
     // Если бензин известен напрямую (например, из авторазбора iiko: сумма изъятия
     // минус фиксированная ставка) — используем его, а не расчёт по километрам.
-    const dayFuel = c.fuel != null ? (Number(c.fuel) || 0) : dayKm * fuelRate;
+    const manualFuel = c.fuel != null ? (Number(c.fuel) || 0) : dayKm * fuelRate;
+    const dayFuel = manualFuel + autoFuelFromSplit;
     pay += dayPay;
     km += dayKm;
     fuelSum += dayFuel;
     deliveries += Number(c.deliveries) || 0;
-    if (dayPay || dayKm || c.deliveries || c.fuel) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
+    if (dayPay || dayKm || c.deliveries || dayFuel) items.push({ date: ds, deliveries: c.deliveries || 0, pay: dayPay, km: dayKm, fuel: dayFuel, comment: c.comment || '' });
   }
   const fuelTotal = fuelSum;
   return { pay, km, fuelTotal, total: pay + fuelTotal, deliveries, items, avgPerDelivery: deliveries ? (pay + fuelTotal) / deliveries : 0 };
@@ -498,7 +560,7 @@ function computePnL(data, y, mIdx) {
 
   const kitchen = monthKitchenExpenseTotal(month, y, mIdx);
   const otherVar = monthOtherExpenseTotal(month, y, mIdx);
-  const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7);
+  const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7, settings.courierFixedRate || 2500);
   const promo = monthPromoTotal(month, y, mIdx);
   const supplierPay = monthSupplierPaymentsTotal(month, suppliers);
   const supplierOrd = monthSupplierOrdersTotal(month, suppliers);
@@ -632,20 +694,12 @@ function EmptyState({ icon, title, sub }) {
 /* ============================== NAVIGATION ============================== */
 
 const NAV = [
-  { id: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
-  { id: 'day', label: 'Кассовая смена (день)', icon: CalendarDays },
-  { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
-  { id: 'employees', label: 'Сотрудники', icon: Users },
-  { id: 'payroll', label: 'Зарплата', icon: Wallet },
+  { id: 'dashboard', label: 'Отчёты', icon: LayoutDashboard },
+  { id: 'employees', label: 'Зарплата', icon: Users },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
   { id: 'ai', label: 'AI-помощник', icon: Sparkles },
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
-  { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
-  { id: 'history', label: 'История', icon: History },
-  { id: 'iiko-novo', label: 'Отчёт Новошахтинск', icon: Radio },
-  { id: 'iiko-belaya', label: 'Отчёт Белая Калитва', icon: Radio },
-  { id: 'combined', label: 'Общий отчёт', icon: LayoutDashboard },
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
@@ -741,6 +795,10 @@ export default function App() {
   const saveTimer = useRef(null);
   const cloudRowId = useRef(null);
   const hydrated = useRef(false);
+  // Последний ИЗВЕСТНЫЙ нам момент изменения строки в базе — используется перед
+  // сохранением, чтобы обнаружить, не поменял ли данные кто-то ещё (другой браузер,
+  // фоновый cron) после того, как мы их загрузили. См. save-эффект ниже.
+  const lastKnownUpdatedAt = useRef(null);
 
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
@@ -757,7 +815,7 @@ export default function App() {
       try {
         const { data: rows, error } = await supabase
           .from('restaurant_data')
-          .select('id,data')
+          .select('id,data,updated_at')
           .eq('restaurant_id', RESTAURANT_ID)
           .limit(1);
         if (error) throw error;
@@ -769,14 +827,96 @@ export default function App() {
           try {
             const raw = window.localStorage.getItem('restaurant-pnl-data');
             if (raw) parsed = JSON.parse(raw);
-          } catch (_) {}
+          } catch (e) { console.error('Не удалось прочитать локальный резервный кэш данных:', e); }
         }
 
         if (parsed) {
-          setSettings(parsed.settings || defaultSettings());
+          const loadedSettings = parsed.settings || defaultSettings();
+          // На случай, если у пользователя уже сохранены свои settings.expenseCategories
+          // без новых категорий "Поставщики"/"Постоянные (проверить)" — дополняем их,
+          // не трогая остальной список (порядок и прочие категории не меняются).
+          const mustHave = ['Поставщики', 'Постоянные (проверить)'];
+          const missing = mustHave.filter((c) => !(loadedSettings.expenseCategories || []).includes(c));
+          if (missing.length > 0) {
+            loadedSettings.expenseCategories = [...(loadedSettings.expenseCategories || []), ...missing];
+          }
+          // Разовое исправление конкретного инцидента: баг в первой версии автосверки
+          // расходов дня (см. reconciliation useEffect ниже) один раз ошибочно стёр
+          // настоящие расходы за 04.09.2026 (посчитал пустой/неполный ответ iiko за
+          // "все изъятия исчезли"). Обычная повторная синхронизация их не вернёт —
+          // ключи этих 4 операций уже отмечены "обработано" в iikoExpensesSyncedKeys.
+          // Снимаем именно эти 4 ключа один раз, чтобы следующая синхронизация снова
+          // их подхватила и правильно закатегоризировала.
+          const incidentDate = '2026-09-04';
+          const incidentKeys = [
+            `v3::${incidentDate}::закуп магнит::11096`,
+            `v3::${incidentDate}::вода::1000`,
+            `v3::${incidentDate}::сантехник::500`,
+            `v3::${incidentDate}::закуп::52`,
+          ];
+          if ((loadedSettings.iikoExpensesSyncedKeys || []).some((k) => incidentKeys.includes(k))) {
+            loadedSettings.iikoExpensesSyncedKeys = (loadedSettings.iikoExpensesSyncedKeys || []).filter((k) => !incidentKeys.includes(k));
+          }
+          // Массив ключей "уже обработано" (v3::дата::комментарий::сумма) растёт
+          // бесконечно и никогда не чистится — через годы работы это тысячи строк
+          // в JSON-поле settings, которое целиком перезаписывается при каждом
+          // сохранении. Дата зашита в самом ключе — подрезаем всё старше ~14 месяцев
+          // (с запасом: даже если когда-нибудь вернуть ручной бэкфилл истории, это
+          // не должно понадобиться на данные старше года).
+          const KEY_RETENTION_DAYS = 420;
+          const keyDateCutoff = new Date(); keyDateCutoff.setDate(keyDateCutoff.getDate() - KEY_RETENTION_DAYS);
+          const cutoffStr = dateStr(keyDateCutoff.getFullYear(), keyDateCutoff.getMonth(), keyDateCutoff.getDate());
+          loadedSettings.iikoExpensesSyncedKeys = (loadedSettings.iikoExpensesSyncedKeys || []).filter((k) => {
+            const m = /^v3::(\d{4}-\d{2}-\d{2})::/.exec(k);
+            return !m || m[1] >= cutoffStr; // ключи неожиданного формата не трогаем — оставляем как есть
+          });
+          setSettings(loadedSettings);
           setEmployees(parsed.employees || seedEmployees());
           setSuppliers(parsed.suppliers || seedSuppliers());
-          setMonths(parsed.months || {});
+          // Разовое исправление ещё одного инцидента: значение day.courier.pay/fuel
+          // накапливается (+=) при каждой синхронизации, и 10.08.2026 то же самое
+          // изъятие "зп курьер" (2850 ₽) обработалось дважды (видимо, гонка между
+          // ручной и фоновой cron-синхронизацией) — сохранённая сумма задвоилась
+          // до 5700 ₽. Отображение теперь само себя чинит при просмотре дня (см.
+          // liveCourierForThisDay выше), но для месячных агрегатов (P&L за август,
+          // где этот день не открыт активно) чиним сохранённое значение один раз
+          // здесь, приводя к настоящей сумме изъятия.
+          const loadedMonths = parsed.months || {};
+          const courierIncidentMonth = loadedMonths['2026-08'];
+          const courierIncidentDay = courierIncidentMonth?.days?.['2026-08-10'];
+          if (courierIncidentDay && Math.round(((Number(courierIncidentDay.courier?.pay) || 0) + (Number(courierIncidentDay.courier?.fuel) || 0))) === 5700) {
+            const { pay: fixedPay, fuel: fixedFuel } = splitCourierPayout(2850, loadedSettings.courierFixedRate);
+            loadedMonths['2026-08'] = {
+              ...courierIncidentMonth,
+              days: {
+                ...courierIncidentMonth.days,
+                '2026-08-10': { ...courierIncidentDay, courier: { ...courierIncidentDay.courier, pay: fixedPay, fuel: fixedFuel } },
+              },
+            };
+          }
+          setMonths(loadedMonths);
+          // Второй такой же инцидент: 01.09.2026 то же самое изъятие курьера
+          // (реально 3613 ₽ = 2500 ставка + 1113 бензин) обработалось дважды —
+          // сохранённая сумма задвоилась до 5000 ₽ ставки + 2226 ₽ бензина. Чиним
+          // и сразу переносим в новый надёжный формат (courierAuto — массив с
+          // защитой от задвоения, см. monthCourierStats), а не оставляем в старом
+          // накапливаемом day.courier.pay/fuel.
+          const courierIncident2Month = loadedMonths['2026-09'];
+          const courierIncident2Day = courierIncident2Month?.days?.['2026-09-01'];
+          if (courierIncident2Day && Math.round((Number(courierIncident2Day.courier?.pay) || 0)) === 5000 && Math.round((Number(courierIncident2Day.courier?.fuel) || 0)) === 2226) {
+            loadedMonths['2026-09'] = {
+              ...courierIncident2Month,
+              days: {
+                ...courierIncident2Month.days,
+                '2026-09-01': {
+                  ...courierIncident2Day,
+                  courier: { ...courierIncident2Day.courier, pay: 0, fuel: 0 },
+                  courierAuto: [{ id: uid(), amount: 3613, source: 'iiko' }],
+                },
+              },
+            };
+            setMonths(loadedMonths);
+          }
           setAuditLog(parsed.auditLog || []);
         } else {
           setSettings(defaultSettings());
@@ -786,16 +926,18 @@ export default function App() {
           setAuditLog([]);
         }
 
-        if (row) cloudRowId.current = row.id;
+        if (row) { cloudRowId.current = row.id; lastKnownUpdatedAt.current = row.updated_at; }
         else {
           const initial = parsed || { settings: defaultSettings(), employees: seedEmployees(), suppliers: seedSuppliers(), months: {}, auditLog: [] };
+          const nowIso = new Date().toISOString();
           const { data: inserted, error: insErr } = await supabase
             .from('restaurant_data')
-            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: new Date().toISOString() })
+            .insert({ restaurant_id: RESTAURANT_ID, data: initial, updated_at: nowIso })
             .select('id')
             .single();
           if (insErr) throw insErr;
           cloudRowId.current = inserted.id;
+          lastKnownUpdatedAt.current = nowIso;
         }
       } catch (e) {
         setSyncError(e?.message || 'Ошибка загрузки общей базы');
@@ -812,12 +954,57 @@ export default function App() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
+        // Защита от гонки записи: вся база хранится одним JSON-полем, и раньше
+        // сохранение просто перезаписывало его целиком, не проверяя, не изменил ли
+        // кто-то данные (фоновый cron, другая открытая вкладка) уже ПОСЛЕ того, как
+        // мы их загрузили — что могло молча стереть чужие изменения (см. аудит,
+        // инциденты с задвоением курьера и "осиротевшими" расходами).
+        //
+        // Атомарная запись "только если updated_at всё ещё тот же, что мы видели
+        // при загрузке" (compare-and-swap на уровне одного SQL-запроса — без
+        // отдельного запроса-проверки, между которым и записью мог бы остаться
+        // зазор для гонки). Если строку уже кто-то поменял — .eq(...) не найдёт
+        // совпадений, обновится 0 строк, и мы это увидим по пустому результату.
         const payload = { settings, employees, suppliers, months, auditLog };
-        const { error } = await supabase
+        const nowIso = new Date().toISOString();
+        const query = supabase
           .from('restaurant_data')
-          .update({ data: payload, updated_at: new Date().toISOString() })
+          .update({ data: payload, updated_at: nowIso })
           .eq('id', cloudRowId.current);
+        const { data: updatedRows, error } = lastKnownUpdatedAt.current
+          ? await query.eq('updated_at', lastKnownUpdatedAt.current).select('id')
+          : await query.select('id'); // первое сохранение после создания строки — updated_at ещё не зафиксирован
         if (error) throw error;
+
+        if (!updatedRows || updatedRows.length === 0) {
+          // 0 обновлённых строк = кто-то другой сохранил данные между нашей
+          // загрузкой и этой попыткой записи. НЕ перезаписываем вслепую поверх —
+          // подтягиваем свежую версию и показываем её. Наше самое последнее
+          // локальное изменение в этом случае, к сожалению, придётся внести ещё
+          // раз — но это гораздо лучше, чем молча стереть чужие данные (например,
+          // только что подтянутые автосинхронизацией расходы).
+          const { data: fresh, error: freshError } = await supabase
+            .from('restaurant_data')
+            .select('data,updated_at')
+            .eq('id', cloudRowId.current)
+            .single();
+          if (freshError) throw freshError;
+          console.error('Обнаружен конфликт одновременного сохранения — подтянуты более свежие данные вместо перезаписи.');
+          if (fresh?.data) {
+            const freshData = fresh.data;
+            setSettings(freshData.settings || defaultSettings());
+            setEmployees(freshData.employees || seedEmployees());
+            setSuppliers(freshData.suppliers || seedSuppliers());
+            setMonths(freshData.months || {});
+            setAuditLog(freshData.auditLog || []);
+          }
+          lastKnownUpdatedAt.current = fresh?.updated_at || nowIso;
+          setSyncError('Данные обновились в фоне (например, автосинхронизация) — показаны самые свежие. Если вы только что что-то меняли, откройте эту страницу заново и повторите изменение.');
+          setSaving(false);
+          return;
+        }
+
+        lastKnownUpdatedAt.current = nowIso;
         window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
         setSyncError('');
       } catch (e) {
@@ -965,12 +1152,9 @@ export default function App() {
               : <button className="rp-chip" onClick={() => { updateMonth((m) => ({ ...m, closed: true })); logAudit({ what: 'Месяц закрыт', month: monthKey }); }}><Unlock size={13} /> Закрыть месяц</button>}
           </div>
           <div className="rp-topbar-right">
-            <button className="rp-btn rp-btn-ghost" onClick={() => setSyncOpen(true)}><RefreshCw size={14} /> Синхронизация</button>
             <ExportMenu ctx={ctx} />
           </div>
         </header>
-
-        {syncOpen && <SyncModal ctx={ctx} onClose={() => setSyncOpen(false)} />}
 
         <main className="rp-content">
           {page === 'dashboard' && <Dashboard ctx={ctx} setPage={setPage} />}
@@ -997,7 +1181,7 @@ export default function App() {
 /* ============================== DASHBOARD ============================== */
 
 function Dashboard({ ctx, setPage }) {
-  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, setSettings, employees, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
+  const { pnl, prevPnl, month, updateMonth, months, setMonths, settings, setSettings, employees, suppliers, year, monthIdx, selectedDate, setSelectedDate, session, monthKey, logAudit } = ctx;
   const [drill, setDrill] = useState(null);
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
@@ -1015,6 +1199,14 @@ function Dashboard({ ctx, setPage }) {
   const [dayLiveSyncLoading, setDayLiveSyncLoading] = useState(false);
   const expenseSyncInFlightRef = useRef(new Set());
   const [iikoDayDetails, setIikoDayDetails] = useState(null);
+  // Клиентский кэш уже загруженных дней в рамках текущей сессии — раньше повторный
+  // клик на день, который только что смотрели, снова шёл в сеть и ждал ответ от
+  // сервера iiko (самая долгая часть — 10-20+ секунд на медленном локальном сервере).
+  // Прошлые дни задним числом не меняются, поэтому их можно смело отдавать из кэша
+  // мгновенно. Сегодняшний день кэшируем тоже, но с коротким TTL — он "живой" и
+  // за день данные меняются, но серия быстрых кликов туда-сюда не должна каждый
+  // раз бить по серверу заново.
+  const dayDetailsCacheRef = useRef(new Map());
   const [expenseDebug, setExpenseDebug] = useState(null);
   const [expSyncLoading, setExpSyncLoading] = useState(false);
   const [expSyncError, setExpSyncError] = useState('');
@@ -1080,9 +1272,20 @@ function Dashboard({ ctx, setPage }) {
   useEffect(() => {
     if (viewMode !== 'day' || !dayDate) return;
     let cancelled = false;
+    setExpenseDebug(null);
+
+    const TODAY_CACHE_TTL_MS = 60 * 1000; // сегодняшний день — короткий TTL, он ещё меняется
+    const cached = dayDetailsCacheRef.current.get(dayDate);
+    const isToday = dayDate === todayStr();
+    if (cached && (!isToday || Date.now() - cached.fetchedAt < TODAY_CACHE_TTL_MS)) {
+      // Уже грузили этот день в этой сессии — отдаём мгновенно, без похода в сеть.
+      setIikoDayDetails(cached.data);
+      setDayLiveSyncLoading(false);
+      return () => { cancelled = true; };
+    }
+
     setDayLiveSyncLoading(true);
     setIikoDayDetails(null);
-    setExpenseDebug(null);
     const t = setTimeout(async () => {
       try {
         const resp = await fetchWithTimeout('/api/iiko-day-report', {
@@ -1092,6 +1295,7 @@ function Dashboard({ ctx, setPage }) {
         });
         const data = await resp.json();
         if (!resp.ok || cancelled) return;
+        dayDetailsCacheRef.current.set(dayDate, { data, fetchedAt: Date.now() });
         setIikoDayDetails(data);
 
         // Кто работал в этот день — теперь по НАСТОЯЩИМ явкам (кто реально
@@ -1148,7 +1352,7 @@ function Dashboard({ ctx, setPage }) {
           const [dy, dm] = mk.split('-').map(Number);
           const monthFrom = dateStr(dy, dm - 1, 1);
           const monthTo = dateStr(dy, dm - 1, daysInMonth(dy, dm - 1));
-          try { await syncExpensesFromIikoOnDashboard(monthFrom, monthTo); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(mk); }
+          try { await syncExpensesFromIikoOnDashboard(monthFrom, monthTo); } catch (e) { console.error('Синхронизация расходов из iiko (для дня в другом месяце) не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(mk); }
         }
       } catch (_) {
         // Тихая фоновая подгрузка — если не получилось, просто останутся старые данные.
@@ -1158,6 +1362,59 @@ function Dashboard({ ctx, setPage }) {
     }, 300);
     return () => { cancelled = true; clearTimeout(t); setDayLiveSyncLoading(false); };
   }, [dayDate, viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Сверка уже сохранённых "иикошных" расходов дня с текущим списком изъятий из
+  // iiko — если какое-то изъятие с тех пор удалили/исправили в iikoFront (кассир
+  // ошибся и поправил), у нас в приложении оно бы осталось "осиротевшим" навсегда
+  // (наша синхронизация только ДОБАВЛЯЕТ новые расходы, никогда не проверяет, не
+  // исчезли ли уже добавленные). Сопоставляем по сумме (мультимножество — с учётом
+  // повторов одинаковых сумм), НИКОГДА не трогаем вручную добавленные записи
+  // (source !== 'iiko'). Курьера (day.courier) это не касается — отдельная сущность.
+  useEffect(() => {
+    if (!iikoDayDetails?.payoutDetails || !dayDate) return;
+    const liveAmounts = iikoDayDetails.payoutDetails.filter((r) => !r.excluded).map((r) => Math.round((Number(r.amount) || 0) * 100) / 100);
+    // Защита от ложного удаления: если живой список изъятий пришёл ПУСТЫМ, это
+    // почти наверняка означает, что запрос к iiko в этот раз не удался/вернул
+    // неполные данные (OLAP-отчёты на локальном сервере ресторана иногда подглючивают),
+    // а НЕ что все изъятия за день внезапно исчезли. В таком случае лучше вообще
+    // ничего не трогать и попробовать сверку при следующей загрузке страницы, чем
+    // рисковать стереть настоящие расходы из-за одной неудачной попытки.
+    if (liveAmounts.length === 0) return;
+    const mk = dayDate.slice(0, 7);
+    setMonths((prev) => {
+      const m = prev[mk];
+      const day = m?.days?.[dayDate];
+      if (!day) return prev;
+      const kitchen = day.kitchenExpenses || [];
+      const other = day.otherExpenses || [];
+      const combined = [
+        ...kitchen.map((e) => ({ ...e, _bucket: 'k' })),
+        ...other.map((e) => ({ ...e, _bucket: 'o' })),
+      ];
+      const pool = [...liveAmounts];
+      const survivors = [];
+      let removed = 0;
+      let iikoSourcedCount = 0;
+      for (const item of combined) {
+        if (item.source !== 'iiko') { survivors.push(item); continue; }
+        iikoSourcedCount += 1;
+        const idx = pool.findIndex((a) => Math.abs(a - item.amount) < 0.5);
+        if (idx >= 0) { pool.splice(idx, 1); survivors.push(item); }
+        else { removed += 1; }
+      }
+      if (removed === 0) return prev;
+      // Ещё одна защита: если сверка вдруг "хочет" убрать больше половины уже
+      // сохранённых иикошных записей за один раз — это больше похоже на сбой/неполные
+      // данные при этой конкретной загрузке, чем на то, что кассир и правда отменил
+      // половину операций за день. В таком подозрительном случае лучше ничего не
+      // трогать и переспросить при следующей загрузке, чем массово стереть расходы.
+      if (removed > iikoSourcedCount / 2) return prev;
+      const strip = ({ _bucket, ...rest }) => rest;
+      const newKitchen = survivors.filter((x) => x._bucket === 'k').map(strip);
+      const newOther = survivors.filter((x) => x._bucket === 'o').map(strip);
+      return { ...prev, [mk]: { ...m, days: { ...m.days, [dayDate]: { ...day, kitchenExpenses: newKitchen, otherExpenses: newOther } } } };
+    });
+  }, [iikoDayDetails, dayDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Синхронизация расходов из iiko прямо с Дашборда (та же логика, что на странице
   // «Входящие отчёты») — чтобы не уходить в другой раздел за этим. Работает за
@@ -1201,7 +1458,10 @@ function Dashboard({ ctx, setPage }) {
             body: JSON.stringify({
               text: syntheticText,
               revenueChannels: settings.revenueChannels || [], employees: employees || [],
-              expenseCategories: settings.expenseCategories || [], fallbackDate: date,
+              expenseCategories: settings.expenseCategories || [],
+              suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+              fixedExpenseNames: (settings.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+              fallbackDate: date,
               glossary: settings.reportGlossary || ''
             })
           }, 25000);
@@ -1211,19 +1471,46 @@ function Dashboard({ ctx, setPage }) {
           if (!report) { failedDays += 1; return; }
 
           const mk = date.slice(0, 7);
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           setMonths((prev) => {
             const curMonth = prev[mk] || emptyMonth(settings, null);
             const day = { ...getDay(curMonth, date) };
-            day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-            day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+            // Жёсткая защита от задвоения на уровне данных (а не только по ключу
+            // "уже обработано") — ключи синхронизации не спасают от гонки между
+            // клиентом и фоновым cron, если оба почти одновременно читают ещё не
+            // обновлённое состояние. Здесь читаем САМОЕ СВЕЖЕЕ состояние (React
+            // гарантирует это для функционального updater'а) и не добавляем позицию,
+            // если точно такая же (категория+сумма, от iiko) уже есть в этом дне —
+            // независимо от того, откуда взялась гонка.
+            day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupeAgainstExisting(day.kitchenExpenses, newKitchen)];
+            day.otherExpenses = [...(day.otherExpenses || []), ...dedupeAgainstExisting(day.otherExpenses, newOther)];
             if (report.courier?.pay) {
-              const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-              const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-              day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+              // Раньше суммы курьера накапливались через "+=" прямо в day.courier —
+              // если одно и то же изъятие обрабатывалось дважды (гонка клиент/cron),
+              // сумма молча задваивалась и оставалась задвоенной навсегда. Теперь
+              // храним КАЖДОЕ распознанное изъятие курьера отдельной записью в
+              // массиве (source:'iiko') с той же дедупликацией по сумме, что и для
+              // остальных расходов — повторная обработка того же изъятия больше не
+              // может задвоить итог.
+              const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+              day.courierAuto = [...(day.courierAuto || []), ...dedupeAgainstExisting(day.courierAuto, newCourierPayment)];
             }
-            return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [date]: day } } };
+            // Изъятия вида "рома зп"/"леша аванс" — ИИ уже сопоставил имя с
+            // конкретным сотрудником (employeeId). Добавляем как аванс этому
+            // сотруднику за соответствующую половину месяца. Несопоставленные
+            // (employeeId=null, имя не узнано) пропускаем — они видны в
+            // unmatchedLines для ручной проверки, но не создаём мусорную запись.
+            const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+            const newAdvances = (report.advances || [])
+              .filter((a) => a.employeeId && Number(a.amount) > 0)
+              .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
+            const existingAdj = curMonth.adjustments || [];
+            const dedupedAdvances = newAdvances.filter((na) =>
+              !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+            );
+            const monthWithAdvances = dedupedAdvances.length > 0 ? { ...curMonth, adjustments: [...existingAdj, ...dedupedAdvances] } : curMonth;
+            return { ...prev, [mk]: { ...monthWithAdvances, days: { ...monthWithAdvances.days, [date]: day } } };
           });
           addedCount += newKitchen.length + newOther.length;
           successfulDates.push(date);
@@ -1267,8 +1554,8 @@ function Dashboard({ ctx, setPage }) {
       const mFrom = dateStr(y, m, 1);
       const mTo = dateStr(y, m, daysInMonth(y, m));
       setHistorySyncProgress({ done: i, total: months.length, currentLabel: `${MONTHS_RU[m]} ${y}` });
-      try { await syncRevenueFromIiko(mFrom, mTo); } catch (_) {}
-      try { await syncExpensesFromIikoOnDashboard(mFrom, mTo); } catch (_) {}
+      try { await syncRevenueFromIiko(mFrom, mTo); } catch (e) { console.error(`Синхронизация выручки за ${mFrom}—${mTo} не удалась:`, e); }
+      try { await syncExpensesFromIikoOnDashboard(mFrom, mTo); } catch (e) { console.error(`Синхронизация расходов за ${mFrom}—${mTo} не удалась:`, e); }
     }
     setHistorySyncProgress({ done: months.length, total: months.length, currentLabel: '' });
   };
@@ -1280,11 +1567,11 @@ function Dashboard({ ctx, setPage }) {
     let cancelled = false;
     const t = setTimeout(async () => {
       if (cancelled) return;
-      try { await syncRevenueFromIiko(); } catch (_) {}
+      try { await syncRevenueFromIiko(); } catch (e) { console.error('Автосинхронизация выручки при открытии месяца не удалась:', e); }
       if (cancelled) return;
       if (!expenseSyncInFlightRef.current.has(monthKey)) {
         expenseSyncInFlightRef.current.add(monthKey);
-        try { await syncExpensesFromIikoOnDashboard(); } catch (_) {} finally { expenseSyncInFlightRef.current.delete(monthKey); }
+        try { await syncExpensesFromIikoOnDashboard(); } catch (e) { console.error('Автосинхронизация расходов при открытии месяца не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(monthKey); }
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
@@ -1321,6 +1608,104 @@ function Dashboard({ ctx, setPage }) {
           const o = dedupeBucket(day.otherExpenses);
           if (k.changed || o.changed) { monthChanged = true; changedAny = true; days[ds] = { ...day, kitchenExpenses: k.list, otherExpenses: o.list }; }
           else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая нормализация категорий закупок кухни — раньше ИИ мог написать категорию
+  // свободным текстом ("Закупка продуктов", "Продукты для кухни" и т.п.), теперь
+  // всегда используется фиксированный список (см. normalizeKitchenCategory выше).
+  // Уже сохранённые ранее записи со старыми формулировками сами не поменяются —
+  // приводим их к канонической категории один раз при загрузке.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const kitchen = day.kitchenExpenses || [];
+          let bucketChanged = false;
+          const normalized = kitchen.map((e) => {
+            const canonical = normalizeKitchenCategory(e.category);
+            if (canonical !== e.category) { bucketChanged = true; return { ...e, category: canonical }; }
+            return e;
+          });
+          if (bucketChanged) { monthChanged = true; changedAny = true; days[ds] = { ...day, kitchenExpenses: normalized }; }
+          else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая чистка уже сохранённых зарплатных выплат, ошибочно попавших в расходы —
+  // раньше комментарии вида "зп курьер", "зп орхан", "рома зп" проходили мимо фильтра
+  // (отсекался только комментарий, равный ровно "зп") и ИИ придумывал для них
+  // отдельную категорию расходов "Зарплата", хотя зарплата уже учитывается отдельно
+  // через ФОТ/смены — получалось задвоение. Новые синхронизации это исправлено (см.
+  // isSalaryComment на сервере), но уже сохранённые записи сами не удалятся —
+  // убираем их один раз при загрузке.
+  useEffect(() => {
+    const isSalaryCategory = (c) => /зарплат|^зп$/i.test(String(c || '').trim());
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const kitchen = day.kitchenExpenses || [];
+          const other = day.otherExpenses || [];
+          const kitchenFiltered = kitchen.filter((e) => !isSalaryCategory(e.category));
+          const otherFiltered = other.filter((e) => !isSalaryCategory(e.category));
+          if (kitchenFiltered.length !== kitchen.length || otherFiltered.length !== other.length) {
+            monthChanged = true; changedAny = true;
+            days[ds] = { ...day, kitchenExpenses: kitchenFiltered, otherExpenses: otherFiltered };
+          } else days[ds] = day;
+        }
+        next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Разовая чистка уже задвоенных расходов — гонка между клиентом и cron (или
+  // повторные запуски синхронизации) иногда добавляла одну и ту же позицию
+  // (категория+сумма от iiko) дважды в один день. Новые добавления теперь
+  // защищены (см. dedupeAgainstExisting), но уже накопленные дубликаты сами не
+  // исчезнут — схлопываем их в одну запись один раз при загрузке.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, m] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          const dedupeBucket = (list) => {
+            const seen = [];
+            const kept = [];
+            for (const item of list || []) {
+              if (item.source === 'iiko' && seen.some((s) => s.category === item.category && Math.abs((Number(s.amount) || 0) - (Number(item.amount) || 0)) < 0.5)) continue;
+              seen.push(item);
+              kept.push(item);
+            }
+            return kept;
+          };
+          const kitchenDeduped = dedupeBucket(day.kitchenExpenses);
+          const otherDeduped = dedupeBucket(day.otherExpenses);
+          const kitchen = day.kitchenExpenses || [];
+          const other = day.otherExpenses || [];
+          if (kitchenDeduped.length !== kitchen.length || otherDeduped.length !== other.length) {
+            monthChanged = true; changedAny = true;
+            days[ds] = { ...day, kitchenExpenses: kitchenDeduped, otherExpenses: otherDeduped };
+          } else days[ds] = day;
         }
         next[mk] = monthChanged ? { ...m, days } : m;
       }
@@ -1369,14 +1754,30 @@ function Dashboard({ ctx, setPage }) {
   const dayRevenueSel = dayRevByChannel.reduce((s, c) => s + c.value, 0);
   const dayKitchen = (dayObj.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const dayOther = (dayObj.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const dayCourierPay = Number(dayObj.courier?.pay) || 0;
-  const dayCourierFuel = dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
+  // Курьер: авто-синхронизированные из iiko изъятия теперь хранятся отдельными
+  // записями в массиве day.courierAuto (как и остальные расходы), а не одним
+  // накапливаемым через "+=" числом — раньше повторная обработка того же
+  // изъятия (гонка ручной синхронизации с фоновым cron) могла задвоить сумму
+  // навсегда. Если день ещё не успел синхронизироваться (courierAuto пуст), но
+  // мы сейчас смотрим именно на него и уже загрузили живые данные из iiko —
+  // подстраховываемся живым изъятием с комментарием "курьер" для мгновенной
+  // обратной связи, не дожидаясь синхронизации.
+  const dayCourierAutoSum = (dayObj.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const liveCourierForThisDay = (dayCourierAutoSum === 0 && iikoDayDetails?.date === dayDate)
+    ? (iikoDayDetails.payoutDetails || []).find((r) => /курьер/i.test(String(r.comment || '')))
+    : null;
+  const effectiveCourierSum = dayCourierAutoSum || (liveCourierForThisDay ? liveCourierForThisDay.amount : 0);
+  const { pay: courierAutoPay, fuel: courierAutoFuel } = splitCourierPayout(effectiveCourierSum, settings.courierFixedRate);
+  const dayCourierPay = (Number(dayObj.courier?.pay) || 0) + courierAutoPay;
+  const dayCourierFuel = (dayObj.courier?.fuel != null ? (Number(dayObj.courier.fuel) || 0) : (Number(dayObj.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7)) + courierAutoFuel;
   const dayPromo = Number(dayObj.promo?.pay) || 0;
-  const dayExpensesSel = dayKitchen + dayOther + dayCourierPay + dayCourierFuel + dayPromo;
+  // Курьер сознательно НЕ входит в "Расходы итого"/donut — он относится к затратам
+  // на персонал, а не к закупкам/прочим расходам, и должен считаться только в
+  // "Итого потрачено на сотрудников" (см. блок "Кто был на смене" ниже).
+  const dayExpensesSel = dayKitchen + dayOther + dayPromo;
   const dayProfitSel = dayRevenueSel - dayExpensesSel;
   const dayStructure = [
     { name: 'Закупки (кухня/бар)', value: dayKitchen },
-    { name: 'Курьер (ставка+бензин)', value: dayCourierPay + dayCourierFuel },
     { name: 'Промо', value: dayPromo },
     { name: 'Прочие', value: dayOther },
   ].filter(d => d.value > 0);
@@ -1404,7 +1805,7 @@ function Dashboard({ ctx, setPage }) {
       try {
         const { data } = await supabase.from('ai_insights_cache').select('*').eq('month_key', monthKey).order('generated_at', { ascending: false }).limit(1).maybeSingle();
         if (!cancelled && data) setInsights({ insights: data.insights, generatedAt: data.generated_at });
-      } catch (_) {}
+      } catch (e) { console.error('Не удалось загрузить кэш AI-инсайтов:', e); }
       if (!cancelled) setInsightsLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -1460,7 +1861,7 @@ function Dashboard({ ctx, setPage }) {
     <div className="rp-page">
       <div className="rp-page-head-row">
         <div className="rp-page-head">
-          <h1>Дашборд</h1>
+          <h1>Отчёты</h1>
           <div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · {pnl.nd} дней</div>
         </div>
         <div style={{display:'flex', gap:10, alignItems:'center'}}>
@@ -1473,7 +1874,6 @@ function Dashboard({ ctx, setPage }) {
               <RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Синхронизирую с iiko…
             </span>
           )}
-          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setHistorySyncOpen(true)} disabled={revSyncLoading || expSyncLoading}><Calendar size={13}/> Загрузить историю</button>
           <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setCustomizeOpen(true)}><SettingsIcon size={13}/> Настроить</button>
         </div>
       </div>
@@ -1536,18 +1936,9 @@ function Dashboard({ ctx, setPage }) {
               {dayLiveSyncLoading && <span className="rp-muted" style={{fontSize:12, marginTop:18}}><RefreshCw size={12} className="rp-spin" style={{verticalAlign:-2, marginRight:4}}/>Обновляю из iiko…</span>}
               <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => setPage('day')} style={{marginTop:18}}>Открыть в «День» для редактирования →</button>
             </div>
-            <div className={`rp-hero ${dayProfitSel >= 0 ? 'rp-hero-pos' : 'rp-hero-neg'}`} style={{marginBottom:0, cursor:'default'}}>
-              <div className="rp-hero-main">
-                <div className="rp-hero-label">Прибыль за {dayDate.split('-').reverse().join('.')}</div>
-                <div className="rp-hero-value">{fmtRub(dayProfitSel)}</div>
-                <div className="rp-hero-meta">
-                  <span>рентабельность {fmtPct(dayRevenueSel ? (dayProfitSel/dayRevenueSel)*100 : 0)}</span>
-                </div>
-              </div>
-              <div className="rp-hero-side">
-                <div><div className="rp-hero-side-label">Выручка</div><div className="rp-hero-side-value">{fmtRub(dayRevenueSel)}</div></div>
-                <div><div className="rp-hero-side-label">Расходы</div><div className="rp-hero-side-value">{fmtRub(dayExpensesSel)}</div></div>
-              </div>
+            <div className="rp-grid-2" style={{marginBottom:0}}>
+              <Stat label="Выручка итого" value={fmtRub(dayRevenueSel)} />
+              <Stat label="Расходы итого" value={fmtRub(dayExpensesSel)} />
             </div>
           </Card>
 
@@ -1555,23 +1946,35 @@ function Dashboard({ ctx, setPage }) {
             <Card>
               <div className="rp-card-title">Выручка по каналам за день</div>
               {dayRevenueSel === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Нет данных за этот день" /> : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <PieChart>
-                    <Pie data={dayRevByChannel.filter(c => c.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
-                      {dayRevByChannel.filter(c => c.value > 0).map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-                    </Pie>
-                    <Tooltip formatter={(v) => fmtRub(v)} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <PieChart>
+                      <Pie data={dayRevByChannel.filter(c => c.value > 0)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={40}>
+                        {dayRevByChannel.filter(c => c.value > 0).map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={(v) => fmtRub(v)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="rp-list" style={{marginTop:8}}>
+                    {dayRevByChannel.filter(c => c.value > 0).map((c, i) => (
+                      <div key={c.id} className="rp-list-row">
+                        <div className="rp-list-main" style={{display:'flex', alignItems:'center', gap:8}}>
+                          <span style={{width:9, height:9, borderRadius:'50%', background:COLORS.chartPalette[i % COLORS.chartPalette.length], flexShrink:0}} />
+                          <span>{c.name}</span>
+                        </div>
+                        <div className="rp-list-amount">{fmtRub(c.value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </Card>
             <Card>
               <div className="rp-card-title">Расходы за день</div>
               {dayStructure.length === 0 ? <EmptyState icon={<Info size={22} color={COLORS.inkSoft} />} title="Расходов за этот день нет" /> : (
-                <ResponsiveContainer width="100%" height={220}>
+                <ResponsiveContainer width="100%" height={180}>
                   <PieChart>
-                    <Pie data={dayStructure} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={45}>
+                    <Pie data={dayStructure} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={40}>
                       {dayStructure.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
                     </Pie>
                     <Tooltip formatter={(v) => fmtRub(v)} />
@@ -1583,7 +1986,7 @@ function Dashboard({ ctx, setPage }) {
                 <Info size={13}/> Потрачено на сотрудников за {MONTHS_RU[monthIdx].toLowerCase()} (весь ФОТ месяца, не разбивается по дням): <b>{fmtRub(pnl.payroll.totalFot)}</b> — нажмите, чтобы открыть «Зарплата»
               </div>
 
-              {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayCourierPay > 0 || dayCourierFuel > 0 || dayPromo > 0) && (
+              {(dayObj.kitchenExpenses?.length > 0 || dayObj.otherExpenses?.length > 0 || dayPromo > 0) && (
                 <div style={{marginTop:14}}>
                   <div className="rp-muted" style={{fontSize:11, fontWeight:700, marginBottom:6, textTransform:'uppercase'}}>Что именно</div>
                   <div className="rp-list">
@@ -1593,10 +1996,13 @@ function Dashboard({ ctx, setPage }) {
                     {(dayObj.otherExpenses || []).map((e, i) => (
                       <div key={`o${i}`} className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">{e.category}</div>{e.comment && <div className="rp-muted" style={{fontSize:11}}>{e.comment}</div>}</div><div className="rp-list-amount">{fmtRub(e.amount)}</div></div>
                     ))}
-                    {dayCourierPay > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — ставка</div></div><div className="rp-list-amount">{fmtRub(dayCourierPay)}</div></div>}
-                    {dayCourierFuel > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Курьер — бензин</div></div><div className="rp-list-amount">{fmtRub(dayCourierFuel)}</div></div>}
                     {dayPromo > 0 && <div className="rp-list-row"><div className="rp-list-main"><div className="rp-list-cat">Промо</div></div><div className="rp-list-amount">{fmtRub(dayPromo)}</div></div>}
                   </div>
+                  {(dayCourierPay + dayCourierFuel) > 0 && (
+                    <p className="rp-muted" style={{fontSize:11, marginTop:8}}>
+                      Курьер ({fmtRub(dayCourierPay + dayCourierFuel)}) сюда не входит и не входит в «Расходы итого» — это затраты на персонал, сумма и детали в «Кто был на смене» ниже.
+                    </p>
+                  )}
                 </div>
               )}
             </Card>
@@ -1613,25 +2019,85 @@ function Dashboard({ ctx, setPage }) {
           {iikoDayDetails && (
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
+              {iikoDayDetails.revenue?.checks > 0 && (
+                <div className="rp-grid-2" style={{marginTop:10, marginBottom:16}}>
+                  <Stat label="Количество чеков" value={fmt0(iikoDayDetails.revenue.checks)} />
+                  <Stat label="Средний чек" value={fmtRub(iikoDayDetails.revenue.total / iikoDayDetails.revenue.checks)} />
+                </div>
+              )}
               {iikoDayDetails.attendance?.length > 0 && (() => {
                 // Показываем только тех, кого реально удалось сопоставить с сотрудником
                 // в разделе «Сотрудники» — не всех подряд, кто засветился в iiko
                 // (там могут быть чужие/технические аккаунты вроде "Анастасия Короткая").
-                const matchedEntries = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))]
-                  .map((name) => ({ name, emp: matchIikoCashierToEmployee(name, employees) }))
-                  .filter((x) => x.emp);
-                return matchedEntries.length > 0 && (
-                  <Section title="Кто был на смене" count={matchedEntries.length} defaultOpen={true}>
+                const realNames = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))]
+                  .filter((name) => !!matchIikoCashierToEmployee(name, employees));
+
+                // Сколько часов реально отработал человек в этот день — по разнице
+                // времени прихода/ухода из явок (нужно только для почасовой оплаты,
+                // у сменной ставки дневная сумма и так известна — это сама ставка).
+                const parseHM = (s) => {
+                  if (!s) return null;
+                  const [h, m] = s.split(':').map(Number);
+                  return (Number.isFinite(h) && Number.isFinite(m)) ? h * 60 + m : null;
+                };
+                const attendanceHours = (name) => {
+                  const recs = iikoDayDetails.attendance.filter((a) => a.name === name);
+                  let totalMin = 0, any = false;
+                  for (const r of recs) {
+                    const f = parseHM(r.from), t = parseHM(r.to);
+                    if (f != null && t != null) { let diff = t - f; if (diff < 0) diff += 24 * 60; totalMin += diff; any = true; }
+                  }
+                  return any ? totalMin / 60 : null;
+                };
+
+                // Курьер отдельным сотрудником в явках iiko не значится. Раньше эта
+                // сумма считалась ЗАНОВО прямо здесь по сырым изъятиям — из-за этого
+                // она расходилась с "Расходы итого" (там курьер считается по
+                // dayCourierPay/dayCourierFuel — уже синхронизированным и сохранённым
+                // значениям). Теперь берём то же самое число, что и в итоге расходов,
+                // чтобы суммы совпадали. Если по какой-то причине синхронизация ещё не
+                // прошла (dayCourierPay+dayCourierFuel = 0), подстраховываемся сырым
+                // изъятием с упоминанием "курьер" в комментарии — так курьер не
+                // потеряется из виду, даже если ещё не попал в P&L.
+                const courierFromPnL = dayCourierPay + dayCourierFuel;
+                const courierRawFallback = courierFromPnL === 0
+                  ? (iikoDayDetails.payoutDetails || []).find((r) => /курьер/i.test(String(r.comment || '')))
+                  : null;
+                const courierAmount = courierFromPnL > 0 ? courierFromPnL : (courierRawFallback?.amount || 0);
+
+                const rows = realNames.map((name) => {
+                  const emp = matchIikoCashierToEmployee(name, employees);
+                  let amount = null, label;
+                  if (emp.payType === 'shift') {
+                    amount = emp.rate;
+                    label = `${fmtRub(emp.rate)}/смена`;
+                  } else if (emp.payType === 'hour') {
+                    const hours = attendanceHours(name);
+                    if (hours != null) { amount = emp.rate * hours; label = `${fmtRub(emp.rate)}/час × ${hours.toFixed(1)}ч = ${fmtRub(amount)}`; }
+                    else label = `${fmtRub(emp.rate)}/час (часы не определены)`;
+                  } else {
+                    label = `${fmtRub(emp.rate)} оклад (не входит в дневной итог)`;
+                  }
+                  return { key: name, name: emp.name, label, amount };
+                });
+                if (courierAmount > 0) {
+                  rows.push({ key: 'courier', name: 'Курьер', label: `${fmtRub(courierAmount)} (ставка + бензин)`, amount: courierAmount, isCourier: true });
+                }
+                const totalSpent = rows.reduce((s, r) => s + (r.amount || 0), 0);
+
+                return rows.length > 0 && (
+                  <Section title="Кто был на смене" count={rows.length} defaultOpen={true}>
                     <div className="rp-list">
-                      {matchedEntries.map(({ name, emp }, i) => {
-                        const rateLabel = emp.payType === 'shift' ? `${fmtRub(emp.rate)}/смена` : emp.payType === 'hour' ? `${fmtRub(emp.rate)}/час` : `${fmtRub(emp.rate)} оклад`;
-                        return (
-                          <div key={i} className="rp-list-row">
-                            <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{emp.name}</span>
-                            <span className="rp-muted" style={{fontSize:12}}>{rateLabel}</span>
-                          </div>
-                        );
-                      })}
+                      {rows.map((r) => (
+                        <div key={r.key} className="rp-list-row">
+                          <span className="rp-badge" style={{background:`${r.isCourier ? COLORS.accent2 : COLORS.accent}22`, color: r.isCourier ? COLORS.accent2 : COLORS.accent, fontSize:13, padding:'6px 12px'}}>{r.name}</span>
+                          <span className="rp-muted" style={{fontSize:12}}>{r.label}</span>
+                        </div>
+                      ))}
+                      <div className="rp-list-row" style={{borderTop:`1px solid ${COLORS.line}`, marginTop:6, paddingTop:10}}>
+                        <div className="rp-list-main"><b>Итого потрачено на сотрудников за день</b></div>
+                        <div className="rp-list-amount"><b>{fmtRub(totalSpent)}</b></div>
+                      </div>
                     </div>
                   </Section>
                 );
@@ -1727,20 +2193,6 @@ function Dashboard({ ctx, setPage }) {
                 </Section>
               )}
 
-              {iikoDayDetails.deletions?.items?.length > 0 && (
-                <Section title="Что удаляли" count={iikoDayDetails.deletions.items.length} defaultOpen={false}>
-                  <div className="rp-table-wrap">
-                    <table className="rp-table">
-                      <thead><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th></tr></thead>
-                      <tbody>
-                        {iikoDayDetails.deletions.items.map((d, i) => (
-                          <tr key={i}><td>{d.name}</td><td className="rp-num">{fmt0(d.qty)}</td><td className="rp-num">{fmtRub(d.amount)}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Section>
-              )}
             </Card>
           )}
         </>
@@ -2480,6 +2932,7 @@ function EmployeesPage({ ctx }) {
   const { employees, setEmployees, month, updateMonth, settings, year, monthIdx, monthKey, logAudit } = ctx;
   const [editing, setEditing] = useState(null);
   const [shiftsFor, setShiftsFor] = useState(null);
+  const [shiftsForInitialTab, setShiftsForInitialTab] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
@@ -2509,7 +2962,7 @@ function EmployeesPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th>Аванс</th><th>Начислено</th><th /></tr></thead>
+          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
               const pay = computeEmployeePay(e, month, settings);
@@ -2523,6 +2976,7 @@ function EmployeesPage({ ctx }) {
                   <td className="rp-num rp-link" onClick={() => setShiftsFor(e.id)}>{pay.shiftsCount != null ? `${pay.shiftsCount} см.` : `${fmt0(pay.hours)} ч`}</td>
                   <td className="rp-num">{pay.advance ? fmtRub(pay.advance) : '—'}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.accrued)}</td>
+                  <td className="rp-num rp-strong">{fmtRub(pay.payout)}</td>
                   <td>
                     <button className="rp-icon-btn" onClick={() => setEditing(e)}>✎</button>
                     <button className="rp-icon-btn rp-icon-btn-danger" onClick={() => setDeleteConfirm(e)}><Trash2 size={14} /></button>
@@ -2530,7 +2984,7 @@ function EmployeesPage({ ctx }) {
                 </tr>
               );
             })}
-            {visible.length === 0 && <tr><td colSpan={9}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
+            {visible.length === 0 && <tr><td colSpan={10}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
         </table></div>
       </Card>
@@ -2569,6 +3023,16 @@ function EmployeesPage({ ctx }) {
       {editing && (
         <Modal title={employees.some((e) => e.id === editing.id) ? 'Сотрудник' : 'Новый сотрудник'} onClose={() => setEditing(null)}>
           <EmployeeForm emp={editing} onSave={saveEmployee} />
+          {employees.some((e) => e.id === editing.id) && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${COLORS.line}` }}>
+              <button
+                className="rp-btn rp-btn-ghost rp-btn-sm"
+                onClick={() => { const id = editing.id; setEditing(null); setShiftsFor(id); setShiftsForInitialTab('adjust'); }}
+              >
+                <Wallet size={14} /> Премии / штрафы за {MONTHS_RU[monthIdx].toLowerCase()}
+              </button>
+            </div>
+          )}
         </Modal>
       )}
 
@@ -2577,7 +3041,8 @@ function EmployeesPage({ ctx }) {
           emp={employees.find((e) => e.id === shiftsFor)}
           month={month} updateMonth={updateMonth} nd={nd} year={year} monthIdx={monthIdx} monthKey={monthKey}
           settings={settings} locked={month.closed} logAudit={logAudit}
-          onClose={() => setShiftsFor(null)}
+          initialTab={shiftsForInitialTab}
+          onClose={() => { setShiftsFor(null); setShiftsForInitialTab(null); }}
         />
       )}
 
@@ -2632,7 +3097,7 @@ function EmployeeForm({ emp, onSave }) {
   );
 }
 
-function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey, settings, locked, onClose, logAudit }) {
+function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey, settings, locked, onClose, logAudit, initialTab }) {
   const standard = emp.standardShift || settings.standardShiftHours;
   const shifts = month.shifts?.[emp.id] || {};
   const setHours = (d, val) => {
@@ -2644,7 +3109,7 @@ function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey,
     });
   };
   const pay = computeEmployeePay(emp, month, settings);
-  const [tab, setTab] = useState('shifts');
+  const [tab, setTab] = useState(initialTab || 'shifts');
 
   return (
     <Modal title={`Смены — ${emp.name}`} onClose={onClose} wide>
@@ -2844,6 +3309,17 @@ function SuppliersPage({ ctx }) {
   const [itemsFor, setItemsFor] = useState(null);
 
   const ledger = useMemo(() => supplierLedger(months, suppliers, year, monthIdx), [months, suppliers, year, monthIdx]);
+  // Раньше в основном списке показывалась сумма нарастающим итогом за всю историю
+  // (то же значение, что и в верхней плашке "Заявлено всего") — из-за этого список
+  // выглядел так, будто в текущем месяце заказали намного больше, чем на самом деле.
+  // Список теперь показывает суммы ТОЛЬКО за выбранный месяц.
+  const monthOrderedBySupplier = useMemo(() => {
+    const map = {};
+    for (const o of (month.supplierOrders || [])) {
+      map[o.supplierId] = (map[o.supplierId] || 0) + (Number(o.amount) || 0);
+    }
+    return map;
+  }, [month.supplierOrders]);
   const activeSuppliers = suppliers.filter((s) => !s.archived);
   const visibleSuppliers = showArchived ? suppliers : activeSuppliers;
 
@@ -3029,10 +3505,10 @@ function SuppliersPage({ ctx }) {
 
   return (
     <div className="rp-page">
-      <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Заявки, оплаты и задолженность (нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year})</div></div>
+      <div className="rp-page-head"><h1>Поставщики</h1><div className="rp-page-sub">Список — за {MONTHS_RU[monthIdx].toLowerCase()} {year}; задолженность и итоги вверху — нарастающим итогом до {MONTHS_RU[monthIdx].toLowerCase()} {year}</div></div>
 
       <div className="rp-grid-4">
-        <Stat label="Заявлено всего" value={fmtRub(totalOrdered)} />
+        <Stat label="Итого сумма закупок" value={fmtRub(totalOrdered)} />
         <Stat label="Заявлено в этом месяце" value={fmtRub((month.supplierOrders || []).reduce((s, o) => s + (Number(o.amount) || 0), 0))} />
         <Stat label="Поставок в этом месяце" value={fmt0((month.supplierOrders || []).length)} />
         <Stat label="Активных поставщиков" value={fmt0(activeSuppliers.length)} />
@@ -3084,14 +3560,14 @@ function SuppliersPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Поставщик</th><th>Заявлено</th><th /></tr></thead>
+          <thead><tr><th>Поставщик</th><th>Заявлено за {MONTHS_RU[monthIdx].toLowerCase()}</th><th /></tr></thead>
           <tbody>
             {visibleSuppliers.map((s) => {
-              const l = ledger[s.id] || { ordered: 0, paid: 0 };
+              const monthOrdered = monthOrderedBySupplier[s.id] || 0;
               return (
                 <tr key={s.id} style={s.archived ? { opacity: 0.55 } : {}}>
                   <td className="rp-strong rp-link" onClick={() => setHistoryFor(s.id)}>{s.name}{s.archived && <span className="rp-badge off" style={{ marginLeft: 6 }}>архив</span>}</td>
-                  <td className="rp-num">{fmtRub(l.ordered)}</td>
+                  <td className="rp-num">{fmtRub(monthOrdered)}</td>
                   <td>
                     {!s.archived && (
                       <>
@@ -3849,7 +4325,7 @@ function PurchaseAnalyticsPage({ ctx }) {
 /* ============================== AI-помощник ============================== */
 
 async function buildAiContext(ctx, session) {
-  const { pnl, prevPnl, year, monthIdx, months, suppliers } = ctx;
+  const { pnl, prevPnl, year, monthIdx, months, suppliers, employees } = ctx;
   const prevDateObj = new Date(year, monthIdx - 1, 1);
   const monthLabel = `${MONTHS_RU[monthIdx]} ${year}`;
   const prevMonthLabel = `${MONTHS_RU[prevDateObj.getMonth()]} ${prevDateObj.getFullYear()}`;
@@ -3930,6 +4406,8 @@ async function buildAiContext(ctx, session) {
   return {
     месяц: monthLabel,
     предыдущийМесяц: prevMonthLabel,
+    сегодня: todayStr(),
+    сотрудники: (employees || []).filter((e) => e.status === 'active').map((e) => ({ id: e.id, имя: e.name, должность: e.position })),
     выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА: iikoRevenue,
     прибыльПоРучномуУчётуРасходов: { этотМесяц: Math.round(pnl.profit), прошлыйМесяц: Math.round(prevPnl.profit) },
     примечаниеПроПрибыльИМаржу: 'Прибыль и маржа посчитаны в приложении на основе ручного ввода выручки в разделе «Кассовая смена (день)», который отдельный от кассы iiko и часто не заполняется — если он пустой, прибыль/маржа ниже будут некорректны. Для реальной выручки используй поле выручкаИзKассыIiko_ЭТОРЕАЛЬНАЯВЫРУЧКА.',
@@ -4010,7 +4488,7 @@ function AiAssistantPage({ ctx }) {
 // при полной перезагрузке вкладки). Контекст (P&L, закупки) всегда актуален для
 // текущего выбранного вверху месяца, независимо от того, какая страница открыта.
 function AiChatWidget({ ctx }) {
-  const { session } = ctx;
+  const { session, employees, setMonths } = ctx;
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -4036,12 +4514,77 @@ function AiChatWidget({ ctx }) {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || 'Не удалось получить ответ.');
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
+      const actions = (data.actions || []).map((a) => ({ ...a, status: 'pending' }));
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.answer, actions }]);
     } catch (e) {
       setChatError(e.message);
     } finally {
       setChatLoading(false);
     }
+  };
+
+  // Применение предложенного ассистентом действия — ТОЛЬКО после явного нажатия
+  // "Подтвердить" пользователем (см. ai-assistant.js: сервер лишь предлагает,
+  // ничего не меняет сам). Имя сотрудника сопоставляется с id тем же алгоритмом,
+  // что и для сопоставления кассира iiko — единая логика поиска по имени.
+  const applyAction = (msgIndex, actionId) => {
+    setMessages((prev) => {
+      const msg = prev[msgIndex];
+      const action = msg.actions.find((a) => a.id === actionId);
+      if (!action) return prev;
+      const emp = matchIikoCashierToEmployee(action.input.employee_name, employees);
+      if (!emp) {
+        return prev.map((m, i) => i !== msgIndex ? m : {
+          ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'error', error: `Не нашёл сотрудника «${action.input.employee_name}» в справочнике.` } : a)
+        });
+      }
+      const date = action.input.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) {
+        return prev.map((m, i) => i !== msgIndex ? m : {
+          ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'error', error: `Не понял дату «${date}».` } : a)
+        });
+      }
+      const mk = date.slice(0, 7);
+      setMonths((prevMonths) => {
+        const curMonth = prevMonths[mk] || emptyMonth(ctx.settings, null);
+        if (action.name === 'set_shift') {
+          const empShifts = { ...(curMonth.shifts?.[emp.id] || {}) };
+          const hours = Number(action.input.hours) || 0;
+          if (hours === 0) delete empShifts[date]; else empShifts[date] = hours;
+          return { ...prevMonths, [mk]: { ...curMonth, shifts: { ...curMonth.shifts, [emp.id]: empShifts } } };
+        }
+        if (action.name === 'add_adjustment') {
+          const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+          const adj = { id: uid(), employeeId: emp.id, type: action.input.type, half, amount: Number(action.input.amount) || 0, comment: action.input.comment || 'Через AI-помощника', date };
+          return { ...prevMonths, [mk]: { ...curMonth, adjustments: [...(curMonth.adjustments || []), adj] } };
+        }
+        return prevMonths;
+      });
+      return prev.map((m, i) => i !== msgIndex ? m : {
+        ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'applied', employeeName: emp.name } : a)
+      });
+    });
+  };
+
+  const rejectAction = (msgIndex, actionId) => {
+    setMessages((prev) => prev.map((m, i) => i !== msgIndex ? m : {
+      ...m, actions: m.actions.map((a) => a.id === actionId ? { ...a, status: 'rejected' } : a)
+    }));
+  };
+
+  const describeAction = (action) => {
+    const dateFmt = String(action.input.date || '').split('-').reverse().join('.');
+    if (action.name === 'set_shift') {
+      const hours = Number(action.input.hours) || 0;
+      return hours === 0
+        ? `Убрать смену: ${action.input.employee_name}, ${dateFmt}`
+        : `Смена: ${action.input.employee_name}, ${dateFmt}, ${hours} ч`;
+    }
+    if (action.name === 'add_adjustment') {
+      const typeLabel = { bonus: 'Премия', penalty: 'Штраф', advance: 'Аванс' }[action.input.type] || action.input.type;
+      return `${typeLabel}: ${action.input.employee_name}, ${fmtRub(action.input.amount)}, ${dateFmt}${action.input.comment ? ` — ${action.input.comment}` : ''}`;
+    }
+    return action.name;
   };
 
   return (
@@ -4063,8 +4606,22 @@ function AiChatWidget({ ctx }) {
               </div>
             )}
             {messages.map((m, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                <div className={`rp-ai-bubble ${m.role === 'user' ? 'rp-ai-bubble-user' : 'rp-ai-bubble-assistant'}`}>{m.content}</div>
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', gap: 6 }}>
+                {m.content && <div className={`rp-ai-bubble ${m.role === 'user' ? 'rp-ai-bubble-user' : 'rp-ai-bubble-assistant'}`}>{m.content}</div>}
+                {(m.actions || []).map((a) => (
+                  <div key={a.id} className="rp-ai-action-card">
+                    <div style={{ fontSize: 13 }}>{describeAction(a)}</div>
+                    {a.status === 'pending' && (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <button className="rp-btn rp-btn-sm" onClick={() => applyAction(i, a.id)}>Подтвердить</button>
+                        <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={() => rejectAction(i, a.id)}>Отклонить</button>
+                      </div>
+                    )}
+                    {a.status === 'applied' && <div className="rp-muted" style={{ fontSize: 12, marginTop: 6, color: COLORS.accent }}>✓ Применено</div>}
+                    {a.status === 'rejected' && <div className="rp-muted" style={{ fontSize: 12, marginTop: 6 }}>Отклонено</div>}
+                    {a.status === 'error' && <div className="rp-inline-warn" style={{ marginTop: 6 }}><AlertTriangle size={12} /> {a.error}</div>}
+                  </div>
+                ))}
               </div>
             ))}
             {chatLoading && <div className="rp-muted" style={{ fontSize: 13 }}>Думаю…</div>}
@@ -4152,6 +4709,10 @@ function PnLPage({ ctx }) {
         <Row label="Промо" value={pnl.promo.total} indent onClick={() => setDrill('promo')} />
         <Row label="Налоги на сотрудников" value={pnl.fotTaxTotal} indent />
         <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total + pnl.fotTaxTotal} bold />
+        <p className="rp-muted" style={{ fontSize: 11, marginTop: 4, paddingLeft: 20 }}>
+          «Курьеры (ставка, справочно)» и «Промо» здесь показаны ещё раз для расчёта доли ФОТ от выручки — в общую сумму расходов они уже включены один раз, строкой выше в «Переменных расходах». Этот блок сам по себе в прибыль не вычитается второй раз.
+        </p>
+
 
         <div className="rp-pnl-section-title">Постоянные расходы {locked && <span className="rp-muted-sm">(месяц закрыт — только просмотр)</span>}</div>
         {pnl.fixedItems.map(EditableFixedRow)}
@@ -4232,7 +4793,7 @@ function DrillModal({ kind, pnl, onClose }) {
 /* ============================== SETTINGS ============================== */
 
 function SettingsPage({ ctx }) {
-  const { settings, setSettings } = ctx;
+  const { settings, setSettings, months, setMonths, session } = ctx;
   const [tab, setTab] = useState('channels');
 
   const update = (fn) => setSettings((s) => fn({ ...s }));
@@ -4337,23 +4898,220 @@ function SettingsPage({ ctx }) {
       )}
 
       {tab === 'anomaly' && (
-        <Card>
-          <div className="rp-form-grid">
-            <Field label="Порог отклонения для предупреждения, %">
-              <input type="number" min="5" step="5" value={settings.anomalyThresholdPct} onChange={(e) => update((s) => { s.anomalyThresholdPct = Number(e.target.value); return s; })} />
-            </Field>
-          </div>
-          <p className="rp-muted">
-            На странице «День» приложение сравнивает сегодняшнюю выручку, расходы кухни/бара, курьера и промо со средним значением
-            за последние 7 дней с данными (нужно минимум 3 дня для сравнения). Если отклонение больше указанного процента — показывается
-            некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
-          </p>
-        </Card>
+        <>
+          <Card>
+            <div className="rp-form-grid">
+              <Field label="Порог отклонения для предупреждения, %">
+                <input type="number" min="5" step="5" value={settings.anomalyThresholdPct} onChange={(e) => update((s) => { s.anomalyThresholdPct = Number(e.target.value); return s; })} />
+              </Field>
+            </div>
+            <p className="rp-muted">
+              На странице «День» приложение сравнивает сегодняшнюю выручку, расходы кухни/бара, курьера и промо со средним значением
+              за последние 7 дней с данными (нужно минимум 3 дня для сравнения). Если отклонение больше указанного процента — показывается
+              некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
+            </p>
+          </Card>
+          <ExpenseReconciliationPanel months={months} setMonths={setMonths} session={session} />
+        </>
       )}
 
       {tab === 'backup' && <BackupPanel ctx={ctx} />}
       {tab === 'integrations' && <IikoIntegrationPanel ctx={ctx} />}
     </div>
+  );
+}
+
+// Инструмент сверки — читает все дни за последние 6 месяцев из текущего локального
+// состояния (months) и сравнивает уже сохранённые "иикошные" расходы (source:'iiko')
+// с ОДНИМ актуальным запросом сырых изъятий из iiko за весь период (не 180 отдельных
+// запросов по дням — один запрос диапазона через /api/iiko-expenses). Только
+// ПОКАЗЫВАЕТ расхождения, ничего не удаляет и не меняет сам — после инцидента с
+// автосверкой на странице "День" (см. историю) массовые автоматические изменения
+// финансовых данных без явного разбора конкретного дня — плохая идея.
+function ExpenseReconciliationPanel({ months, setMonths, session }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixMessage, setFixMessage] = useState('');
+
+  const runCheck = async () => {
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const today = todayObj();
+      const fromD = new Date(today.y, today.m - 6, today.d);
+      const from = dateStr(fromD.getFullYear(), fromD.getMonth(), fromD.getDate());
+      const to = todayStr();
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+      const resp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const data = await resp.json();
+      if (!resp.ok) { setError(data?.error || 'Не удалось получить изъятия из iiko.'); return; }
+
+      // Живые изъятия за весь период, сгруппированные по дате (уже без "дб"/"бк"/
+      // "ошибка"/закрытия смены — это отсекается на сервере в /api/iiko-expenses;
+      // "зп"-строки НЕ отсечены, поэтому отдельно вынимаем из них курьерские).
+      const liveByDate = new Map();
+      const courierLiveByDate = new Map();
+      for (const e of (data.expenses || [])) {
+        if (/курьер/i.test(e.comment)) {
+          if (!courierLiveByDate.has(e.date)) courierLiveByDate.set(e.date, []);
+          courierLiveByDate.get(e.date).push(e.amount);
+          continue; // курьерские суммы не участвуют в сверке обычных расходов ниже
+        }
+        if (e.comment.trim().split(/\s+/).includes('зп')) continue; // "зп имя" без "курьер" — это аванс сотруднику, не расход и не курьер, сверять не с чем
+        if (!liveByDate.has(e.date)) liveByDate.set(e.date, []);
+        liveByDate.get(e.date).push(e.amount);
+      }
+
+      const courierIssues = [];
+      const issues = [];
+      let checkedDays = 0;
+      for (const [mk, m] of Object.entries(months || {})) {
+        for (const [ds, day] of Object.entries(m.days || {})) {
+          if (ds < from || ds > to) continue;
+          const hasIikoStored = (day.kitchenExpenses || []).some((e) => e.source === 'iiko') || (day.otherExpenses || []).some((e) => e.source === 'iiko');
+          const hasLive = liveByDate.has(ds);
+          if (!hasIikoStored && !hasLive) continue; // обычный день без иикошных операций вообще — не о чем сообщать
+          checkedDays += 1;
+
+          const pool = [...(liveByDate.get(ds) || [])];
+          const stored = [
+            ...(day.kitchenExpenses || []).filter((e) => e.source === 'iiko').map((e) => ({ ...e, _b: 'Закупки' })),
+            ...(day.otherExpenses || []).filter((e) => e.source === 'iiko').map((e) => ({ ...e, _b: 'Прочее' })),
+          ];
+          const orphaned = [];
+          for (const item of stored) {
+            const idx = pool.findIndex((a) => Math.abs(a - item.amount) < 0.5);
+            if (idx >= 0) pool.splice(idx, 1);
+            else orphaned.push(item);
+          }
+          // pool теперь — живые суммы, для которых НЕ нашлось сохранённого расхода.
+          if (orphaned.length > 0 || pool.length > 0) {
+            issues.push({ date: ds, orphaned, unsynced: pool });
+          }
+
+          // Отдельная проверка курьера: сумма живых курьерских изъятий за день
+          // должна совпадать с тем, что сохранено (либо в новом формате
+          // courierAuto, либо ещё в старом day.courier.pay/fuel — для дней,
+          // которые ещё не были синхронизированы после перехода на новый формат).
+          const liveCourierSum = (courierLiveByDate.get(ds) || []).reduce((s, a) => s + a, 0);
+          const storedCourierAuto = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+          const storedCourierOld = (Number(day.courier?.pay) || 0) + (Number(day.courier?.fuel) || 0);
+          const storedCourierTotal = storedCourierAuto + storedCourierOld;
+          if ((liveCourierSum > 0 || storedCourierTotal > 0) && Math.abs(liveCourierSum - storedCourierTotal) > 0.5) {
+            courierIssues.push({ date: ds, live: liveCourierSum, stored: storedCourierTotal });
+          }
+        }
+      }
+      setResult({
+        issues: issues.sort((a, b) => a.date.localeCompare(b.date)),
+        courierIssues: courierIssues.sort((a, b) => a.date.localeCompare(b.date)),
+        checkedDays, totalLiveDays: liveByDate.size, from, to
+      });
+    } catch (e) {
+      setError(e?.message || 'Не удалось выполнить проверку.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Массовое исправление всех найденных расхождений по курьеру одним действием —
+  // ручной разбор по одной дате нереален, когда расхождений полсотни. Источником
+  // истины считаем ЖИВЫЕ данные из iiko (result.courierIssues[].live уже содержит
+  // текущую сумму курьерских изъятий за эту дату) — заменяем ими старое значение
+  // целиком, переводя сразу в новый (защищённый от задвоения) формат courierAuto.
+  const fixAllCourierIssues = () => {
+    if (!result?.courierIssues?.length) return;
+    const n = result.courierIssues.length;
+    const ok = window.confirm(
+      `Исправить курьера за ${n} дней? Сохранённая сумма для каждой даты будет заменена на текущую сумму курьерских изъятий из iiko. Это затронет только поле "курьер" в этих ${n} днях, остальные данные не тронет.`
+    );
+    if (!ok) return;
+    setFixing(true);
+    setMonths((prev) => {
+      const next = { ...prev };
+      for (const issue of result.courierIssues) {
+        const mk = issue.date.slice(0, 7);
+        const month = next[mk];
+        if (!month) continue;
+        const day = month.days?.[issue.date];
+        if (!day) continue;
+        const newDay = {
+          ...day,
+          courier: { ...day.courier, pay: 0, fuel: 0 },
+          courierAuto: issue.live > 0 ? [{ id: uid(), amount: issue.live, source: 'iiko' }] : [],
+        };
+        next[mk] = { ...month, days: { ...month.days, [issue.date]: newDay } };
+      }
+      return next;
+    });
+    setFixMessage(`Исправлено дней: ${n}. Запустите проверку ещё раз, чтобы убедиться — расхождений по курьеру быть не должно.`);
+    setResult(null);
+    setFixing(false);
+  };
+
+  return (
+    <Card style={{ marginTop: 16 }}>
+      <div className="rp-card-title">Сверка расходов с iiko за последние 6 месяцев</div>
+      <p className="rp-muted" style={{ marginBottom: 12 }}>
+        Сравнивает уже сохранённые у вас расходы (пришедшие из iiko) с текущим актуальным списком изъятий в iiko за тот же день.
+        Только показывает расхождения — ничего не меняет автоматически.
+      </p>
+      <button className="rp-btn" onClick={runCheck} disabled={loading}>{loading ? 'Проверяю…' : 'Запустить проверку'}</button>
+      {error && <div className="rp-inline-warn" style={{ marginTop: 12 }}><AlertTriangle size={13} /> {error}</div>}
+      {result && (
+        <div style={{ marginTop: 16 }}>
+          <p className="rp-muted">
+            Проверено {result.checkedDays} дней с иикошными операциями за период {result.from.split('-').reverse().join('.')} — {result.to.split('-').reverse().join('.')}.
+          </p>
+          {result.issues.length === 0 ? (
+            <div className="rp-cash-check" style={{ marginTop: 8 }}><Info size={13} /> Расхождений не найдено — всё сходится.</div>
+          ) : (
+            <div className="rp-table-wrap" style={{ marginTop: 8 }}>
+              <table className="rp-table">
+                <thead><tr><th>Дата</th><th>Сохранено, но нет в iiko (осиротело)</th><th>Есть в iiko, но не засинхронизировано</th></tr></thead>
+                <tbody>
+                  {result.issues.map((iss) => (
+                    <tr key={iss.date}>
+                      <td>{iss.date.split('-').reverse().join('.')}</td>
+                      <td>{iss.orphaned.length === 0 ? '—' : iss.orphaned.map((o, i) => <div key={i}>{o._b}: {fmtRub(o.amount)}</div>)}</td>
+                      <td>{iss.unsynced.length === 0 ? '—' : iss.unsynced.map((a, i) => <div key={i}>{fmtRub(a)}</div>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <p className="rp-muted" style={{ marginTop: 20 }}>Отдельно — курьер (проверка на задвоение после перехода на новый формат хранения):</p>
+          {result.courierIssues.length === 0 ? (
+            <div className="rp-cash-check" style={{ marginTop: 8 }}><Info size={13} /> Расхождений по курьеру не найдено.</div>
+          ) : (
+            <div className="rp-table-wrap" style={{ marginTop: 8 }}>
+              <table className="rp-table">
+                <thead><tr><th>Дата</th><th>Сохранено у нас</th><th>Сейчас в iiko</th></tr></thead>
+                <tbody>
+                  {result.courierIssues.map((iss) => (
+                    <tr key={iss.date}>
+                      <td>{iss.date.split('-').reverse().join('.')}</td>
+                      <td className="rp-num">{fmtRub(iss.stored)}</td>
+                      <td className="rp-num">{fmtRub(iss.live)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="rp-muted" style={{ fontSize: 11, marginTop: 8 }}>
+                «Сохранено у нас» вдвое больше «Сейчас в iiko» — старое задвоение. Меньше — изъятие ещё не синхронизировано. Кнопка ниже приведёт всё к текущим данным из iiko разом.
+              </p>
+              <button className="rp-btn" style={{ marginTop: 8 }} onClick={fixAllCourierIssues} disabled={fixing}>
+                {fixing ? 'Исправляю…' : `Исправить все ${result.courierIssues.length} дней по курьеру`}
+              </button>
+            </div>
+          )}
+          {fixMessage && <div className="rp-cash-check" style={{ marginTop: 12 }}><Info size={13} /> {fixMessage}</div>}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -5394,7 +6152,7 @@ function IncomingReportsPage({ ctx }) {
     try {
       const { data, error } = await supabase.from('vk_report_drafts').select('*').eq('restaurant_id', RESTAURANT_ID).eq('status', 'pending').order('message_date', { ascending: true }).order('vk_message_id', { ascending: true });
       if (!error) setDrafts(data || []);
-    } catch (_) {}
+    } catch (e) { console.error('Не удалось загрузить черновики отчётов из VK:', e); }
   }, []);
   useEffect(() => { loadDrafts(); refreshPendingReportsCount?.(); }, [loadDrafts, refreshPendingReportsCount]);
 
@@ -5470,16 +6228,17 @@ function IncomingReportsPage({ ctx }) {
           const mk = report.date.slice(0, 7);
           const curMonth = next[mk] || emptyMonth(settings, null);
           const day = { ...getDay(curMonth, report.date) };
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          const dedupedKitchen = dedupeAgainstExisting(day.kitchenExpenses, newKitchen);
+          const dedupedOther = dedupeAgainstExisting(day.otherExpenses, newOther);
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupedKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...dedupedOther];
           if (report.courier?.pay) {
-            const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, settings.courierFixedRate);
-            const cur = day.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-            day.courier = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+            const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+            day.courierAuto = [...(day.courierAuto || []), ...dedupeAgainstExisting(day.courierAuto, newCourierPayment)];
           }
-          addedCount += newKitchen.length + newOther.length;
+          addedCount += dedupedKitchen.length + dedupedOther.length;
           next[mk] = { ...curMonth, days: { ...curMonth.days, [report.date]: day } };
         }
         return next;

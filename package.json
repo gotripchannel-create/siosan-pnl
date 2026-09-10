@@ -9,15 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "lucide-react": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "recharts": "latest",
-    "xlsx": "latest",
-    "@supabase/supabase-js": "latest"
+    "@vitejs/plugin-react": "^6.1.1",
+    "lucide-react": "^1.35.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "recharts": "^3.10.1",
+    "xlsx": "0.18.5",
+    "@supabase/supabase-js": "^2.112.4"
   },
   "devDependencies": {
-    "vite": "latest"
+    "vite": "^8.2.2"
   }
 }

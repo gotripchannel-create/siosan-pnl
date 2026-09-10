@@ -16,6 +16,8 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { createHash } from 'crypto';
+import { timingSafeStringEqual } from './_lib/security.js';
+import { normalizeKitchenCategory, isExcludedComment, isNoiseComment, dedupeAgainstExisting } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
 
@@ -32,7 +34,7 @@ async function iikoAuth(serverUrl, login, password) {
 }
 
 async function iikoLogout(serverUrl, token) {
-  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) {}
+  try { await fetch(`${serverUrl.replace(/\/$/, '')}/resto/api/logout?key=${encodeURIComponent(token)}`); } catch (_) { /* некритично: сессия сама истечёт по таймауту на сервере iiko */ }
 }
 
 async function fetchInvoices(serverUrl, token, from, to) {
@@ -91,7 +93,7 @@ async function fetchInvoices(serverUrl, token, from, to) {
         });
       }
     }
-  } catch (_) {}
+  } catch (e) { console.error('Не удалось получить состав накладных (cron):', e); }
 
   for (const inv of invoices) inv.items = itemsByKey[`${inv.date}::${inv.supplier}`] || [];
   return invoices;
@@ -146,7 +148,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
       comment: String(r['Comment'] || '').replace(/\s+/g, ' ').trim().toLowerCase() || 'без комментария',
       amount: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
     }))
-    .filter((e) => e.amount > 0 && e.date && e.comment !== 'дб' && e.comment !== 'зп');
+    .filter((e) => e.amount > 0 && e.date && !isNoiseComment(e.comment));
 }
 
 // Категоризация расходов через уже существующий ИИ-парсер (/api/parse-report) —
@@ -162,7 +164,7 @@ async function fetchPayoutExpenses(serverUrl, token, from, to) {
 // Возвращает Map<дата, report> — только для дней, где категоризация прошла успешно.
 // Обрабатываем до 5 дней ОДНОВРЕМЕННО (не строго по одному) — в разы быстрее при
 // большом накопившемся списке, и помогает уложиться в лимит времени Vercel.
-async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
+async function categorizeExpenses(host, expensesByDay, settingsObj, employees, suppliers) {
   const results = new Map();
   const entries = Object.entries(expensesByDay);
   const CONCURRENCY = 5;
@@ -178,7 +180,10 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
           body: JSON.stringify({
             text: syntheticText,
             revenueChannels: settingsObj.revenueChannels || [], employees: employees || [],
-            expenseCategories: settingsObj.expenseCategories || [], fallbackDate: date,
+            expenseCategories: settingsObj.expenseCategories || [],
+            suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+            fixedExpenseNames: (settingsObj.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+            fallbackDate: date,
             glossary: settingsObj.reportGlossary || ''
           })
         });
@@ -195,18 +200,9 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees) {
   return results;
 }
 
-// Разбивает одну выплату курьеру («ЗП КУРЬЕР 3500») на фиксированную ставку и бензин
-// (остаток сверху) — та же логика, что и на клиенте (src/App.jsx, splitCourierPayout).
-function splitCourierPayout(totalPay, fixedRate) {
-  const total = Number(totalPay) || 0;
-  const fixed = Number(fixedRate) || 2500;
-  return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
-}
-
 function mergeExpensesIntoData(data, reportsByDate) {
   data.months = data.months || {};
   data.settings = data.settings || {};
-  const fixedRate = data.settings.courierFixedRate || 2500;
   let added = 0;
   const matchedDatesUsed = [];
   for (const [date, report] of reportsByDate.entries()) {
@@ -216,21 +212,47 @@ function mergeExpensesIntoData(data, reportsByDate) {
     const month = data.months[mk];
     month.days = month.days || {};
     const existing = month.days[date] || { closed: false, revenue: {}, kitchenExpenses: [], otherExpenses: [], courier: { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' }, promo: { pay: 0, comment: '' } };
-    const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+    const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
     const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-    let courierUpdate = existing.courier;
+    const dedupedKitchen = dedupeAgainstExisting(existing.kitchenExpenses, newKitchen);
+    const dedupedOther = dedupeAgainstExisting(existing.otherExpenses, newOther);
+    // Раньше суммы курьера накапливались через "+=" прямо в existing.courier —
+    // при повторной обработке того же изъятия (гонка с клиентом или с самим этим
+    // cron-заданием) сумма молча задваивалась и оставалась задвоенной навсегда.
+    // Теперь храним каждое распознанное изъятие отдельной записью в массиве
+    // (source:'iiko') с той же дедупликацией по сумме, что и для остальных
+    // расходов — повторная обработка больше не может задвоить итог.
+    let courierAutoUpdate = existing.courierAuto || [];
     if (report.courier?.pay) {
-      const { pay: splitPay, fuel: splitFuel } = splitCourierPayout(report.courier.pay, fixedRate);
-      const cur = existing.courier || { deliveries: 0, pay: 0, km: 0, fuel: 0, comment: '' };
-      courierUpdate = { ...cur, pay: (Number(cur.pay) || 0) + splitPay, fuel: (Number(cur.fuel) || 0) + splitFuel };
+      const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
+      courierAutoUpdate = [...courierAutoUpdate, ...dedupeAgainstExisting(courierAutoUpdate, newCourierPayment)];
     }
     month.days[date] = {
       ...existing,
-      courier: courierUpdate,
-      kitchenExpenses: [...(existing.kitchenExpenses || []), ...newKitchen],
-      otherExpenses: [...(existing.otherExpenses || []), ...newOther]
+      courierAuto: courierAutoUpdate,
+      kitchenExpenses: [...(existing.kitchenExpenses || []), ...dedupedKitchen],
+      otherExpenses: [...(existing.otherExpenses || []), ...dedupedOther]
     };
-    added += newKitchen.length + newOther.length;
+    added += dedupedKitchen.length + dedupedOther.length;
+
+    // Изъятия вида "рома зп"/"леша аванс" — parse-report уже сопоставил имя с
+    // employeeId по списку сотрудников. Добавляем как аванс конкретному
+    // сотруднику за соответствующую половину месяца, с защитой от задвоения
+    // (тот же принцип, что и для расходов — сверяем по employeeId+сумма+дата).
+    const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+    const newAdvances = (report.advances || [])
+      .filter((a) => a.employeeId && Number(a.amount) > 0)
+      .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
+    if (newAdvances.length > 0) {
+      const existingAdj = month.adjustments || [];
+      const dedupedAdvances = newAdvances.filter((na) =>
+        !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+      );
+      if (dedupedAdvances.length > 0) {
+        month.adjustments = [...existingAdj, ...dedupedAdvances];
+        added += dedupedAdvances.length;
+      }
+    }
   }
   return { data, added, matchedDatesUsed };
 }
@@ -277,7 +299,7 @@ async function fetchRevenueByDay(serverUrl, token, from, to) {
     if (txResp.ok) {
       for (const r of (txJson?.data || [])) {
         const comment = String(r['Comment'] || '').trim().toLowerCase();
-        if (comment === 'дб' || comment === 'зп' || comment === 'бк' || comment === 'ошибка' || comment.startsWith('закрытие кассовой смены')) continue;
+        if (isExcludedComment(comment)) continue;
         const date = (r['DateTime.Typed'] || '').slice(0, 10);
         const amt = Number(r['Sum.Incoming']) || 0;
         if (!date || amt <= 0) continue;
@@ -365,12 +387,13 @@ function mergeInvoicesIntoData(data, invoices) {
 }
 
 export default async function handler(req, res) {
-  // Защита: без CRON_SECRET любой в интернете смог бы дёргать эндпоинт и плодить записи.
+  // Защита: без CRON_SECRET любой в интернете смог бы дёргать эндпоинт и плодить
+  // записи (fail-closed: если секрет не настроен на сервере, эндпоинт отказывает
+  // ВСЕМ, а не пропускает всех без проверки).
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = req.headers.authorization || '';
-    if (auth !== `Bearer ${cronSecret}`) { res.status(401).json({ error: 'Unauthorized' }); return; }
-  }
+  if (!cronSecret) { res.status(500).json({ error: 'CRON_SECRET не настроен на сервере — эндпоинт отключён из соображений безопасности.' }); return; }
+  const auth = req.headers.authorization || '';
+  if (!timingSafeStringEqual(auth, `Bearer ${cronSecret}`)) { res.status(401).json({ error: 'Unauthorized' }); return; }
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -441,7 +464,7 @@ export default async function handler(req, res) {
       for (const d of allDates.slice(0, MAX_DAYS_PER_RUN)) byDay[d] = byDayFull[d];
 
       const host = req.headers.host;
-      const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || []);
+      const reports = await categorizeExpenses(host, byDay, withRevenue.settings, withRevenue.employees || [], withRevenue.suppliers || []);
       const merged2 = mergeExpensesIntoData(withRevenue, reports);
       merged = merged2.data;
       expensesAdded = merged2.added;
