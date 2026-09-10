@@ -1195,6 +1195,7 @@ function Dashboard({ ctx, setPage }) {
   const [revSyncLoading, setRevSyncLoading] = useState(false);
   const [revSyncError, setRevSyncError] = useState('');
   const [revSyncSummary, setRevSyncSummary] = useState(null);
+  const [monthChecksStats, setMonthChecksStats] = useState(null);
   const [revSyncRangeOpen, setRevSyncRangeOpen] = useState(false);
   const [revSyncFrom, setRevSyncFrom] = useState(() => dateStr(year, monthIdx, 1));
   const [revSyncTo, setRevSyncTo] = useState(() => todayStr());
@@ -1261,6 +1262,12 @@ function Dashboard({ ctx, setPage }) {
 
       logAudit({ what: 'Синхронизация выручки с iiko', amount: days.reduce((s, d) => s + (d.total || 0), 0) });
       setRevSyncSummary({ days: days.length, unmatched: [...unmatchedSet] });
+      // Запоминаем чеки/средний чек — но только если синхронизировали именно текущий
+      // открытый сверху месяц целиком (а не произвольный день/период), иначе цифры
+      // на экране не будут соответствовать тому, что видит человек.
+      if (from === dateStr(year, monthIdx, 1) && to === dateStr(year, monthIdx, daysInMonth(year, monthIdx))) {
+        setMonthChecksStats({ checks: data.totalChecks || 0, avgCheck: data.avgCheck || 0 });
+      }
     } catch (e) {
       setRevSyncError(e?.message || 'Не удалось связаться с сервером.');
     } finally {
@@ -1567,6 +1574,7 @@ function Dashboard({ ctx, setPage }) {
   // расходы", просто само по себе, при заходе на дашборд или переключении месяца.
   useEffect(() => {
     let cancelled = false;
+    setMonthChecksStats(null);
     const t = setTimeout(async () => {
       if (cancelled) return;
       try { await syncRevenueFromIiko(); } catch (e) { console.error('Автосинхронизация выручки при открытии месяца не удалась:', e); }
@@ -1927,6 +1935,13 @@ function Dashboard({ ctx, setPage }) {
               {showWidget('statFoodCost') && <Stat label="Food Cost" value={fmtPct(pnl.foodCostPct)} sub={fmtRub(pnl.kitchen.total + pnl.supplierPay.total)} />}
               {showWidget('statLaborCost') && <Stat label="Labor Cost" value={fmtPct(pnl.laborCostPct)} sub={fmtRub(pnl.payroll.totalFot)} onClick={() => setPage('payroll')} />}
               {showWidget('statSupplierDebt') && <Stat label="Задолженность поставщикам" value={fmtRub(supplierDebtTotal(ctx))} accent={supplierDebtTotal(ctx) > 0 ? COLORS.accent2 : undefined} onClick={() => setPage('suppliers')} />}
+            </div>
+          )}
+
+          {monthChecksStats && (
+            <div className="rp-grid-2" style={{marginTop:16}}>
+              <Stat label="Чеков за месяц (iiko)" value={fmt0(monthChecksStats.checks)} />
+              <Stat label="Средний чек" value={fmtRub(monthChecksStats.avgCheck)} />
             </div>
           )}
         </>
