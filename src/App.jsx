@@ -1614,18 +1614,20 @@ function Dashboard({ ctx, setPage }) {
             <Card style={{marginTop:16}}>
               <div className="rp-card-title">Детали дня из iiko</div>
               {iikoDayDetails.attendance?.length > 0 && (() => {
-                const realNames = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))];
-                return realNames.length > 0 && (
-                  <Section title="Кто был на смене" count={realNames.length} defaultOpen={true}>
+                // Показываем только тех, кого реально удалось сопоставить с сотрудником
+                // в разделе «Сотрудники» — не всех подряд, кто засветился в iiko
+                // (там могут быть чужие/технические аккаунты вроде "Анастасия Короткая").
+                const matchedEntries = [...new Set(iikoDayDetails.attendance.map((a) => a.name).filter(Boolean).filter((n) => !n.includes('/')))]
+                  .map((name) => ({ name, emp: matchIikoCashierToEmployee(name, employees) }))
+                  .filter((x) => x.emp);
+                return matchedEntries.length > 0 && (
+                  <Section title="Кто был на смене" count={matchedEntries.length} defaultOpen={true}>
                     <div className="rp-list">
-                      {realNames.map((name, i) => {
-                        const emp = matchIikoCashierToEmployee(name, employees);
-                        const rateLabel = emp
-                          ? (emp.payType === 'shift' ? `${fmtRub(emp.rate)}/смена` : emp.payType === 'hour' ? `${fmtRub(emp.rate)}/час` : `${fmtRub(emp.rate)} оклад`)
-                          : 'сотрудник не найден в базе';
+                      {matchedEntries.map(({ name, emp }, i) => {
+                        const rateLabel = emp.payType === 'shift' ? `${fmtRub(emp.rate)}/смена` : emp.payType === 'hour' ? `${fmtRub(emp.rate)}/час` : `${fmtRub(emp.rate)} оклад`;
                         return (
                           <div key={i} className="rp-list-row">
-                            <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{name}</span>
+                            <span className="rp-badge" style={{background:`${COLORS.accent}22`, color:COLORS.accent, fontSize:13, padding:'6px 12px'}}>{emp.name}</span>
                             <span className="rp-muted" style={{fontSize:12}}>{rateLabel}</span>
                           </div>
                         );
@@ -5365,6 +5367,27 @@ function IncomingReportsPage({ ctx }) {
   const [expSyncLoading, setExpSyncLoading] = useState(false);
   const [expSyncError, setExpSyncError] = useState('');
   const [expSyncSummary, setExpSyncSummary] = useState(null);
+  const [payoutListFrom, setPayoutListFrom] = useState('2026-08-01');
+  const [payoutListTo, setPayoutListTo] = useState(() => todayStr());
+  const [payoutListLoading, setPayoutListLoading] = useState(false);
+  const [payoutListError, setPayoutListError] = useState('');
+  const [payoutListData, setPayoutListData] = useState(null);
+
+  const loadPayoutList = async () => {
+    setPayoutListLoading(true); setPayoutListError(''); setPayoutListData(null);
+    try {
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+      const resp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from: payoutListFrom, to: payoutListTo }) });
+      const data = await resp.json();
+      if (!resp.ok) { setPayoutListError(data?.error || 'Не удалось получить изъятия из iiko.'); return; }
+      setPayoutListData(data.expenses || []);
+    } catch (e) {
+      setPayoutListError(e?.message || 'Не удалось связаться с сервером.');
+    } finally {
+      setPayoutListLoading(false);
+    }
+  };
+
 
   const loadDrafts = useCallback(async () => {
     if (!supabase) return;
@@ -5602,6 +5625,40 @@ function IncomingReportsPage({ ctx }) {
               ? 'За этот месяц изъятий наличных в iiko не найдено.'
               : <>Готово: добавлено <b>{expSyncSummary.added}</b> расходов{expSyncSummary.skipped > 0 && <>, {expSyncSummary.skipped} уже были обработаны раньше</>}.</>}
           </div>
+        )}
+      </Card>
+
+      <Card style={{marginBottom:16}}>
+        <div className="rp-card-title"><Search size={15} style={{verticalAlign:-2, marginRight:6}}/>Все изъятия наличных за период</div>
+        <p className="rp-muted" style={{marginTop:6, marginBottom:14}}>Сырой список прямо из iiko (до исключения «дб»/«зп»/«бк»/«ошибка» и категоризации) — удобно для сверки за широкий период разом, без похода по дням.</p>
+        <div className="rp-form-grid">
+          <Field label="С"><input type="date" value={payoutListFrom} onChange={(e) => setPayoutListFrom(e.target.value)} /></Field>
+          <Field label="По"><input type="date" value={payoutListTo} onChange={(e) => setPayoutListTo(e.target.value)} /></Field>
+        </div>
+        <button className="rp-btn" style={{marginTop:10}} onClick={loadPayoutList} disabled={payoutListLoading}>
+          <RefreshCw size={14} className={payoutListLoading ? 'rp-spin' : ''} style={{verticalAlign:-2, marginRight:6}}/>{payoutListLoading ? 'Загружаю…' : 'Показать список'}
+        </button>
+        {payoutListError && <div className="rp-inline-warn" style={{marginTop:12}}><AlertTriangle size={13}/> {payoutListError}</div>}
+        {payoutListData && (
+          payoutListData.length === 0 ? (
+            <div className="rp-cash-check" style={{marginTop:12}}><Info size={13}/> За этот период изъятий не найдено.</div>
+          ) : (
+            <>
+              <div className="rp-cash-check" style={{marginTop:12}}>
+                <Info size={13}/> Найдено <b>{payoutListData.length}</b> операций на сумму <b>{fmtRub(payoutListData.reduce((s, e) => s + e.amount, 0))}</b>
+              </div>
+              <div className="rp-table-wrap" style={{marginTop:10}}>
+                <table className="rp-table">
+                  <thead><tr><th>Дата</th><th>Комментарий</th><th style={{textAlign:'right'}}>Сумма</th></tr></thead>
+                  <tbody>
+                    {payoutListData.map((e, i) => (
+                      <tr key={i}><td>{e.date.split('-').reverse().join('.')}</td><td>«{e.comment}»</td><td className="rp-num">{fmtRub(e.amount)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )
         )}
       </Card>
 
