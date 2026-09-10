@@ -695,6 +695,7 @@ function EmptyState({ icon, title, sub }) {
 
 const NAV = [
   { id: 'dashboard', label: 'Отчёты', icon: LayoutDashboard },
+  { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
   { id: 'employees', label: 'Зарплата', icon: Users },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
