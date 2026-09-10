@@ -697,16 +697,11 @@ const NAV = [
   { id: 'dashboard', label: 'Отчёты', icon: LayoutDashboard },
   { id: 'inbox', label: 'Входящие отчёты', icon: Inbox },
   { id: 'employees', label: 'Зарплата', icon: Users },
-  { id: 'payroll', label: 'Начисления ЗП', icon: Banknote },
   { id: 'suppliers', label: 'Поставщики', icon: Truck },
   { id: 'purchases', label: 'Аналитика закупок', icon: TrendingUp },
   { id: 'ai', label: 'AI-помощник', icon: Sparkles },
   { id: 'pnl', label: 'P&L', icon: FileBarChart2 },
-  { id: 'compare', label: 'Сравнение', icon: ArrowLeftRight },
-  { id: 'history', label: 'История', icon: History },
   { id: 'iiko-novo', label: 'Отчёт Новошахтинск', icon: Radio },
-  { id: 'iiko-belaya', label: 'Отчёт Белая Калитва', icon: Radio },
-  { id: 'combined', label: 'Общий отчёт', icon: LayoutDashboard },
   { id: 'settings', label: 'Настройки', icon: SettingsIcon },
 ];
 
