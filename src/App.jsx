@@ -2531,6 +2531,19 @@ function ExpenseBreakdownTable({ pnl }) {
 function DayEntry({ ctx }) {
   const { month, updateMonth, settings, year, monthIdx, selectedDate, setSelectedDate, logAudit } = ctx;
   const nd = daysInMonth(year, monthIdx);
+
+  // Итоги выплат считаем только по фактически проставленным сменам. Оклады,
+  // авансы и ручные корректировки намеренно не смешиваются с этим оперативным
+  // планом выплат за 1–15 и 16–конец месяца.
+  const shiftPayroll = employees
+    .filter((e) => e.payType === 'shift' || e.payType === 'hour')
+    .reduce((totals, e) => {
+      const pay = computeEmployeePay(e, month, settings);
+      totals.first += pay.base1;
+      totals.second += pay.base2;
+      return totals;
+    }, { first: 0, second: 0 });
+  shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
   const day = getDay(month, selectedDate);
   const dayClosed = !!day.closed;
   const monthClosed = month.closed;
@@ -3121,6 +3134,16 @@ function EmployeesPage({ ctx }) {
         <h1>Сотрудники</h1>
         <div className="rp-page-sub">Справочник персонала, ставки и смены за {MONTHS_RU[monthIdx].toLowerCase()}</div>
       </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div className="rp-card-title">К выплате по сменам на данный момент</div>
+        <div className="rp-stat-grid">
+          <Stat label="1–15 число" value={fmtRub(shiftPayroll.first)} />
+          <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
+          <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
+        </div>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Только проставленные смены; оклады, авансы и ручные корректировки не включены.</p>
+      </Card>
 
       <div className="rp-toolbar">
         <div className="rp-search"><Search size={15} /><input placeholder="Поиск сотрудника…" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
