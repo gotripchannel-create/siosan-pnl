@@ -487,7 +487,11 @@ function monthPayroll(employees, month, settings, y, mIdx) {
       reportPayout: (useFirst ? r.payout1 : 0) + (useSecond ? r.payout2 : 0),
     };
   }).filter((r) => r.hours > 0 || r.payType === 'oklad' || r.reportAccrued !== 0 || r.reportAdvance !== 0 || r.salaryPayment !== 0 || r.deduct !== 0);
-  const totalFot = rows.reduce((s, r) => s + r.reportAccrued, 0);
+  // В P&L ФОТ — это фактический остаток к выплате, а не номинальное начисление.
+  // Поэтому авансы, штрафы, премии и уже выданная ЗП сразу меняют расход месяца.
+  // Переплата сотруднику не превращается в отрицательный расход: её учитываем как
+  // ноль к выплате до следующей корректировки.
+  const totalFot = rows.reduce((s, r) => s + Math.max(0, r.reportPayout), 0);
   return { rows, totalFot, reportedHalves };
 }
 
