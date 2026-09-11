@@ -1748,27 +1748,6 @@ function Dashboard({ ctx, setPage }) {
     return arr;
   }, [month, year, monthIdx, pnl.nd, settings.revenueChannels]);
 
-  // Прочие переменные и постоянные — разворачиваем на конкретные категории/статьи,
-  // а не одним куском, чтобы на диаграмме сразу было видно Маркетплейсы/Рекламу/
-  // Аренду/Коммунальные и т.д. по отдельности, без похода на страницу P&L.
-  const otherVarStructure = (() => {
-    const map = new Map();
-    for (const it of pnl.otherVar.items) map.set(it.category || 'Прочее', (map.get(it.category || 'Прочее') || 0) + (Number(it.amount) || 0));
-    return [...map.entries()].map(([name, value]) => ({ name, value }));
-  })();
-  const fixedStructure = [...pnl.fixedItems, ...pnl.otherFixed].map((f) => ({ name: f.name, value: Number(f.amount) || 0 }));
-
-  const structureData = [
-    { name: 'Закупки/кухня', value: pnl.kitchen.total + pnl.supplierPay.total },
-    { name: 'ФОТ', value: pnl.payroll.totalFot },
-    { name: 'Курьеры (ставка+бензин)', value: pnl.courier.total },
-    { name: 'Промо', value: pnl.promo.total },
-    { name: 'Эквайринг', value: pnl.acquiring.amount },
-    ...fixedStructure,
-    ...otherVarStructure,
-    { name: 'Налоги ФОТ', value: pnl.fotTaxTotal },
-  ].filter((d) => d.value > 0);
-
   const delta = (a, b) => (b ? ((a - b) / b) * 100 : 0);
 
   // Важно: dayDate может относиться к ДРУГОМУ месяцу, чем открыт сейчас наверху
@@ -2288,37 +2267,26 @@ function Dashboard({ ctx, setPage }) {
         </div>
       )}
 
-      {viewMode === 'month' && (showWidget('expenseStructure') || showWidget('revenueByChannel')) && (
-        <div className="rp-grid-2">
-          {showWidget('expenseStructure') && (
-            <Card>
-              <div className="rp-card-title">Структура расходов</div>
-              <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={structureData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
-                    {structureData.map((e, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => fmtRub(v)} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </Card>
-          )}
-          {showWidget('revenueByChannel') && (
-            <Card>
-              <div className="rp-card-title">Выручка по каналам</div>
-              <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
-                    {settings.revenueChannels.map((c, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => fmtRub(v)} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            </Card>
-          )}
-        </div>
+      {viewMode === 'month' && showWidget('expenseStructure') && (
+        <Card style={{marginBottom:16}}>
+          <div className="rp-card-title">Структура расходов</div>
+          <ExpenseBreakdownTable pnl={pnl} />
+        </Card>
+      )}
+
+      {viewMode === 'month' && showWidget('revenueByChannel') && (
+        <Card>
+          <div className="rp-card-title">Выручка по каналам</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <PieChart>
+              <Pie data={settings.revenueChannels.map((c) => ({ name: c.name, value: pnl.revByChannel[c.id] || 0 }))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} innerRadius={50}>
+                {settings.revenueChannels.map((c, i) => <Cell key={i} fill={COLORS.chartPalette[i % COLORS.chartPalette.length]} />)}
+              </Pie>
+              <Tooltip formatter={(v) => fmtRub(v)} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>
       )}
 
       {drill === 'expenses' && (
