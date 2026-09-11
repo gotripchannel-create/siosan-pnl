@@ -4203,8 +4203,15 @@ function PurchaseAnalyticsPage({ ctx }) {
   const newProductsTotal = newProducts.reduce((s, r) => s + r.curSum, 0);
   const droppedProductsTotal = droppedProducts.reduce((s, r) => s + r.prevSum, 0);
 
-  const curTotalSpend = topThisMonth.reduce((s, r) => s + r.sum, 0);
-  const prevTotalSpend = [...prevMap.values()].reduce((s, r) => s + r.sum, 0);
+  // Главный итог аналитики обязан совпадать со страницей «Поставщики» и P&L:
+  // это сумма накладных, а не только сумма строк товаров. В части накладных
+  // iiko может ещё не отдать состав — такие деньги нельзя молча исключать.
+  const currentOrders = ((months[monthKey]?.supplierOrders) || []).filter((o) => supplierFilter === 'all' || o.supplierId === supplierFilter);
+  const previousOrders = ((months[prevMonthKey]?.supplierOrders) || []).filter((o) => supplierFilter === 'all' || o.supplierId === supplierFilter);
+  const curTotalSpend = currentOrders.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const prevTotalSpend = previousOrders.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const curItemsTotal = topThisMonth.reduce((s, r) => s + r.sum, 0);
+  const unitemizedTotal = Math.max(0, curTotalSpend - curItemsTotal);
   const totalDeltaPct = prevTotalSpend > 0 ? ((curTotalSpend - prevTotalSpend) / prevTotalSpend) * 100 : 0;
 
   const last6MonthKeys = useMemo(() => {
@@ -4291,8 +4298,8 @@ function PurchaseAnalyticsPage({ ctx }) {
       )}
 
       <div className="rp-grid-4">
-        <Stat label="Закупки в этом месяце" value={fmtRub(curTotalSpend)} delta={hasComparison ? totalDeltaPct : undefined} deltaGood={false} />
-        <Stat label="Закупки в прошлом месяце" value={hasComparison ? fmtRub(prevTotalSpend) : '—'} />
+        <Stat label="Сумма накладных в этом месяце" value={fmtRub(curTotalSpend)} delta={hasComparison ? totalDeltaPct : undefined} deltaGood={false} />
+        <Stat label="Сумма накладных в прошлом месяце" value={hasComparison ? fmtRub(prevTotalSpend) : '—'} />
         <Stat label="Товарных позиций" value={fmt0(topThisMonth.length)} />
         <Stat label="Поставщиков закупало" value={fmt0(new Set(((months[monthKey]?.supplierOrders) || []).map((o) => o.supplierId)).size)} />
       </div>
@@ -4305,6 +4312,12 @@ function PurchaseAnalyticsPage({ ctx }) {
           </select>
         </Field>
       </div>
+
+      {unitemizedTotal > 0 && (
+        <div className="rp-cash-check" style={{ marginBottom: 16 }}><Info size={13} />
+          В накладных за месяц: <b>{fmtRub(curTotalSpend)}</b>. По товарным строкам разложено <b>{fmtRub(curItemsTotal)}</b>; без состава товаров осталось <b>{fmtRub(unitemizedTotal)}</b>. Эта сумма входит в итоги поставщиков и P&L.
+        </div>
+      )}
 
       <Card>
         {supplierFilter === 'all' ? (
