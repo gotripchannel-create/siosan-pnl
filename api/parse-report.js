@@ -22,9 +22,9 @@ const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» 
 - Число может стоять до или после названия поля («22352,2 Наличные» и «Наличные 22352,2» — одно и то же).
 - Строки вида «11доставок» (без пробела) — то же самое, что «11 доставок».
 - «Курьер ЗП» / «зп курьер» / «Курьер» с числом рядом — оплата курьеру за смену (courier.pay).
-- ЛЮБОЙ комментарий, где отдельным словом встречается «зп» или «аванс» (например «зп орхан», «рома зп», «леша аванс», просто «зп») — это выплата конкретному сотруднику. НИКОГДА не добавляй такую строку в kitchenExpenses или otherExpenses (и не выдумывай для неё категорию вида «Зарплата») — вместо этого:
+- ЛЮБОЙ комментарий, где отдельным словом встречается «зп» или «аванс» (например «зп орхан», «рома зп», «леша аванс», просто «зп») — это операция по конкретному сотруднику. НИКОГДА не добавляй такую строку в kitchenExpenses или otherExpenses (и не выдумывай для неё категорию вида «Зарплата») — вместо этого:
   * если это явно оплата именно курьеру («зп курьер», «курьер» с суммой) — в поле courier.pay;
-  * если после «зп»/«аванс» есть имя (или имя стоит перед словом) — добавь в advances с этим именем (name) и суммой (amount); имя бери БЕЗ слов «зп»/«аванс» — только само имя, например из «рома зп» → name="Рома", из «леша аванс 3000» → name="Леша", amount=3000; сопоставляй employeeId по списку сотрудников ниже так же, как для roster;
+  * если есть слово «аванс» — добавь в advances; если есть «зп» — добавь в salaryPayments (это выплаченная зарплата, НЕ аванс). В обоих случаях передай имя (name), сумму (amount) и исходный комментарий (comment); сопоставляй employeeId по списку сотрудников ниже;
   * если это просто «зп» без какого-либо опознаваемого имени — тогда действительно полностью игнорируй, как «дб».
 - «км» рядом с числом (например «75км», «36 км») — пробег курьера (courier.km).
 - Расходы на закупку продуктов/товаров для кухни могут идти отдельными строками без общего заголовка «Покупки» — например «Магнит 535» (магазин), «Шариковые ручки 62», «Скрепки для степлера 140». Это относится к kitchenExpenses или otherExpenses в зависимости от того, похоже ли это на продукты/сырьё (kitchenExpenses) или на хозтовары/канцелярию/непродуктовое (otherExpenses).
@@ -86,6 +86,10 @@ const REPORT_ITEM_SCHEMA = {
         },
         required: ['name', 'amount']
       }
+    },
+    salaryPayments: {
+      type: 'array',
+      items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' }, employeeId: { type: ['string', 'null'] }, comment: { type: 'string' } }, required: ['name', 'amount'] }
     },
     roster: {
       type: 'array',
@@ -212,6 +216,10 @@ function postprocess(raw, { revenueChannels, employees }) {
     const emp = a.employeeId ? empById.get(a.employeeId) : null;
     return { name: a.name || '', amount: Number(a.amount) || 0, employeeId: emp ? emp.id : null, matchedName: emp ? emp.name : null };
   });
+  const salaryPayments = (raw.salaryPayments || []).map(a => {
+    const emp = a.employeeId ? empById.get(a.employeeId) : null;
+    return { name: a.name || '', amount: Number(a.amount) || 0, employeeId: emp ? emp.id : null, matchedName: emp ? emp.name : null, comment: a.comment || '' };
+  });
 
   const rosterMatches = (raw.roster || []).map(r => {
     const emp = r.employeeId ? empById.get(r.employeeId) : null;
@@ -226,6 +234,7 @@ function postprocess(raw, { revenueChannels, employees }) {
     kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0, comment: e.comment || '' })),
     otherExpenses: (raw.otherExpenses || []).map(e => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0, comment: e.comment || '' })),
     advances,
+    salaryPayments,
     rosterMatches,
     unmatchedLines: raw.unmatchedLines || [],
     totalHint: typeof raw.totalHint === 'number' ? raw.totalHint : null,
@@ -260,7 +269,7 @@ function parseIikoExpenseImport(text, fallbackDate, employees) {
   const date = lines[0]?.match(/^Расходы за (\d{4}-\d{2}-\d{2}):?$/i)?.[1] || fallbackDate;
   const report = {
     date, revenue: {}, courier: { pay: null, km: null, deliveries: null }, promo: { pay: null },
-    kitchenExpenses: [], otherExpenses: [], advances: [], rosterMatches: [], unmatchedLines: [], totalHint: null, registerCheck: null
+    kitchenExpenses: [], otherExpenses: [], advances: [], salaryPayments: [], rosterMatches: [], unmatchedLines: [], totalHint: null, registerCheck: null
   };
   const employeeByFirstName = new Map((employees || []).map((e) => [String(e.name || '').trim().split(/\s+/)[0].toLowerCase(), e]));
   for (const line of lines.slice(1)) {
@@ -275,7 +284,10 @@ function parseIikoExpenseImport(text, fallbackDate, employees) {
       report.courier.pay = (Number(report.courier.pay) || 0) + amount;
     } else if (/\b(?:зп|аванс)\b/.test(comment) || isBareEmployeePayout) {
       const employee = namedEmployee;
-      if (employee) report.advances.push({ name: employee.name, amount, employeeId: employee.id, matchedName: employee.name });
+      if (employee) {
+        const target = /\bзп\b/.test(comment) ? report.salaryPayments : report.advances;
+        target.push({ name: employee.name, amount, employeeId: employee.id, matchedName: employee.name, comment });
+      }
       else report.otherExpenses.push({ category: 'Требует разнесения', amount, comment });
     } else if (/озон|\bвб\b|валберис|вайлдберис|wildberr/.test(comment)) {
       report.otherExpenses.push({ category: 'Маркетплейсы', amount, comment });

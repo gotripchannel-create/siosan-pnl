@@ -194,7 +194,7 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees, s
         // сумму сырого списка. Иначе одна потерянная строка становится постоянной
         // недостачей в P&L: ключ синхронизации не даст ей повториться.
         const rawTotal = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-        const reportTotal = [...(report?.kitchenExpenses || []), ...(report?.otherExpenses || []), ...(report?.advances || [])]
+        const reportTotal = [...(report?.kitchenExpenses || []), ...(report?.otherExpenses || []), ...(report?.advances || []), ...(report?.salaryPayments || [])]
           .reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
           + (Number(report?.courier?.pay) || 0) + (Number(report?.promo?.pay) || 0);
         if (report && Math.abs(rawTotal - reportTotal) < 0.01) results.set(date, report);
@@ -250,10 +250,13 @@ function mergeExpensesIntoData(data, reportsByDate) {
     const newAdvances = (report.advances || [])
       .filter((a) => a.employeeId && Number(a.amount) > 0)
       .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
-    if (newAdvances.length > 0) {
+    const newSalaryPayments = (report.salaryPayments || [])
+      .filter((a) => a.employeeId && Number(a.amount) > 0)
+      .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'salary_payment', half, amount: Number(a.amount), comment: a.comment || 'Из iiko: выплата ЗП', date, source: 'iiko' }));
+    if (newAdvances.length + newSalaryPayments.length > 0) {
       const existingAdj = month.adjustments || [];
-      const dedupedAdvances = newAdvances.filter((na) =>
-        !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+      const dedupedAdvances = [...newAdvances, ...newSalaryPayments].filter((na) =>
+        !existingAdj.some((ea) => ea.source === 'iiko' && ea.type === na.type && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
       );
       if (dedupedAdvances.length > 0) {
         month.adjustments = [...existingAdj, ...dedupedAdvances];

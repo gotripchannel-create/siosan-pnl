@@ -248,6 +248,7 @@ function reportPayoutTotal(report) {
   return sum(report?.kitchenExpenses) + sum(report?.otherExpenses)
     + (Number(report?.courier?.pay) || 0)
     + sum(report?.advances)
+    + sum(report?.salaryPayments)
     + (Number(report?.promo?.pay) || 0);
 }
 
@@ -427,6 +428,8 @@ function computeEmployeePay(emp, month, settings) {
   const deduct2 = sumType(2, ['penalty']);
   const advance1 = sumType(1, ['advance']);
   const advance2 = sumType(2, ['advance']);
+  const salaryPayment1 = sumType(1, ['salary_payment']);
+  const salaryPayment2 = sumType(2, ['salary_payment']);
 
   let base1 = 0, base2 = 0;
   if (emp.payType === 'shift') { base1 = emp.rate * (h1.hours / standardShift); base2 = emp.rate * (h2.hours / standardShift); }
@@ -434,7 +437,7 @@ function computeEmployeePay(emp, month, settings) {
   else if (emp.payType === 'oklad') { base1 = emp.rate / 2; base2 = emp.rate / 2; }
 
   const accrued1 = base1 + bonus1, accrued2 = base2 + bonus2;
-  const payout1 = accrued1 - deduct1 - advance1, payout2 = accrued2 - deduct2 - advance2;
+  const payout1 = accrued1 - deduct1 - advance1 - salaryPayment1, payout2 = accrued2 - deduct2 - advance2 - salaryPayment2;
   const shiftsCount = emp.payType === 'shift' ? Math.round(((h1.hours + h2.hours) / standardShift) * 10) / 10 : null;
 
   return {
@@ -442,6 +445,7 @@ function computeEmployeePay(emp, month, settings) {
     standardShift, h1: h1.hours, h2: h2.hours, hours: h1.hours + h2.hours, shiftsCount,
     base1, base2, base: base1 + base2,
     bonus: bonus1 + bonus2, deduct: deduct1 + deduct2, advance: advance1 + advance2,
+    salaryPayment: salaryPayment1 + salaryPayment2,
     accrued: accrued1 + accrued2, payout: payout1 + payout2,
     h1items: h1.items, h2items: h2.items, adjustments: adj,
   };
@@ -458,7 +462,7 @@ function isEmployeeActiveInMonth(emp, y, mIdx) {
 
 function monthPayroll(employees, month, settings, y, mIdx) {
   const active = employees.filter((e) => isEmployeeActiveInMonth(e, y, mIdx));
-  const rows = active.map((e) => computeEmployeePay(e, month, settings)).filter((r) => r.hours > 0 || r.payType === 'oklad' || r.accrued !== 0 || r.advance !== 0 || r.deduct !== 0);
+  const rows = active.map((e) => computeEmployeePay(e, month, settings)).filter((r) => r.hours > 0 || r.payType === 'oklad' || r.accrued !== 0 || r.advance !== 0 || r.salaryPayment !== 0 || r.deduct !== 0);
   const totalFot = rows.reduce((s, r) => s + r.accrued, 0);
   return { rows, totalFot };
 }
@@ -1566,9 +1570,12 @@ function Dashboard({ ctx, setPage }) {
             const newAdvances = (report.advances || [])
               .filter((a) => a.employeeId && Number(a.amount) > 0)
               .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из iiko (авто)', date, source: 'iiko' }));
+            const newSalaryPayments = (report.salaryPayments || [])
+              .filter((a) => a.employeeId && Number(a.amount) > 0)
+              .map((a) => ({ id: uid(), employeeId: a.employeeId, type: 'salary_payment', half, amount: Number(a.amount), comment: a.comment || 'Из iiko: выплата ЗП', date, source: 'iiko' }));
             const existingAdj = curMonth.adjustments || [];
-            const dedupedAdvances = newAdvances.filter((na) =>
-              !existingAdj.some((ea) => ea.source === 'iiko' && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
+            const dedupedAdvances = [...newAdvances, ...newSalaryPayments].filter((na) =>
+              !existingAdj.some((ea) => ea.source === 'iiko' && ea.type === na.type && ea.employeeId === na.employeeId && ea.date === na.date && Math.abs((Number(ea.amount) || 0) - na.amount) < 0.5)
             );
             const monthWithAdvances = dedupedAdvances.length > 0 ? { ...curMonth, adjustments: [...existingAdj, ...dedupedAdvances] } : curMonth;
             return { ...prev, [mk]: { ...monthWithAdvances, days: { ...monthWithAdvances.days, [date]: day } } };
@@ -1637,7 +1644,7 @@ function Dashboard({ ctx, setPage }) {
     // открытия сентября август мог остаться в старом, неполном состоянии.
     // v8 принудительно переписывает уже сохранённые старые строки, в которых
     // вместо комментария iiko осталось «Из iiko (авто)».
-    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 8;
+    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 9;
     if (!curMonth || (!needsMigration && !Object.values(curMonth.days || {}).some(hasBadIikoCategory))) return;
 
     const from = dateStr(y, mIdx, 1);
@@ -1685,6 +1692,7 @@ function Dashboard({ ctx, setPage }) {
         const cur = prev[mk];
         if (!cur) return prev;
         const days = { ...cur.days };
+        const rebuiltAdjustments = [];
         for (const [date, report] of rebuiltByDate.entries()) {
           const day = { ...getDay(cur, date) };
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
@@ -1693,12 +1701,15 @@ function Dashboard({ ctx, setPage }) {
             kitchenExpenses: [...(day.kitchenExpenses || []).filter((e) => e.source !== 'iiko'), ...newKitchen],
             otherExpenses: [...(day.otherExpenses || []).filter((e) => e.source !== 'iiko'), ...newOther]
           };
+          const half = Number(date.slice(8, 10)) <= 15 ? 1 : 2;
+          for (const a of report.advances || []) if (a.employeeId && Number(a.amount) > 0) rebuiltAdjustments.push({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: a.comment || 'Из iiko: аванс', date, source: 'iiko' });
+          for (const a of report.salaryPayments || []) if (a.employeeId && Number(a.amount) > 0) rebuiltAdjustments.push({ id: uid(), employeeId: a.employeeId, type: 'salary_payment', half, amount: Number(a.amount), comment: a.comment || 'Из iiko: выплата ЗП', date, source: 'iiko' });
         }
-        return { ...prev, [mk]: { ...cur, days } };
+        return { ...prev, [mk]: { ...cur, days, adjustments: [...(cur.adjustments || []).filter((a) => a.source !== 'iiko'), ...rebuiltAdjustments] } };
       });
       setSettings((prev) => ({ ...prev,
-        iikoExpensesSyncVersion: 8,
-        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 8 },
+        iikoExpensesSyncVersion: 9,
+        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 9 },
         iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v4::${e.date}::${e.comment}::${e.amount}`)]
       }));
       logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
@@ -3152,7 +3163,7 @@ function EmployeesPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
+          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:120}}>Выплачено ЗП</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
               const pay = computeEmployeePay(e, month, settings);
@@ -3165,6 +3176,7 @@ function EmployeesPage({ ctx }) {
                   <td><span className={`rp-badge ${e.status === 'active' ? 'ok' : 'off'}`}>{e.status === 'active' ? 'активен' : 'уволен'}</span></td>
                   <td className="rp-num rp-link" onClick={() => setShiftsFor(e.id)}>{pay.shiftsCount != null ? `${pay.shiftsCount} см.` : `${fmt0(pay.hours)} ч`}</td>
                   <td className="rp-num">{pay.advance ? fmtRub(pay.advance) : '—'}</td>
+                  <td className="rp-num">{pay.salaryPayment ? fmtRub(pay.salaryPayment) : '—'}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.accrued)}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.payout)}</td>
                   <td>
@@ -3174,7 +3186,7 @@ function EmployeesPage({ ctx }) {
                 </tr>
               );
             })}
-            {visible.length === 0 && <tr><td colSpan={10}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
+            {visible.length === 0 && <tr><td colSpan={11}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
         </table></div>
       </Card>
@@ -3330,6 +3342,7 @@ function ShiftGridModal({ emp, month, updateMonth, nd, year, monthIdx, monthKey,
             <div><span>Бонусы / мотивация</span><b>+{fmtRub(pay.bonus)}</b></div>
             <div><span>Удержания</span><b>−{fmtRub(pay.deduct)}</b></div>
             <div><span>Авансы</span><b>−{fmtRub(pay.advance)}</b></div>
+            <div><span>Выплачено зарплаты</span><b>−{fmtRub(pay.salaryPayment)}</b></div>
             <div className="rp-payslip-total"><span>К выплате</span><b>{fmtRub(pay.payout)}</b></div>
           </div>
         </>
@@ -3347,7 +3360,7 @@ function AdjustmentsPanel({ emp, month, updateMonth, locked, year, monthIdx, mon
   const [editingId, setEditingId] = useState(null);
   const [editingOriginal, setEditingOriginal] = useState(null);
   const list = (month.adjustments || []).filter((a) => a.employeeId === emp.id);
-  const typeLabel = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', manual: 'Ручная корректировка' };
+  const typeLabel = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', salary_payment: 'Выплата зарплаты', manual: 'Ручная корректировка' };
 
   const resetForm = () => { setAmount(''); setType('bonus'); setHalf(1); setComment(''); setDate(defaultDateFor(1)); setEditingId(null); setEditingOriginal(null); };
 
@@ -3412,7 +3425,7 @@ function AdjustmentsPanel({ emp, month, updateMonth, locked, year, monthIdx, mon
             <div className={`rp-list-main ${!locked ? 'rp-clickable' : ''}`} onClick={() => !locked && startEdit(a)}>
               <div className="rp-list-cat">{typeLabel[a.type]} · {a.half}-я половина{a.date ? ` · ${a.date.split('-').reverse().join('.')}` : ''}</div>{a.comment && <div className="rp-list-comment">{a.comment}</div>}
             </div>
-            <div className="rp-list-amount">{['penalty', 'advance'].includes(a.type) ? '−' : '+'}{fmtRub(a.amount)}</div>
+            <div className="rp-list-amount">{['penalty', 'advance', 'salary_payment'].includes(a.type) ? '−' : '+'}{fmtRub(a.amount)}</div>
             {!locked && <button className="rp-icon-btn" onClick={() => startEdit(a)}>✎</button>}
             {!locked && <button className="rp-icon-btn rp-icon-btn-danger" onClick={() => del(a.id)}><Trash2 size={14} /></button>}
           </div>
@@ -6643,6 +6656,8 @@ function IncomingReportsPage({ ctx }) {
         const half = dayOfMonthFromDateStr(dateKey) <= 15 ? 1 : 2;
         const advances = (edited.advances || []).filter(a => a.include && a.employeeId && Number(a.amount) > 0).map(a => ({ id: uid(), employeeId: a.employeeId, type: 'advance', half, amount: Number(a.amount), comment: 'Из ВК — вставка', date: dateKey }));
         if (advances.length) nextMonth.adjustments = [...(nextMonth.adjustments || []), ...advances];
+        const salaryPayments = (edited.salaryPayments || []).filter(a => a.include && a.employeeId && Number(a.amount) > 0).map(a => ({ id: uid(), employeeId: a.employeeId, type: 'salary_payment', half, amount: Number(a.amount), comment: a.comment || 'Из ВК: выплата ЗП', date: dateKey }));
+        if (salaryPayments.length) nextMonth.adjustments = [...(nextMonth.adjustments || []), ...salaryPayments];
         const shifts = { ...(nextMonth.shifts || {}) };
         (edited.roster || []).filter(r => r.include && r.employeeId).forEach(r => { const emp = employees.find(e => e.id === r.employeeId); shifts[r.employeeId] = { ...(shifts[r.employeeId] || {}), [dateKey]: emp?.standardShift || settings.standardShiftHours }; });
         nextMonth.shifts = shifts;
@@ -6750,11 +6765,12 @@ function ManualParsedReport({ parsed, settings, employees, months, onApply, aiPo
   const [kitchenExpenses, setKitchenExpenses] = useState((parsed.kitchenExpenses || []).map(e => ({...e, include:true})));
   const [otherExpenses, setOtherExpenses] = useState((parsed.otherExpenses || []).map(e => ({...e, include:true})));
   const [advances, setAdvances] = useState((parsed.advances || []).map(a => ({...a, include:!!a.employeeId})));
+  const [salaryPayments, setSalaryPayments] = useState((parsed.salaryPayments || []).map(a => ({...a, include:!!a.employeeId})));
   const [roster, setRoster] = useState((parsed.rosterMatches || []).map(r => ({...r, include:!!r.employeeId})));
   const sumRevenue = Object.values(revenue).reduce((s,v) => s + (Number(v)||0), 0);
   const balanced = parsed.totalHint == null ? null : Math.abs(sumRevenue - Number(parsed.totalHint)) < 0.01;
   const [busy,setBusy]=useState(false);
-  const apply=async()=>{ if (!date) return; setBusy(true); await onApply({date,revenue,courier,promo,kitchenExpenses,otherExpenses,advances,roster}); setBusy(false); };
+  const apply=async()=>{ if (!date) return; setBusy(true); await onApply({date,revenue,courier,promo,kitchenExpenses,otherExpenses,advances,salaryPayments,roster}); setBusy(false); };
   return <Card>
     <div className="rp-card-title-row"><div><div className="rp-card-title">Проверка отчёта {aiPowered && <span className="rp-ai-badge" title="Разобрано с помощью ИИ">✨ ИИ</span>}</div>{parsed.totalHint != null && (balanced ? <div className="rp-draft-balance ok"><Check size={12}/> Выручка сходится с «Итого»</div> : <div className="rp-draft-balance bad"><AlertTriangle size={12}/> Не сходится: {fmtRub(sumRevenue)} против {fmtRub(parsed.totalHint)}</div>)}</div><button className="rp-btn" onClick={apply} disabled={busy || !date || balanced === false}>{busy?'Применяю…':'Применить в P&L'}</button></div>
     <Field label="Дата отчёта"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>
@@ -6764,6 +6780,7 @@ function ManualParsedReport({ parsed, settings, employees, months, onApply, aiPo
     {kitchenExpenses.length>0 && <ExpenseEditor title="Покупки" items={kitchenExpenses} setItems={setKitchenExpenses}/>} 
     {otherExpenses.length>0 && <ExpenseEditor title="Другие расходы" items={otherExpenses} setItems={setOtherExpenses}/>} 
     {advances.length>0 && <><div className="rp-draft-section">Авансы</div><div className="rp-list">{advances.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setAdvances(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName || `«${a.name}» — сотрудник не найден`}</div></div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}
+    {salaryPayments.length>0 && <><div className="rp-draft-section">Выплата зарплаты</div><div className="rp-list">{salaryPayments.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setSalaryPayments(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName || `«${a.name}» — сотрудник не найден`}</div>{a.comment&&<div className="rp-list-comment">{a.comment}</div>}</div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}
     {roster.length>0 && <><div className="rp-draft-section">Кто работал</div><div className="rp-checklist">{roster.map((r,i)=><label key={i}><input type="checkbox" checked={r.include} disabled={!r.employeeId} onChange={e=>setRoster(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/>{r.matchedName||`«${r.raw}» — не найден`}</label>)}</div></>}
     {parsed.registerCheck != null && <div className="rp-cash-check" style={{marginTop:10}}><Info size={13}/> Касса фактически (сверка): <b>{fmtRub(parsed.registerCheck)}</b> — справочно, в P&L не входит.</div>}
     {parsed.unmatchedLines?.length>0 && <div className="rp-inline-warn" style={{marginTop:10}}><AlertTriangle size={13}/> Не распознано: «{parsed.unmatchedLines.join('», «')}»</div>}
@@ -6781,17 +6798,18 @@ function DraftCard({ draft, settings, employees, months, onApply, onDismiss }) {
   const [kitchenExpenses, setKitchenExpenses] = useState((p.kitchenExpenses || []).map(e => ({...e,include:true})));
   const [otherExpenses, setOtherExpenses] = useState((p.otherExpenses || []).map(e => ({...e,include:true})));
   const [advances, setAdvances] = useState((p.advances || []).map(a => ({...a,include:!!a.employeeId})));
+  const [salaryPayments, setSalaryPayments] = useState((p.salaryPayments || []).map(a => ({...a,include:!!a.employeeId})));
   const [roster, setRoster] = useState((p.rosterMatches || []).map(r => ({...r,include:!!r.employeeId})));
   const sumRevenue=Object.values(revenue).reduce((s,v)=>s+(Number(v)||0),0); const balanced=p.totalHint==null?null:Math.abs(sumRevenue-Number(p.totalHint))<.01;
-  const doApply=async()=>{if(balanced===false)return; await onApply({date,revenue,courier,promo,kitchenExpenses,otherExpenses,advances,roster});};
-  return <Card><div className="rp-card-title-row"><div><div className="rp-card-title">{draft.sender_name||'Без имени'} <span className="rp-muted">· {draft.message_date}</span></div>{p.totalHint!=null&&(balanced?<div className="rp-draft-balance ok"><Check size={12}/> Сумма сходится</div>:<div className="rp-draft-balance bad"><AlertTriangle size={12}/> Не сходится: {fmtRub(sumRevenue)} против {fmtRub(p.totalHint)}</div>)}</div><div style={{display:'flex',gap:8}}><button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={onDismiss}>Отклонить</button><button className="rp-btn rp-btn-sm" onClick={doApply} disabled={balanced===false}>Применить</button></div></div><Field label="Дата отчёта"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></Field>{Object.keys(revenue).length>0&&<><div className="rp-draft-section">Выручка</div><div className="rp-form-grid">{settings.revenueChannels.filter(c=>c.id in revenue).map(c=><Field key={c.id} label={c.name}><input type="number" step="0.01" value={revenue[c.id]??''} onChange={e=>setRevenue(r=>({...r,[c.id]:e.target.value}))}/></Field>)}</div></>}{(courier.pay!=null||courier.km!=null||courier.deliveries!=null)&&<><div className="rp-draft-section">Курьер</div><div className="rp-form-grid"><Field label="Ставка"><input type="number" value={courier.pay??''} onChange={e=>setCourier(c=>({...c,pay:e.target.value}))}/></Field><Field label="Км"><input type="number" value={courier.km??''} onChange={e=>setCourier(c=>({...c,km:e.target.value}))}/></Field><Field label="Доставок"><input type="number" value={courier.deliveries??''} onChange={e=>setCourier(c=>({...c,deliveries:e.target.value}))}/></Field></div></>}{kitchenExpenses.length>0&&<ExpenseEditor title="Покупки" items={kitchenExpenses} setItems={setKitchenExpenses}/>} {otherExpenses.length>0&&<ExpenseEditor title="Другие расходы" items={otherExpenses} setItems={setOtherExpenses}/>} {advances.length>0&&<><div className="rp-draft-section">Авансы</div><div className="rp-list">{advances.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setAdvances(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName||`«${a.name}» — сотрудник не найден`}</div></div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}{(p.unmatchedLines||[]).length>0&&<div className="rp-inline-warn" style={{marginTop:10}}><AlertTriangle size={13}/> Не распознано: «{p.unmatchedLines.join('», «')}»</div>}</Card>;
+  const doApply=async()=>{if(balanced===false)return; await onApply({date,revenue,courier,promo,kitchenExpenses,otherExpenses,advances,salaryPayments,roster});};
+  return <Card><div className="rp-card-title-row"><div><div className="rp-card-title">{draft.sender_name||'Без имени'} <span className="rp-muted">· {draft.message_date}</span></div>{p.totalHint!=null&&(balanced?<div className="rp-draft-balance ok"><Check size={12}/> Сумма сходится</div>:<div className="rp-draft-balance bad"><AlertTriangle size={12}/> Не сходится: {fmtRub(sumRevenue)} против {fmtRub(p.totalHint)}</div>)}</div><div style={{display:'flex',gap:8}}><button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={onDismiss}>Отклонить</button><button className="rp-btn rp-btn-sm" onClick={doApply} disabled={balanced===false}>Применить</button></div></div><Field label="Дата отчёта"><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></Field>{Object.keys(revenue).length>0&&<><div className="rp-draft-section">Выручка</div><div className="rp-form-grid">{settings.revenueChannels.filter(c=>c.id in revenue).map(c=><Field key={c.id} label={c.name}><input type="number" step="0.01" value={revenue[c.id]??''} onChange={e=>setRevenue(r=>({...r,[c.id]:e.target.value}))}/></Field>)}</div></>}{(courier.pay!=null||courier.km!=null||courier.deliveries!=null)&&<><div className="rp-draft-section">Курьер</div><div className="rp-form-grid"><Field label="Ставка"><input type="number" value={courier.pay??''} onChange={e=>setCourier(c=>({...c,pay:e.target.value}))}/></Field><Field label="Км"><input type="number" value={courier.km??''} onChange={e=>setCourier(c=>({...c,km:e.target.value}))}/></Field><Field label="Доставок"><input type="number" value={courier.deliveries??''} onChange={e=>setCourier(c=>({...c,deliveries:e.target.value}))}/></Field></div></>}{kitchenExpenses.length>0&&<ExpenseEditor title="Покупки" items={kitchenExpenses} setItems={setKitchenExpenses}/>} {otherExpenses.length>0&&<ExpenseEditor title="Другие расходы" items={otherExpenses} setItems={setOtherExpenses}/>} {advances.length>0&&<><div className="rp-draft-section">Авансы</div><div className="rp-list">{advances.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setAdvances(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName||`«${a.name}» — сотрудник не найден`}</div></div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}{salaryPayments.length>0&&<><div className="rp-draft-section">Выплата зарплаты</div><div className="rp-list">{salaryPayments.map((a,i)=><div className="rp-list-row" key={i}><input type="checkbox" checked={a.include} disabled={!a.employeeId} onChange={e=>setSalaryPayments(x=>x.map((z,j)=>j===i?{...z,include:e.target.checked}:z))}/><div className="rp-list-main"><div className="rp-list-cat">{a.matchedName||`«${a.name}» — сотрудник не найден`}</div>{a.comment&&<div className="rp-list-comment">{a.comment}</div>}</div><div className="rp-list-amount">{fmtRub(a.amount)}</div></div>)}</div></>}{(p.unmatchedLines||[]).length>0&&<div className="rp-inline-warn" style={{marginTop:10}}><AlertTriangle size={13}/> Не распознано: «{p.unmatchedLines.join('», «')}»</div>}</Card>;
 }
 
 /* ============================== EXPORT ============================== */
 
 const PAYTYPE_LABEL = { shift: 'руб/смена', hour: 'руб/час', oklad: 'оклад' };
 const PAYTYPE_FROM_LABEL = { 'руб/смена': 'shift', 'руб/час': 'hour', 'оклад': 'oklad' };
-const ADJTYPE_LABEL = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', manual: 'Ручная корректировка' };
+const ADJTYPE_LABEL = { bonus: 'Бонус', motivation: 'Мотивация', penalty: 'Штраф/удержание', advance: 'Аванс', salary_payment: 'Выплата зарплаты', manual: 'Ручная корректировка' };
 const ADJTYPE_FROM_LABEL = Object.fromEntries(Object.entries(ADJTYPE_LABEL).map(([k, v]) => [v, k]));
 
 function normalizeSyncDate(v) {
