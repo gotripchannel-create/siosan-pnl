@@ -1970,13 +1970,17 @@ function Dashboard({ ctx, setPage }) {
   const daysWithData = dailySeries.filter(d => d['Выручка'] > 0 || d['Расходы'] > 0).length;
   const forecast = useMemo(() => {
     if (daysWithData === 0 || daysWithData >= pnl.nd) return null;
-    const scalableExpenses = pnl.totalExpenses - pnl.fixedTotal - pnl.fotTaxTotal;
+    // Нельзя умножать ФОТ на число дней: авансы, оклады и выплаты происходят
+    // неравномерно. Масштабируем только ежедневные переменные статьи, а ФОТ
+    // берём один раз — весь уже известный расчёт по сотрудникам на месяц.
+    const scalableExpenses = pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.otherVar.total + pnl.promo.total;
+    const payrollForecast = pnl.payroll.rows.reduce((sum, row) => sum + Math.max(0, Number(row.payout) || 0), 0);
     const projectedRevenue = (pnl.revenue / daysWithData) * pnl.nd;
     const projectedScalable = (scalableExpenses / daysWithData) * pnl.nd;
-    const projectedExpenses = projectedScalable + pnl.fixedTotal + pnl.fotTaxTotal;
+    const projectedExpenses = projectedScalable + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
     return {
       daysWithData, daysRemaining: pnl.nd - daysWithData,
-      projectedRevenue, projectedExpenses,
+      projectedRevenue, projectedExpenses, payrollForecast,
       projectedProfit: projectedRevenue - projectedExpenses,
       projectedMargin: projectedRevenue ? ((projectedRevenue - projectedExpenses) / projectedRevenue) * 100 : 0,
     };
@@ -2412,7 +2416,7 @@ function Dashboard({ ctx, setPage }) {
           {showWidget('forecast') && forecast && (
             <Card>
               <div className="rp-card-title">Прогноз на конец месяца</div>
-              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн.</div>
+              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. Выручка и переменные расходы экстраполируются; ФОТ {fmtRub(forecast.payrollForecast)} и постоянные расходы добавляются один раз.</div>
               <div className="rp-forecast-grid">
                 <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
                 <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
