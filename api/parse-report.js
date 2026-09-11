@@ -251,6 +251,44 @@ async function logAttempt({ supabaseUrl, token, anonKey, payload }) {
   } catch (_) { /* best-effort, никогда не роняем основной запрос из-за лога */ }
 }
 
+// Изъятия iiko — уже структурированные финансовые операции, а не свободный текст
+// отчёта сотрудника. Для них нельзя зависеть от вероятностного ответа модели: одна
+// пропущенная строка навсегда ломает P&L. Неопознанная операция сохраняется как
+// «Прочее», то есть сумма никогда не исчезает.
+function parseIikoExpenseImport(text, fallbackDate, employees) {
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const date = lines[0]?.match(/^Расходы за (\d{4}-\d{2}-\d{2}):?$/i)?.[1] || fallbackDate;
+  const report = {
+    date, revenue: {}, courier: { pay: null, km: null, deliveries: null }, promo: { pay: null },
+    kitchenExpenses: [], otherExpenses: [], advances: [], rosterMatches: [], unmatchedLines: [], totalHint: null, registerCheck: null
+  };
+  const employeeByFirstName = new Map((employees || []).map((e) => [String(e.name || '').trim().split(/\s+/)[0].toLowerCase(), e]));
+  for (const line of lines.slice(1)) {
+    const match = line.match(/^(.*?)\s+(-?\d+(?:[.,]\d+)?)$/);
+    if (!match) continue;
+    const comment = match[1].trim().toLowerCase();
+    const amount = Number(match[2].replace(',', '.'));
+    if (!(amount > 0)) continue;
+    if (/\bкурьер\b|\bразвоз\b/.test(comment)) {
+      report.courier.pay = (Number(report.courier.pay) || 0) + amount;
+    } else if (/\b(?:зп|аванс)\b/.test(comment)) {
+      const employee = [...employeeByFirstName.entries()].find(([name]) => name && new RegExp(`(^|\\s)${name}(\\s|$)`, 'i').test(comment))?.[1];
+      if (employee) report.advances.push({ name: employee.name, amount, employeeId: employee.id, matchedName: employee.name });
+      else report.otherExpenses.push({ category: 'Прочее', amount });
+    } else if (/озон|\bвб\b|валберис|вайлдберис|wildberr/.test(comment)) {
+      report.otherExpenses.push({ category: 'Маркетплейсы', amount });
+    } else if (/смм|реклам|таргет|листовк|продвиж/.test(comment)) {
+      report.otherExpenses.push({ category: 'Реклама', amount });
+    } else if (/закуп|тест|магнит|продукт|мяс|овощ|мук|сыр|молоч|напит|\bвод[аы]\b|кофе|чай/.test(comment)) {
+      const category = /напит|\bвод[аы]\b|кофе|чай/.test(comment) ? 'Напитки' : 'Продукты';
+      report.kitchenExpenses.push({ category, amount });
+    } else {
+      report.otherExpenses.push({ category: 'Прочее', amount });
+    }
+  }
+  return report;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -290,12 +328,6 @@ export default async function handler(req, res) {
     }
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY не настроен на сервере. Добавьте переменную окружения в настройках проекта Vercel.' });
-    return;
-  }
-
   const {
     text,
     image, // { data: base64, mediaType: 'image/jpeg' }
@@ -321,6 +353,20 @@ export default async function handler(req, res) {
   }
   if (hasImage && image.data.length > 8_000_000) { // ~6MB исходного файла в base64
     res.status(400).json({ error: 'Фото слишком большое (максимум ~6 МБ). Сожмите или сфотографируйте по частям.' });
+    return;
+  }
+
+  // Автоимпорт из iiko обрабатываем без ИИ: комментарии и суммы уже получены
+  // напрямую из кассы, поэтому это единственный путь с гарантией сохранения суммы.
+  if (hasText && /^Расходы за \d{4}-\d{2}-\d{2}:?/i.test(String(text).trim())) {
+    const report = parseIikoExpenseImport(text, fallbackDate, employees);
+    res.status(200).json({ reports: [report] });
+    return;
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'ANTHROPIC_API_KEY не настроен на сервере. Добавьте переменную окружения в настройках проекта Vercel.' });
     return;
   }
 
