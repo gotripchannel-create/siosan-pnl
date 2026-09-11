@@ -447,6 +447,7 @@ function computeEmployeePay(emp, month, settings) {
     bonus: bonus1 + bonus2, deduct: deduct1 + deduct2, advance: advance1 + advance2,
     salaryPayment: salaryPayment1 + salaryPayment2,
     accrued: accrued1 + accrued2, payout: payout1 + payout2,
+    accrued1, accrued2, payout1, payout2,
     h1items: h1.items, h2items: h2.items, adjustments: adj,
   };
 }
@@ -3099,14 +3100,15 @@ function EmployeesPage({ ctx }) {
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
 
-  // Итоги выплат считаем только по фактически проставленным сменам. Оклады,
-  // авансы и ручные корректировки не смешиваются с этим оперативным планом.
+  // В верхнем блоке — реальный остаток к выплате только сотрудникам со
+  // сменной/почасовой оплатой. Поэтому ставка, смена, аванс или уже выданная
+  // зарплата сразу меняют сумму соответствующей половины месяца.
   const shiftPayroll = employees
     .filter((e) => e.payType === 'shift' || e.payType === 'hour')
     .reduce((totals, e) => {
       const pay = computeEmployeePay(e, month, settings);
-      totals.first += pay.base1;
-      totals.second += pay.base2;
+      totals.first += pay.payout1;
+      totals.second += pay.payout2;
       return totals;
     }, { first: 0, second: 0 });
   shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
@@ -3153,7 +3155,7 @@ function EmployeesPage({ ctx }) {
           <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
-        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Только проставленные смены; оклады, авансы и ручные корректировки не включены.</p>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Только сотрудники со сменной или почасовой оплатой и только проставленные смены. Авансы и выплаты ЗП уменьшают остаток сразу; оклады в этот блок не входят.</p>
       </Card>
 
       <div className="rp-toolbar">
