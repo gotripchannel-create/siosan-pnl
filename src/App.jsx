@@ -3102,7 +3102,7 @@ function EmployeesPage({ ctx }) {
       return { ...m, shifts };
     });
     logAudit({ what: 'Добавлены подтверждённые сотрудники на смену', date, comment: 'Вика, Лёша, Орхан, теть Оля' });
-  }, [year, monthIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [year, monthIdx, employees, month.shifts]); // повторяем после загрузки облачных данных
 
   const visible = employees.filter((e) => e.name.toLowerCase().includes(search.toLowerCase()));
 
