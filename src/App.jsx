@@ -240,6 +240,22 @@ function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
+// iiko отдаёт сумму каждой операции, поэтому ни один импорт не имеет права
+// считаться успешным, пока сумма разобранного отчёта не равна сумме сырья.
+// Это не даёт ИИ тихо "забыть" строку и защищает P&L от неполных месяцев.
+function reportPayoutTotal(report) {
+  const sum = (items) => (items || []).reduce((total, item) => total + (Number(item?.amount) || 0), 0);
+  return sum(report?.kitchenExpenses) + sum(report?.otherExpenses)
+    + (Number(report?.courier?.pay) || 0)
+    + sum(report?.advances)
+    + (Number(report?.promo?.pay) || 0);
+}
+
+function isReconciledIikoReport(report, rawItems) {
+  const rawTotal = (rawItems || []).reduce((total, item) => total + (Number(item?.amount) || 0), 0);
+  return !!report && Math.abs(reportPayoutTotal(report) - rawTotal) < 0.01;
+}
+
 // Те же "запрещённые" категории, что и на сервере (api/_lib/expense-rules.js) — не
 // импортировать напрямую нельзя, серверный модуль не собирается в браузерный бандл,
 // поэтому список продублирован (как и splitCourierPayout выше). Используется для
@@ -1496,7 +1512,10 @@ function Dashboard({ ctx, setPage }) {
           const data = await resp.json();
           if (!resp.ok) { failedDays += 1; return; }
           const report = (data.reports || [])[0];
-          if (!report) { failedDays += 1; return; }
+          // Не помечаем сырьё обработанным, если ИИ вернул неполную сумму. В таком
+          // случае следующий запуск повторит попытку, а в P&L не появится тихая
+          // недостача изъятий.
+          if (!isReconciledIikoReport(report, items)) { failedDays += 1; return; }
 
           const mk = date.slice(0, 7);
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
@@ -1600,29 +1619,14 @@ function Dashboard({ ctx, setPage }) {
   const autoFixBadCategoriesForMonth = async (y, mIdx) => {
     const mk = monthKeyOf(y, mIdx);
     const curMonth = months[mk];
-    if (!curMonth || !Object.values(curMonth.days || {}).some(hasBadIikoCategory)) return;
+    // v4 — первая версия, которая не удаляет данные до успешной сверки всех
+    // операций. v3 могла отметить неполный результат как готовый, поэтому один
+    // раз безопасно пересобираем месяц при переходе на v4.
+    const needsMigration = settings.iikoExpensesSyncVersion !== 4;
+    if (!curMonth || (!needsMigration && !Object.values(curMonth.days || {}).some(hasBadIikoCategory))) return;
 
     const from = dateStr(y, mIdx, 1);
     const to = dateStr(y, mIdx, daysInMonth(y, mIdx));
-    const monthPrefix = `v3::${from.slice(0, 7)}`;
-
-    setMonths((prev) => {
-      const cur = prev[mk];
-      if (!cur) return prev;
-      const days = { ...cur.days };
-      for (const ds of Object.keys(days)) {
-        const day = days[ds];
-        days[ds] = {
-          ...day,
-          kitchenExpenses: (day.kitchenExpenses || []).filter((e) => e.source !== 'iiko'),
-          otherExpenses: (day.otherExpenses || []).filter((e) => e.source !== 'iiko'),
-        };
-      }
-      return { ...prev, [mk]: { ...cur, days } };
-    });
-    setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: (prev.iikoExpensesSyncedKeys || []).filter((k) => !k.startsWith(monthPrefix)) }));
-    await new Promise((r) => setTimeout(r, 200));
-
     try {
       const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
       const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
@@ -1632,31 +1636,55 @@ function Dashboard({ ctx, setPage }) {
       const byDay = new Map();
       for (const e of allExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
 
-      await runWithConcurrency([...byDay.entries()], 5, async ([date, items]) => {
+      const rebuiltByDate = new Map();
+      let failedDays = 0;
+      await runWithConcurrency([...byDay.entries()], 3, async ([date, items]) => {
+        try {
         const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
         const resp = await fetchWithTimeout('/api/parse-report', {
           method: 'POST', headers: authHeaders,
           body: JSON.stringify({
             text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],
-            expenseCategories: settings.expenseCategories || [], fallbackDate: date, glossary: settings.reportGlossary || ''
+            expenseCategories: settings.expenseCategories || [],
+            suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+            fixedExpenseNames: (settings.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+            fallbackDate: date, glossary: settings.reportGlossary || ''
           })
         }, 25000);
         const data = await resp.json();
-        if (!resp.ok) return;
+        if (!resp.ok) { failedDays += 1; return; }
         const report = (data.reports || [])[0];
-        if (!report) return;
-        const rmk = date.slice(0, 7);
-        const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-        const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-        setMonths((prev) => {
-          const cm = prev[rmk] || emptyMonth(settings, null);
-          const day = { ...getDay(cm, date) };
-          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
-          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
-          return { ...prev, [rmk]: { ...cm, days: { ...cm.days, [date]: day } } };
-        });
+        if (!isReconciledIikoReport(report, items)) { failedDays += 1; return; }
+        rebuiltByDate.set(date, report);
+        } catch (_) { failedDays += 1; }
       });
-      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v3::${e.date}::${e.comment}::${e.amount}`)] }));
+
+      // Главное правило восстановления: либо готов весь месяц, либо не меняем
+      // ничего. Нельзя сначала удалить старые суммы, а потом надеяться, что ИИ
+      // успеет вернуть все ответы.
+      if (failedDays > 0 || rebuiltByDate.size !== byDay.size) {
+        console.error(`Пересборка iiko за ${from} не применена: сверены ${rebuiltByDate.size} из ${byDay.size} дней.`);
+        return;
+      }
+      setMonths((prev) => {
+        const cur = prev[mk];
+        if (!cur) return prev;
+        const days = { ...cur.days };
+        for (const [date, report] of rebuiltByDate.entries()) {
+          const day = { ...getDay(cur, date) };
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          days[date] = { ...day,
+            kitchenExpenses: [...(day.kitchenExpenses || []).filter((e) => e.source !== 'iiko'), ...newKitchen],
+            otherExpenses: [...(day.otherExpenses || []).filter((e) => e.source !== 'iiko'), ...newOther]
+          };
+        }
+        return { ...prev, [mk]: { ...cur, days } };
+      });
+      setSettings((prev) => ({ ...prev,
+        iikoExpensesSyncVersion: 4,
+        iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v4::${e.date}::${e.comment}::${e.amount}`)]
+      }));
       logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
     } catch (e) {
       console.error('Автоисправление устаревших категорий не удалось:', e);
