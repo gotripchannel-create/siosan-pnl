@@ -461,11 +461,34 @@ function isEmployeeActiveInMonth(emp, y, mIdx) {
   return true;
 }
 
+// Отчёт за открытый месяц не должен показывать ещё не наступившую выплату за
+// вторую половину. Она появляется только после последнего календарного дня;
+// архивные месяцы всегда показываются целиком.
+function payrollReportedHalves(y, mIdx) {
+  const now = todayObj();
+  const target = y * 12 + mIdx;
+  const current = now.y * 12 + now.m;
+  if (target < current) return 2;
+  if (target > current) return 0;
+  return now.d >= daysInMonth(y, mIdx) ? 2 : 1;
+}
+
 function monthPayroll(employees, month, settings, y, mIdx) {
   const active = employees.filter((e) => isEmployeeActiveInMonth(e, y, mIdx));
-  const rows = active.map((e) => computeEmployeePay(e, month, settings)).filter((r) => r.hours > 0 || r.payType === 'oklad' || r.accrued !== 0 || r.advance !== 0 || r.salaryPayment !== 0 || r.deduct !== 0);
-  const totalFot = rows.reduce((s, r) => s + r.accrued, 0);
-  return { rows, totalFot };
+  const reportedHalves = payrollReportedHalves(y, mIdx);
+  const rows = active.map((e) => {
+    const r = computeEmployeePay(e, month, settings);
+    const useFirst = reportedHalves >= 1, useSecond = reportedHalves >= 2;
+    return {
+      ...r,
+      reportBase: (useFirst ? r.base1 : 0) + (useSecond ? r.base2 : 0),
+      reportAccrued: (useFirst ? r.accrued1 : 0) + (useSecond ? r.accrued2 : 0),
+      reportAdvance: (useFirst ? r.adjustments.filter((a) => a.half === 1 && a.type === 'advance').reduce((s, a) => s + (Number(a.amount) || 0), 0) : 0) + (useSecond ? r.adjustments.filter((a) => a.half === 2 && a.type === 'advance').reduce((s, a) => s + (Number(a.amount) || 0), 0) : 0),
+      reportPayout: (useFirst ? r.payout1 : 0) + (useSecond ? r.payout2 : 0),
+    };
+  }).filter((r) => r.hours > 0 || r.payType === 'oklad' || r.reportAccrued !== 0 || r.reportAdvance !== 0 || r.salaryPayment !== 0 || r.deduct !== 0);
+  const totalFot = rows.reduce((s, r) => s + r.reportAccrued, 0);
+  return { rows, totalFot, reportedHalves };
 }
 
 function allMonthKeysUpTo(monthsObj, y, mIdx) {
@@ -3116,8 +3139,9 @@ function EmployeesPage({ ctx }) {
     .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx))
     .reduce((totals, e) => {
       const pay = computeEmployeePay(e, month, settings);
-      totals.first += pay.payout1;
-      totals.second += pay.payout2;
+      const reportedHalves = payrollReportedHalves(year, monthIdx);
+      if (reportedHalves >= 1) totals.first += pay.payout1;
+      if (reportedHalves >= 2) totals.second += pay.payout2;
       return totals;
     }, { first: 0, second: 0 });
   shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
@@ -3164,7 +3188,7 @@ function EmployeesPage({ ctx }) {
           <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
-        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Оклад делится поровну: 50% в первую и 50% во вторую половину. Для сменной и почасовой оплаты учитываются только проставленные смены; авансы и выплаты ЗП уменьшают остаток сразу.</p>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Оклад делится поровну: 50% в первую и 50% во вторую половину. В открытом месяце в отчётах показывается только первая половина; вторая попадёт в итог после окончания месяца.</p>
       </Card>
 
       <div className="rp-toolbar">
@@ -3490,11 +3514,11 @@ function PayrollPage({ ctx }) {
                 <td className="rp-strong">{r.name}<div className="rp-muted-sm">{r.position}</div></td>
                 <td>{r.shiftsCount != null ? `${r.shiftsCount} см.` : `${fmt0(r.hours)} ч`}</td>
                 <td className="rp-num">{fmtRub(r.rate)}</td>
-                <td className="rp-num">{fmtRub(r.base)}</td>
+                <td className="rp-num">{fmtRub(r.reportBase)}</td>
                 <td className="rp-num">{r.bonus ? `+${fmtRub(r.bonus)}` : '—'}</td>
                 <td className="rp-num">{r.deduct ? `−${fmtRub(r.deduct)}` : '—'}</td>
-                <td className="rp-num">{r.advance ? `−${fmtRub(r.advance)}` : '—'}</td>
-                <td className="rp-num rp-strong">{fmtRub(r.payout)}</td>
+                <td className="rp-num">{r.reportAdvance ? `−${fmtRub(r.reportAdvance)}` : '—'}</td>
+                <td className="rp-num rp-strong">{fmtRub(r.reportPayout)}</td>
               </tr>
             ))}
             <tr className="rp-total-row"><td colSpan={3}>Итого ФОТ (начислено)</td><td className="rp-num">{fmtRub(payroll.totalFot)}</td><td colSpan={4} /></tr>
