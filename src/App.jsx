@@ -3009,7 +3009,7 @@ function EmployeesPage({ ctx }) {
       <Card style={{marginTop:16}}>
         <div className="rp-card-title">Кто работал — {MONTHS_RU[monthIdx]} {year}</div>
         <p className="rp-muted" style={{fontSize:12, marginBottom:14}}>Смены проставляются автоматически, когда сотрудник открывает кассовую смену в iiko (имя сопоставляется по совпадению). Клик по дню — быстрый переход к сменам этого дня.</p>
-        <div className="rp-cal-grid">
+        <div className="rp-cal-scroll"><div className="rp-cal-grid">
           {WEEKDAYS_RU.map((w) => <div key={w} className="rp-cal-weekday">{w}</div>)}
           {(() => {
             const total = daysInMonth(year, monthIdx);
@@ -3034,7 +3034,7 @@ function EmployeesPage({ ctx }) {
               );
             });
           })()}
-        </div>
+        </div></div>
       </Card>
 
       {editing && (
@@ -3607,7 +3607,7 @@ function SuppliersPage({ ctx }) {
       <Card style={{marginTop:16}}>
         <div className="rp-card-title">График поставок — {MONTHS_RU[monthIdx]} {year}</div>
         <div className="rp-muted" style={{marginBottom:14}}>Что и когда приехало. Только суммы поставок — статус оплаты здесь не отслеживается.</div>
-        <div className="rp-cal-grid">
+        <div className="rp-cal-scroll"><div className="rp-cal-grid">
           {WEEKDAYS_RU.map((w) => <div key={w} className="rp-cal-weekday">{w}</div>)}
           {calendarWeeks.flat().map((d, i) => {
             if (d == null) return <div key={i} className="rp-cal-cell rp-cal-cell-empty" />;
@@ -3634,7 +3634,7 @@ function SuppliersPage({ ctx }) {
               </div>
             );
           })}
-        </div>
+        </div></div>
       </Card>
 
       {newSupplier && (

@@ -468,6 +468,7 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
 .rp-compare-picker { display: flex; gap: 8px; }
 
 /* ============ календарь накладных ============ */
+.rp-cal-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .rp-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
 .rp-cal-weekday {
   text-align: center; font-family: var(--mono); font-size: 11px; font-weight: 500;
@@ -540,8 +541,13 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--ink
   .rp-history-ts { min-width: 0; }
   .rp-history-revert { align-self: flex-end; }
   .rp-export-menu { max-width: calc(100vw - 28px); }
-  .rp-cal-chip { display: none; }
-  .rp-cal-cell { min-height: 56px; padding: 4px; }
+  /* Раньше имена сотрудников/поставщиков в календаре просто скрывались (display:none)
+     на узких экранах — календарь становился бесполезным (только числа дней). Теперь
+     вместо этого сама сетка становится шире экрана и прокручивается по горизонтали
+     (см. .rp-cal-scroll выше) — имена остаются видны, просто нужно провести пальцем
+     вбок, чтобы увидеть все 7 дней недели. */
+  .rp-cal-grid { min-width: 620px; }
+  .rp-cal-cell { min-height: 64px; padding: 6px; }
 }
 
 /* ============ тёмная тема ============ */
