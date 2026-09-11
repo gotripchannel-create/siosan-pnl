@@ -3087,6 +3087,23 @@ function EmployeesPage({ ctx }) {
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
 
+  // Разовая подтверждённая корректировка смены: 09.09.2026 работали Вика,
+  // Лёша, Орхан и тётя Оля. Записываем стандартную смену каждому, не трогая
+  // уже существующие часы и не создавая дублей.
+  useEffect(() => {
+    if (year !== 2026 || monthIdx !== 8) return;
+    const date = '2026-09-09';
+    const wanted = new Set(['вика', 'леша', 'орхан', 'теть оля']);
+    const missing = employees.filter((e) => wanted.has(String(e.name || '').trim().toLowerCase()) && month.shifts?.[e.id]?.[date] == null);
+    if (missing.length === 0) return;
+    updateMonth((m) => {
+      const shifts = { ...(m.shifts || {}) };
+      for (const emp of missing) shifts[emp.id] = { ...(shifts[emp.id] || {}), [date]: emp.standardShift || settings.standardShiftHours || 13 };
+      return { ...m, shifts };
+    });
+    logAudit({ what: 'Добавлены подтверждённые сотрудники на смену', date, comment: 'Вика, Лёша, Орхан, теть Оля' });
+  }, [year, monthIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const visible = employees.filter((e) => e.name.toLowerCase().includes(search.toLowerCase()));
 
   const saveEmployee = (emp) => {
