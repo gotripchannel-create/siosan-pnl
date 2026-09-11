@@ -4806,8 +4806,8 @@ function PnLPage({ ctx }) {
   // поэтому здесь: 1) убираем старые iiko-записи расходов этого месяца, 2) чистим
   // отметки "уже обработано" для дат этого месяца, 3) запускаем синхронизацию
   // заново — она подтянет те же операции из iiko, но уже по исправленным правилам.
-  const resyncMonthExpenses = async () => {
-    if (!window.confirm(`Пересобрать все автоматические расходы за ${MONTHS_RU[monthIdx]} ${year}? Записи с пометкой «Из iiko (авто)» будут удалены и подтянуты заново с исправленной категоризацией. Расходы, добавленные вручную, не тронутся.`)) return;
+  const resyncMonthExpenses = async (silent = false) => {
+    if (!silent && !window.confirm(`Пересобрать все автоматические расходы за ${MONTHS_RU[monthIdx]} ${year}? Записи с пометкой «Из iiko (авто)» будут удалены и подтянуты заново с исправленной категоризацией. Расходы, добавленные вручную, не тронутся.`)) return;
     setResyncing(true); setResyncMsg('');
     try {
       const from = dateStr(year, monthIdx, 1);
@@ -4881,6 +4881,13 @@ function PnLPage({ ctx }) {
       setResyncing(false);
     }
   };
+
+  // P&L — не просто витрина старого снимка: при открытии он сам получает
+  // актуальные изъятия из iiko. Раньше это происходило только на «Отчётах»,
+  // из-за чего здесь месяц мог оставаться на старых 10 тыс. после исправления.
+  useEffect(() => {
+    if (!locked) resyncMonthExpenses(true);
+  }, [year, monthIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const Row = ({ label, value, pctOf = pnl.revenue, bold, onClick, indent }) => (
     <div className={`rp-pnl-row ${bold ? 'bold' : ''} ${onClick ? 'rp-clickable' : ''}`} style={indent ? { paddingLeft: 20 } : {}} onClick={onClick}>
