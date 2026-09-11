@@ -1942,9 +1942,12 @@ function Dashboard({ ctx, setPage }) {
       const day = getDay(month, ds);
       const rev = dayRevenueTotal(day, settings.revenueChannels);
       const dayCourierFuelCalc = day.courier?.fuel != null ? (Number(day.courier.fuel) || 0) : (Number(day.courier?.km) || 0) * (settings.courierFuelRatePerKm || 7);
+      // iiko-изъятия курьера хранятся отдельными операциями; без этой суммы
+      // график и число дней для прогноза занижали фактические расходы.
+      const dayCourierAuto = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
       const exp = (day.kitchenExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0)
         + (day.otherExpenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0)
-        + (Number(day.courier?.pay) || 0) + dayCourierFuelCalc + (Number(day.promo?.pay) || 0);
+        + (Number(day.courier?.pay) || 0) + dayCourierFuelCalc + dayCourierAuto + (Number(day.promo?.pay) || 0);
       arr.push({ day: d, Выручка: rev, Расходы: exp, Прибыль: rev - exp });
     }
     return arr;
@@ -2001,15 +2004,19 @@ function Dashboard({ ctx, setPage }) {
     // 500–600 тыс. ₽ в месяц; используем середину, но никогда не ниже уже
     // внесённого факта.
     const supplierForecast = Math.max(pnl.supplierPay.total, 550000);
-    const scalableExpenses = pnl.kitchen.total + pnl.courier.total + pnl.otherVar.total + pnl.promo.total;
+    // Продукты, канцелярия, хозтовары, прочие наличные изъятия и доставка
+    // (ставка + бензин) прогнозируются по фактическому среднему за день.
+    const scalableExpenses = pnl.kitchen.total + pnl.courier.total + pnl.otherVar.total;
+    // СММ — подтверждённый месячный бюджет, не дневная статья.
+    const promoForecast = Math.max(pnl.promo.total, 20000);
     const payrollPlan = forecastPayrollFromRequiredRoster(employees, month, settings, year, monthIdx);
     const payrollForecast = payrollPlan.total;
     const projectedRevenue = (pnl.revenue / daysWithData) * pnl.nd;
     const projectedScalable = (scalableExpenses / daysWithData) * pnl.nd;
-    const projectedExpenses = projectedScalable + supplierForecast + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
+    const projectedExpenses = projectedScalable + supplierForecast + promoForecast + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
     return {
       daysWithData, daysRemaining: pnl.nd - daysWithData,
-      projectedRevenue, projectedExpenses, payrollForecast, payrollPlan, supplierForecast,
+      projectedRevenue, projectedExpenses, payrollForecast, payrollPlan, supplierForecast, promoForecast,
       projectedProfit: projectedRevenue - projectedExpenses,
       projectedMargin: projectedRevenue ? ((projectedRevenue - projectedExpenses) / projectedRevenue) * 100 : 0,
     };
@@ -2445,7 +2452,7 @@ function Dashboard({ ctx, setPage }) {
           {showWidget('forecast') && forecast && (
             <Card>
               <div className="rp-card-title">Прогноз на конец месяца</div>
-              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. Поставщики: план 500–600 тыс. ₽, в прогнозе {fmtRub(forecast.supplierForecast)}. ФОТ: оклады {fmtRub(forecast.payrollPlan.monthlySalaries)} + {forecast.payrollPlan.rolesCount} обязательные позиции × {fmtRub(forecast.payrollPlan.dailyRosterCost)} × {pnl.nd} дней = {fmtRub(forecast.payrollForecast)}.</div>
+              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. По факту дней: продукты, канцелярия, хозтовары, прочие изъятия и доставка с бензином. Поставщики: {fmtRub(forecast.supplierForecast)}; СММ: {fmtRub(forecast.promoForecast)}. ФОТ: оклады {fmtRub(forecast.payrollPlan.monthlySalaries)} + {forecast.payrollPlan.rolesCount} обязательные позиции × {fmtRub(forecast.payrollPlan.dailyRosterCost)} × {pnl.nd} дней = {fmtRub(forecast.payrollForecast)}.</div>
               <div className="rp-forecast-grid">
                 <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
                 <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
