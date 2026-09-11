@@ -9,6 +9,7 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+import { timingSafeStringEqual } from './_lib/security.js';
 
 const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей из текста
 const MODEL_VISION = 'claude-sonnet-4-6'; // для фото Z-отчётов — нужнее точность распознавания мелкого текста на чеке, чем скорость
@@ -264,7 +265,7 @@ export default async function handler(req, res) {
   // Внутренний вызов от фонового задания (cron-sync-invoices) — у него нет
   // пользовательской сессии, вместо неё сверяем уже настроенный секрет cron-задания.
   const internalSecret = req.headers['x-internal-secret'];
-  const isInternalCall = !!process.env.CRON_SECRET && internalSecret === process.env.CRON_SECRET;
+  const isInternalCall = !!process.env.CRON_SECRET && timingSafeStringEqual(internalSecret, process.env.CRON_SECRET);
 
   if (!supabaseUrl || !supabaseAnonKey) {
     res.status(500).json({ error: 'Supabase не настроен на сервере.' });
