@@ -851,6 +851,7 @@ export default function App() {
   const saveTimer = useRef(null);
   const cloudRowId = useRef(null);
   const hydrated = useRef(false);
+  const lastSavedPayload = useRef(null);
   // Последний ИЗВЕСТНЫЙ нам момент изменения строки в базе — используется перед
   // сохранением, чтобы обнаружить, не поменял ли данные кто-то ещё (другой браузер,
   // фоновый cron) после того, как мы их загрузили. См. save-эффект ниже.
@@ -974,12 +975,14 @@ export default function App() {
             setMonths(loadedMonths);
           }
           setAuditLog(parsed.auditLog || []);
+          lastSavedPayload.current = { settings: loadedSettings, employees: parsed.employees || seedEmployees(), suppliers: parsed.suppliers || seedSuppliers(), months: loadedMonths, auditLog: parsed.auditLog || [] };
         } else {
           setSettings(defaultSettings());
           setEmployees(seedEmployees());
           setSuppliers(seedSuppliers());
           setMonths({});
           setAuditLog([]);
+          lastSavedPayload.current = { settings: defaultSettings(), employees: seedEmployees(), suppliers: seedSuppliers(), months: {}, auditLog: [] };
         }
 
         if (row) { cloudRowId.current = row.id; lastKnownUpdatedAt.current = row.updated_at; }
@@ -994,6 +997,7 @@ export default function App() {
           if (insErr) throw insErr;
           cloudRowId.current = inserted.id;
           lastKnownUpdatedAt.current = nowIso;
+          lastSavedPayload.current = initial;
         }
       } catch (e) {
         setSyncError(e?.message || 'Ошибка загрузки общей базы');
@@ -1033,34 +1037,37 @@ export default function App() {
         if (error) throw error;
 
         if (!updatedRows || updatedRows.length === 0) {
-          // 0 обновлённых строк = кто-то другой сохранил данные между нашей
-          // загрузкой и этой попыткой записи. НЕ перезаписываем вслепую поверх —
-          // подтягиваем свежую версию и показываем её. Наше самое последнее
-          // локальное изменение в этом случае, к сожалению, придётся внести ещё
-          // раз — но это гораздо лучше, чем молча стереть чужие данные (например,
-          // только что подтянутые автосинхронизацией расходы).
+          // Данные поменялись в фоне. Не выбрасываем только что введённые значения:
+          // объединяем разделы, которые локально изменились после последнего save.
           const { data: fresh, error: freshError } = await supabase
             .from('restaurant_data')
             .select('data,updated_at')
             .eq('id', cloudRowId.current)
             .single();
           if (freshError) throw freshError;
-          console.error('Обнаружен конфликт одновременного сохранения — подтянуты более свежие данные вместо перезаписи.');
           if (fresh?.data) {
             const freshData = fresh.data;
-            setSettings(freshData.settings || defaultSettings());
-            setEmployees(freshData.employees || seedEmployees());
-            setSuppliers(freshData.suppliers || seedSuppliers());
-            setMonths(freshData.months || {});
-            setAuditLog(freshData.auditLog || []);
+            const base = lastSavedPayload.current || {};
+            const changed = (key) => JSON.stringify(payload[key]) !== JSON.stringify(base[key]);
+            const merged = {
+              settings: changed('settings') ? payload.settings : (freshData.settings || defaultSettings()),
+              employees: changed('employees') ? payload.employees : (freshData.employees || seedEmployees()),
+              suppliers: changed('suppliers') ? payload.suppliers : (freshData.suppliers || seedSuppliers()),
+              months: changed('months') ? payload.months : (freshData.months || {}),
+              auditLog: changed('auditLog') ? payload.auditLog : (freshData.auditLog || []),
+            };
+            setSettings(merged.settings); setEmployees(merged.employees); setSuppliers(merged.suppliers);
+            setMonths(merged.months); setAuditLog(merged.auditLog);
           }
           lastKnownUpdatedAt.current = fresh?.updated_at || nowIso;
-          setSyncError('Данные обновились в фоне (например, автосинхронизация) — показаны самые свежие. Если вы только что что-то меняли, откройте эту страницу заново и повторите изменение.');
+          lastSavedPayload.current = fresh?.data || lastSavedPayload.current;
+          setSyncError('Данные обновились в фоне; ваше изменение объединено и сохраняется повторно.');
           setSaving(false);
           return;
         }
 
         lastKnownUpdatedAt.current = nowIso;
+        lastSavedPayload.current = payload;
         window.localStorage.setItem('restaurant-pnl-data', JSON.stringify(payload));
         setSyncError('');
       } catch (e) {
