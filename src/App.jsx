@@ -4794,7 +4794,7 @@ function AiChatWidget({ ctx }) {
 
 /* ============================== P&L ============================== */
 
-function PnLPage({ ctx }) {
+function PnLPage({ ctx, embedded = false }) {
   const { pnl, year, monthIdx, month, updateMonth, logAudit, settings, setSettings, setMonths, employees, session } = ctx;
   const [drill, setDrill] = useState(null);
   const [newName, setNewName] = useState('');
@@ -4891,7 +4891,7 @@ function PnLPage({ ctx }) {
   // актуальные изъятия из iiko. Раньше это происходило только на «Отчётах»,
   // из-за чего здесь месяц мог оставаться на старых 10 тыс. после исправления.
   useEffect(() => {
-    if (!locked) resyncMonthExpenses(true);
+    if (!embedded && !locked) resyncMonthExpenses(true);
   }, [year, monthIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const Row = ({ label, value, pctOf = pnl.revenue, bold, onClick, indent }) => (
