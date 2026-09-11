@@ -47,6 +47,12 @@ const COLORS = {
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const fmt0 = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(n || 0));
 const fmtRub = (n) => `${fmt0(n)} ₽`;
+const invoiceItemPrice = (item) => {
+  const explicit = Number(item?.price);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const qty = Number(item?.qty) || 0;
+  return qty > 0 ? (Number(item?.sum) || 0) / qty : 0;
+};
 const fmtPct = (n) => `${(n || 0).toFixed(1)}%`;
 const pad2 = (n) => String(n).padStart(2, '0');
 const daysInMonth = (y, mIdx) => new Date(y, mIdx + 1, 0).getDate();
@@ -3933,10 +3939,10 @@ function SuppliersPage({ ctx }) {
         <Modal title={`${itemsFor.supplierName} — ${itemsFor.date}`} onClose={() => setItemsFor(null)}>
           <div className="rp-muted" style={{marginBottom:10}}>Сумма накладной: <b>{fmtRub(itemsFor.amount)}</b></div>
           <div className="rp-table-wrap"><table className="rp-table">
-            <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+            <thead><tr><th>Наименование</th><th>Кол-во</th><th>Ед. изм.</th><th>Цена</th><th>Сумма</th></tr></thead>
             <tbody>
               {itemsFor.items.map((it, j) => (
-                <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ""}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td>{it.unit || 'Не указана в iiko'}</td><td className="rp-num">{fmtRub(invoiceItemPrice(it))}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
               ))}
             </tbody>
           </table></div>
@@ -4040,10 +4046,10 @@ function SupplierHistoryModal({ supplier, ledger, onClose }) {
                   <tr>
                     <td colSpan={4} style={{padding:0, background:COLORS.bg}}>
                       <table className="rp-table" style={{margin:'4px 0 8px 24px', width:'calc(100% - 24px)'}}>
-                        <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                        <thead><tr><th>Наименование</th><th>Кол-во</th><th>Ед. изм.</th><th>Цена</th><th>Сумма</th></tr></thead>
                         <tbody>
                           {e.items.map((it, j) => (
-                            <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ""}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                            <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td>{it.unit || 'Не указана в iiko'}</td><td className="rp-num">{fmtRub(invoiceItemPrice(it))}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
                           ))}
                         </tbody>
                       </table>
@@ -4410,10 +4416,10 @@ function PurchaseAnalyticsPage({ ctx }) {
                             <tr>
                               <td colSpan={6} style={{ padding: 0, background: COLORS.bg }}>
                                 <table className="rp-table" style={{ margin: '4px 0 8px 24px', width: 'calc(100% - 24px)' }}>
-                                  <thead><tr><th>Товар</th><th>Кол-во</th><th>Сумма</th></tr></thead>
+                                  <thead><tr><th>Наименование</th><th>Кол-во</th><th>Ед. изм.</th><th>Цена</th><th>Сумма</th></tr></thead>
                                   <tbody>
                                     {d.items.map((it, j) => (
-                                      <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}{it.unit ? ` ${it.unit}` : ''}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
+                                      <tr key={j}><td>{it.name}</td><td className="rp-num">{it.qty}</td><td>{it.unit || 'Не указана в iiko'}</td><td className="rp-num">{fmtRub(invoiceItemPrice(it))}</td><td className="rp-num">{fmtRub(it.sum)}</td></tr>
                                     ))}
                                   </tbody>
                                 </table>

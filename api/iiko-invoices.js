@@ -126,11 +126,14 @@ export default async function handler(req, res) {
           const date = (r['DateTime.Typed'] || '').slice(0, 10);
           const supplier = (r['Counteragent.Name'] || '').replace(/"/g, '').replace(/\s+/g, ' ').trim() || 'Без названия';
           const key = `${date}::${supplier}`;
+          const qty = Number(r['Amount']) || 0;
+          const sum = Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100;
           (itemsByKey[key] ||= []).push({
             name: r['Product.Name'] || 'Без названия',
-            qty: Number(r['Amount']) || 0,
+            qty,
             unit: r['Product.MeasureUnit'] || '',
-            sum: Math.round((Number(r['Sum.Incoming']) || 0) * 100) / 100
+            price: qty > 0 ? Math.round((sum / qty) * 100) / 100 : 0,
+            sum
           });
         }
       }
