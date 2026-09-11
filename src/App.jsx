@@ -3109,11 +3109,11 @@ function EmployeesPage({ ctx }) {
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
 
-  // В верхнем блоке — реальный остаток к выплате только сотрудникам со
-  // сменной/почасовой оплатой. Поэтому ставка, смена, аванс или уже выданная
-  // зарплата сразу меняют сумму соответствующей половины месяца.
+  // В верхнем блоке — реальный остаток к выплате всему активному персоналу.
+  // Для оклада это ровно половина ставки в каждую половину месяца, для сменной
+  // и почасовой оплаты — только реально проставленные смены/часы.
   const shiftPayroll = employees
-    .filter((e) => e.payType === 'shift' || e.payType === 'hour')
+    .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx))
     .reduce((totals, e) => {
       const pay = computeEmployeePay(e, month, settings);
       totals.first += pay.payout1;
@@ -3164,7 +3164,7 @@ function EmployeesPage({ ctx }) {
           <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
-        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Только сотрудники со сменной или почасовой оплатой и только проставленные смены. Авансы и выплаты ЗП уменьшают остаток сразу; оклады в этот блок не входят.</p>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Оклад делится поровну: 50% в первую и 50% во вторую половину. Для сменной и почасовой оплаты учитываются только проставленные смены; авансы и выплаты ЗП уменьшают остаток сразу.</p>
       </Card>
 
       <div className="rp-toolbar">
