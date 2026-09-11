@@ -190,7 +190,14 @@ async function categorizeExpenses(host, expensesByDay, settingsObj, employees, s
         if (!resp.ok) continue;
         const data = await resp.json();
         const report = (data.reports || [])[0];
-        if (report) results.set(date, report);
+        // Никогда не помечаем операции готовыми, если ответ ИИ не покрывает всю
+        // сумму сырого списка. Иначе одна потерянная строка становится постоянной
+        // недостачей в P&L: ключ синхронизации не даст ей повториться.
+        const rawTotal = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+        const reportTotal = [...(report?.kitchenExpenses || []), ...(report?.otherExpenses || []), ...(report?.advances || [])]
+          .reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+          + (Number(report?.courier?.pay) || 0) + (Number(report?.promo?.pay) || 0);
+        if (report && Math.abs(rawTotal - reportTotal) < 0.01) results.set(date, report);
       } catch (_) {
         // Пропускаем этот день — попытается снова в следующий запуск cron.
       }
