@@ -4723,6 +4723,18 @@ function PnLPage({ ctx }) {
     </div>
   );
 
+  // Разбивка "прочих переменных" по конкретным категориям (Маркетплейсы, Реклама,
+  // Прочее и т.д.) — раньше показывалась одной общей строкой, из-за чего не было
+  // видно, из чего она реально складывается, без клика на детализацию.
+  const otherVarByCategory = (() => {
+    const map = new Map();
+    for (const it of pnl.otherVar.items) {
+      const key = it.category || 'Без категории';
+      map.set(key, (map.get(key) || 0) + (Number(it.amount) || 0));
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+
   return (
     <div className="rp-page">
       <div className="rp-page-head"><h1>P&L</h1><div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · нажмите на строку для детализации</div></div>
@@ -4737,7 +4749,9 @@ function PnLPage({ ctx }) {
         <Row label="Поставщики (оплата)" value={pnl.supplierPay.total} indent onClick={() => setDrill('supplierPay')} />
         <Row label="Доставка (курьеры: ставка + бензин)" value={pnl.courier.total} indent onClick={() => setDrill('courier')} />
         <Row label="Эквайринг" value={pnl.acquiring.amount} indent onClick={() => setDrill('acquiring')} />
-        <Row label="Прочие переменные" value={pnl.otherVar.total} indent onClick={() => setDrill('otherVar')} />
+        {otherVarByCategory.map(([cat, val]) => (
+          <Row key={cat} label={cat} value={val} indent onClick={() => setDrill('otherVar')} />
+        ))}
         <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.acquiring.amount + pnl.otherVar.total} bold />
 
         <div className="rp-pnl-section-title">ФОТ</div>
