@@ -240,6 +240,18 @@ function splitCourierPayout(totalPay, fixedRate) {
   return { pay: Math.min(total, fixed), fuel: Math.max(0, total - fixed) };
 }
 
+// Те же "запрещённые" категории, что и на сервере (api/_lib/expense-rules.js) — не
+// импортировать напрямую нельзя, серверный модуль не собирается в браузерный бандл,
+// поэтому список продублирован (как и splitCourierPayout выше). Используется для
+// автоматического обнаружения записей, которые засинхронизировались ДО исправления
+// правил категоризации (см. autoFixBadCategories в Dashboard) — их нужно тихо
+// пересобрать в фоне, не дожидаясь ручного действия человека.
+const NON_AI_CATEGORIES_CLIENT = ['поставщики', 'постоянные (проверить)'];
+function hasBadIikoCategory(day) {
+  const check = (arr) => (arr || []).some((e) => e.source === 'iiko' && NON_AI_CATEGORIES_CLIENT.includes(String(e.category || '').trim().toLowerCase()));
+  return check(day.kitchenExpenses) || check(day.otherExpenses);
+}
+
 // Фиксированный список категорий закупок кухни/бара — тот же, что в ручном
 // редакторе категории (см. ExpenseModal ниже: 'Продукты', 'Напитки', ...). Раньше
 // ИИ-категоризация (см. api/parse-report.js) писала category свободным текстом, из-за
@@ -1579,6 +1591,78 @@ function Dashboard({ ctx, setPage }) {
   // Автозагрузка ВСЕГО месяца при открытии/смене месяца сверху — без кнопки. То же
   // самое, что раньше делали кнопки "Синхронизировать выручку"/"Синхронизировать
   // расходы", просто само по себе, при заходе на дашборд или переключении месяца.
+  // Тихое автоматическое исправление записей, которые засинхронизировались ДО того,
+  // как были исправлены правила категоризации (например, старые записи с категорией
+  // "Поставщики"/"Постоянные (проверить)" — такое не должно предлагаться ИИ, но
+  // могло попасть в данные раньше). Работает полностью в фоне, без кнопок и
+  // диалогов подтверждения — безопасно, потому что трогает только записи с
+  // source==='iiko', ручной ввод не затрагивается.
+  const autoFixBadCategoriesForMonth = async (y, mIdx) => {
+    const mk = monthKeyOf(y, mIdx);
+    const curMonth = months[mk];
+    if (!curMonth || !Object.values(curMonth.days || {}).some(hasBadIikoCategory)) return;
+
+    const from = dateStr(y, mIdx, 1);
+    const to = dateStr(y, mIdx, daysInMonth(y, mIdx));
+    const monthPrefix = `v3::${from.slice(0, 7)}`;
+
+    setMonths((prev) => {
+      const cur = prev[mk];
+      if (!cur) return prev;
+      const days = { ...cur.days };
+      for (const ds of Object.keys(days)) {
+        const day = days[ds];
+        days[ds] = {
+          ...day,
+          kitchenExpenses: (day.kitchenExpenses || []).filter((e) => e.source !== 'iiko'),
+          otherExpenses: (day.otherExpenses || []).filter((e) => e.source !== 'iiko'),
+        };
+      }
+      return { ...prev, [mk]: { ...cur, days } };
+    });
+    setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: (prev.iikoExpensesSyncedKeys || []).filter((k) => !k.startsWith(monthPrefix)) }));
+    await new Promise((r) => setTimeout(r, 200));
+
+    try {
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+      const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const expData = await expResp.json();
+      if (!expResp.ok) return;
+      const allExpenses = expData.expenses || [];
+      const byDay = new Map();
+      for (const e of allExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
+
+      await runWithConcurrency([...byDay.entries()], 5, async ([date, items]) => {
+        const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
+        const resp = await fetchWithTimeout('/api/parse-report', {
+          method: 'POST', headers: authHeaders,
+          body: JSON.stringify({
+            text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],
+            expenseCategories: settings.expenseCategories || [], fallbackDate: date, glossary: settings.reportGlossary || ''
+          })
+        }, 25000);
+        const data = await resp.json();
+        if (!resp.ok) return;
+        const report = (data.reports || [])[0];
+        if (!report) return;
+        const rmk = date.slice(0, 7);
+        const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        setMonths((prev) => {
+          const cm = prev[rmk] || emptyMonth(settings, null);
+          const day = { ...getDay(cm, date) };
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          return { ...prev, [rmk]: { ...cm, days: { ...cm.days, [date]: day } } };
+        });
+      });
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v3::${e.date}::${e.comment}::${e.amount}`)] }));
+      logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
+    } catch (e) {
+      console.error('Автоисправление устаревших категорий не удалось:', e);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setMonthChecksStats(null);
@@ -1588,7 +1672,10 @@ function Dashboard({ ctx, setPage }) {
       if (cancelled) return;
       if (!expenseSyncInFlightRef.current.has(monthKey)) {
         expenseSyncInFlightRef.current.add(monthKey);
-        try { await syncExpensesFromIikoOnDashboard(); } catch (e) { console.error('Автосинхронизация расходов при открытии месяца не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(monthKey); }
+        try {
+          await syncExpensesFromIikoOnDashboard();
+          if (!cancelled) await autoFixBadCategoriesForMonth(year, monthIdx);
+        } catch (e) { console.error('Автосинхронизация расходов при открытии месяца не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(monthKey); }
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
