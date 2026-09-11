@@ -1635,8 +1635,9 @@ function Dashboard({ ctx, setPage }) {
     const curMonth = months[mk];
     // Версия хранится по месяцам: один глобальный флаг был ошибкой — после
     // открытия сентября август мог остаться в старом, неполном состоянии.
-    // v7 сохраняет исходный комментарий iiko у каждой строки расхода.
-    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 7;
+    // v8 принудительно переписывает уже сохранённые старые строки, в которых
+    // вместо комментария iiko осталось «Из iiko (авто)».
+    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 8;
     if (!curMonth || (!needsMigration && !Object.values(curMonth.days || {}).some(hasBadIikoCategory))) return;
 
     const from = dateStr(y, mIdx, 1);
@@ -1696,8 +1697,8 @@ function Dashboard({ ctx, setPage }) {
         return { ...prev, [mk]: { ...cur, days } };
       });
       setSettings((prev) => ({ ...prev,
-        iikoExpensesSyncVersion: 7,
-        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 7 },
+        iikoExpensesSyncVersion: 8,
+        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 8 },
         iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v4::${e.date}::${e.comment}::${e.amount}`)]
       }));
       logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
