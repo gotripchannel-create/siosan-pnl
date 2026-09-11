@@ -1996,15 +1996,20 @@ function Dashboard({ ctx, setPage }) {
     // Нельзя умножать ФОТ по уже внесённым сменам: в начале месяца это всегда
     // занижает прогноз. Масштабируем только ежедневные переменные статьи; ФОТ
     // строим из окладов и обязательного состава на каждый день.
-    const scalableExpenses = pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.otherVar.total + pnl.promo.total;
+    // Накладные поставщиков приходят неравномерно, поэтому дневная экстраполяция
+    // даёт ложную цифру. Подтверждённый пользователем рабочий коридор —
+    // 500–600 тыс. ₽ в месяц; используем середину, но никогда не ниже уже
+    // внесённого факта.
+    const supplierForecast = Math.max(pnl.supplierPay.total, 550000);
+    const scalableExpenses = pnl.kitchen.total + pnl.courier.total + pnl.otherVar.total + pnl.promo.total;
     const payrollPlan = forecastPayrollFromRequiredRoster(employees, month, settings, year, monthIdx);
     const payrollForecast = payrollPlan.total;
     const projectedRevenue = (pnl.revenue / daysWithData) * pnl.nd;
     const projectedScalable = (scalableExpenses / daysWithData) * pnl.nd;
-    const projectedExpenses = projectedScalable + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
+    const projectedExpenses = projectedScalable + supplierForecast + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
     return {
       daysWithData, daysRemaining: pnl.nd - daysWithData,
-      projectedRevenue, projectedExpenses, payrollForecast, payrollPlan,
+      projectedRevenue, projectedExpenses, payrollForecast, payrollPlan, supplierForecast,
       projectedProfit: projectedRevenue - projectedExpenses,
       projectedMargin: projectedRevenue ? ((projectedRevenue - projectedExpenses) / projectedRevenue) * 100 : 0,
     };
@@ -2440,7 +2445,7 @@ function Dashboard({ ctx, setPage }) {
           {showWidget('forecast') && forecast && (
             <Card>
               <div className="rp-card-title">Прогноз на конец месяца</div>
-              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. ФОТ: оклады {fmtRub(forecast.payrollPlan.monthlySalaries)} + {forecast.payrollPlan.rolesCount} обязательные позиции × {fmtRub(forecast.payrollPlan.dailyRosterCost)} × {pnl.nd} дней = {fmtRub(forecast.payrollForecast)}.</div>
+              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. Поставщики: план 500–600 тыс. ₽, в прогнозе {fmtRub(forecast.supplierForecast)}. ФОТ: оклады {fmtRub(forecast.payrollPlan.monthlySalaries)} + {forecast.payrollPlan.rolesCount} обязательные позиции × {fmtRub(forecast.payrollPlan.dailyRosterCost)} × {pnl.nd} дней = {fmtRub(forecast.payrollForecast)}.</div>
               <div className="rp-forecast-grid">
                 <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
                 <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
