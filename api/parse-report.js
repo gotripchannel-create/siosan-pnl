@@ -223,8 +223,8 @@ function postprocess(raw, { revenueChannels, employees }) {
     revenue,
     courier: { pay: raw.courier?.pay ?? null, km: raw.courier?.km ?? null, deliveries: raw.courier?.deliveries ?? null },
     promo: { pay: raw.promo?.pay ?? null },
-    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0 })),
-    otherExpenses: (raw.otherExpenses || []).map(e => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0 })),
+    kitchenExpenses: (raw.kitchenExpenses || []).map(e => ({ category: normalizeKitchenCategory(e.category), amount: Number(e.amount) || 0, comment: e.comment || '' })),
+    otherExpenses: (raw.otherExpenses || []).map(e => ({ category: e.category || 'Прочий расход', amount: Number(e.amount) || 0, comment: e.comment || '' })),
     advances,
     rosterMatches,
     unmatchedLines: raw.unmatchedLines || [],
@@ -276,21 +276,21 @@ function parseIikoExpenseImport(text, fallbackDate, employees) {
     } else if (/\b(?:зп|аванс)\b/.test(comment) || isBareEmployeePayout) {
       const employee = namedEmployee;
       if (employee) report.advances.push({ name: employee.name, amount, employeeId: employee.id, matchedName: employee.name });
-      else report.otherExpenses.push({ category: 'Требует разнесения', amount });
+      else report.otherExpenses.push({ category: 'Требует разнесения', amount, comment });
     } else if (/озон|\bвб\b|валберис|вайлдберис|wildberr/.test(comment)) {
-      report.otherExpenses.push({ category: 'Маркетплейсы', amount });
+      report.otherExpenses.push({ category: 'Маркетплейсы', amount, comment });
     } else if (/смм|реклам|таргет|листовк|продвиж/.test(comment)) {
-      report.otherExpenses.push({ category: 'Реклама', amount });
+      report.otherExpenses.push({ category: 'Реклама', amount, comment });
     } else if (/закуп|тест|магнит|продукт|мяс|овощ|мук|сыр|молоч|напит|\bвод[аы]\b|кофе|чай/.test(comment)) {
       const category = /напит|\bвод[аы]\b|кофе|чай/.test(comment) ? 'Напитки' : 'Продукты';
-      report.kitchenExpenses.push({ category, amount });
+      report.kitchenExpenses.push({ category, amount, comment });
     } else if (/квартир/.test(comment)) {
-      report.otherExpenses.push({ category: 'Прочее', amount });
+      report.otherExpenses.push({ category: 'Прочее', amount, comment });
     } else {
       // Не называем неизвестную операцию «Прочее»: это создаёт ложное чувство,
       // что она уже понятна. Отдельная строка видна управляющему и не смешивается
       // с подтверждёнными расходами (например, квартирой).
-      report.otherExpenses.push({ category: 'Требует разнесения', amount });
+      report.otherExpenses.push({ category: 'Требует разнесения', amount, comment });
     }
   }
   return report;

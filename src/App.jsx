@@ -1532,8 +1532,8 @@ function Dashboard({ ctx, setPage }) {
           if (!isReconciledIikoReport(report, items)) { failedDays += 1; return; }
 
           const mk = date.slice(0, 7);
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           setMonths((prev) => {
             const curMonth = prev[mk] || emptyMonth(settings, null);
             const day = { ...getDay(curMonth, date) };
@@ -1635,9 +1635,8 @@ function Dashboard({ ctx, setPage }) {
     const curMonth = months[mk];
     // Версия хранится по месяцам: один глобальный флаг был ошибкой — после
     // открытия сентября август мог остаться в старом, неполном состоянии.
-    // v6 отдельно разносит выплаты сотрудникам и неизвестные операции, не
-    // позволяя им маскироваться под «Прочее».
-    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 6;
+    // v7 сохраняет исходный комментарий iiko у каждой строки расхода.
+    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 7;
     if (!curMonth || (!needsMigration && !Object.values(curMonth.days || {}).some(hasBadIikoCategory))) return;
 
     const from = dateStr(y, mIdx, 1);
@@ -1687,8 +1686,8 @@ function Dashboard({ ctx, setPage }) {
         const days = { ...cur.days };
         for (const [date, report] of rebuiltByDate.entries()) {
           const day = { ...getDay(cur, date) };
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           days[date] = { ...day,
             kitchenExpenses: [...(day.kitchenExpenses || []).filter((e) => e.source !== 'iiko'), ...newKitchen],
             otherExpenses: [...(day.otherExpenses || []).filter((e) => e.source !== 'iiko'), ...newOther]
@@ -1697,8 +1696,8 @@ function Dashboard({ ctx, setPage }) {
         return { ...prev, [mk]: { ...cur, days } };
       });
       setSettings((prev) => ({ ...prev,
-        iikoExpensesSyncVersion: 6,
-        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 6 },
+        iikoExpensesSyncVersion: 7,
+        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 7 },
         iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v4::${e.date}::${e.comment}::${e.amount}`)]
       }));
       logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
@@ -2400,8 +2399,8 @@ function Dashboard({ ctx, setPage }) {
 
       {viewMode === 'month' && showWidget('expenseStructure') && (
         <Card style={{marginBottom:16}}>
-          <div className="rp-card-title">Структура расходов</div>
-          <ExpenseBreakdownTable pnl={pnl} />
+          <div className="rp-card-title">Месячный P&L</div>
+          <PnLPage ctx={ctx} embedded />
         </Card>
       )}
 
@@ -4867,8 +4866,8 @@ function PnLPage({ ctx }) {
         const report = (data.reports || [])[0];
         if (!report) return;
         const mk = date.slice(0, 7);
-        const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-        const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
         setMonths((prev) => {
           const curMonth = prev[mk] || emptyMonth(settings, null);
           const day = { ...getDay(curMonth, date) };
@@ -6481,8 +6480,8 @@ function IncomingReportsPage({ ctx }) {
           const mk = report.date.slice(0, 7);
           const curMonth = next[mk] || emptyMonth(settings, null);
           const day = { ...getDay(curMonth, report.date) };
-          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
-          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+          const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
           const dedupedKitchen = dedupeAgainstExisting(day.kitchenExpenses, newKitchen);
           const dedupedOther = dedupeAgainstExisting(day.otherExpenses, newOther);
           day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupedKitchen];
