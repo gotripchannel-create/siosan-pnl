@@ -4666,12 +4666,97 @@ function AiChatWidget({ ctx }) {
 /* ============================== P&L ============================== */
 
 function PnLPage({ ctx }) {
-  const { pnl, year, monthIdx, month, updateMonth, logAudit } = ctx;
+  const { pnl, year, monthIdx, month, updateMonth, logAudit, settings, setSettings, setMonths, employees, session } = ctx;
   const [drill, setDrill] = useState(null);
   const [newName, setNewName] = useState('');
   const [newAmount, setNewAmount] = useState('');
   const [newGroup, setNewGroup] = useState('fixed');
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState('');
   const locked = month.closed;
+
+  // Пересобрать расходы этого месяца заново через ИИ-категоризацию — нужно, если
+  // часть данных синхронизировалась ДО исправления категорий (например, раньше
+  // ИИ мог по ошибке присвоить "Поставщики"/"Постоянные (проверить)" изъятию
+  // наличными). Сама по себе синхронизация не переразбирает уже обработанное —
+  // поэтому здесь: 1) убираем старые iiko-записи расходов этого месяца, 2) чистим
+  // отметки "уже обработано" для дат этого месяца, 3) запускаем синхронизацию
+  // заново — она подтянет те же операции из iiko, но уже по исправленным правилам.
+  const resyncMonthExpenses = async () => {
+    if (!window.confirm(`Пересобрать все автоматические расходы за ${MONTHS_RU[monthIdx]} ${year}? Записи с пометкой «Из iiko (авто)» будут удалены и подтянуты заново с исправленной категоризацией. Расходы, добавленные вручную, не тронутся.`)) return;
+    setResyncing(true); setResyncMsg('');
+    try {
+      const from = dateStr(year, monthIdx, 1);
+      const to = dateStr(year, monthIdx, daysInMonth(year, monthIdx));
+      const monthPrefix = `v3::${dateStr(year, monthIdx, 1).slice(0, 7)}`;
+
+      let removedCount = 0;
+      setMonths((prev) => {
+        const mk = monthKeyOf(year, monthIdx);
+        const curMonth = prev[mk];
+        if (!curMonth) return prev;
+        const days = { ...curMonth.days };
+        for (const ds of Object.keys(days)) {
+          const day = days[ds];
+          const kBefore = (day.kitchenExpenses || []).length;
+          const oBefore = (day.otherExpenses || []).length;
+          const newKitchen = (day.kitchenExpenses || []).filter((e) => e.source !== 'iiko');
+          const newOther = (day.otherExpenses || []).filter((e) => e.source !== 'iiko');
+          removedCount += (kBefore - newKitchen.length) + (oBefore - newOther.length);
+          days[ds] = { ...day, kitchenExpenses: newKitchen, otherExpenses: newOther };
+        }
+        return { ...prev, [mk]: { ...curMonth, days } };
+      });
+
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: (prev.iikoExpensesSyncedKeys || []).filter((k) => !k.startsWith(monthPrefix)) }));
+
+      // Небольшая пауза, чтобы состояние гарантированно обновилось перед новым запросом.
+      await new Promise((r) => setTimeout(r, 200));
+
+      const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+      const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const expData = await expResp.json();
+      if (!expResp.ok) { setResyncMsg(`Ошибка: ${expData?.error || 'не удалось получить данные из iiko'}`); return; }
+
+      const allExpenses = expData.expenses || [];
+      const byDay = new Map();
+      for (const e of allExpenses) { if (!byDay.has(e.date)) byDay.set(e.date, []); byDay.get(e.date).push(e); }
+
+      let addedCount = 0;
+      await runWithConcurrency([...byDay.entries()], 5, async ([date, items]) => {
+        const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
+        const resp = await fetchWithTimeout('/api/parse-report', {
+          method: 'POST', headers: authHeaders,
+          body: JSON.stringify({
+            text: syntheticText, revenueChannels: settings.revenueChannels || [], employees: employees || [],
+            expenseCategories: settings.expenseCategories || [], fallbackDate: date, glossary: settings.reportGlossary || ''
+          })
+        }, 25000);
+        const data = await resp.json();
+        if (!resp.ok) return;
+        const report = (data.reports || [])[0];
+        if (!report) return;
+        const mk = date.slice(0, 7);
+        const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        const newOther = (report.otherExpenses || []).map((e) => ({ id: uid(), category: e.category, amount: e.amount, comment: 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
+        setMonths((prev) => {
+          const curMonth = prev[mk] || emptyMonth(settings, null);
+          const day = { ...getDay(curMonth, date) };
+          day.kitchenExpenses = [...(day.kitchenExpenses || []), ...newKitchen];
+          day.otherExpenses = [...(day.otherExpenses || []), ...newOther];
+          return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [date]: day } } };
+        });
+        addedCount += newKitchen.length + newOther.length;
+      });
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v3::${e.date}::${e.comment}::${e.amount}`)] }));
+      logAudit({ what: `Пересобраны автоматические расходы за ${MONTHS_RU[monthIdx]} ${year}`, amount: addedCount });
+      setResyncMsg(`Готово: удалено ${removedCount} старых записей, добавлено ${addedCount} новых с исправленной категоризацией.`);
+    } catch (e) {
+      setResyncMsg(`Ошибка: ${e?.message || 'не удалось связаться с сервером'}`);
+    } finally {
+      setResyncing(false);
+    }
+  };
 
   const Row = ({ label, value, pctOf = pnl.revenue, bold, onClick, indent }) => (
     <div className={`rp-pnl-row ${bold ? 'bold' : ''} ${onClick ? 'rp-clickable' : ''}`} style={indent ? { paddingLeft: 20 } : {}} onClick={onClick}>
@@ -4720,7 +4805,15 @@ function PnLPage({ ctx }) {
 
   return (
     <div className="rp-page">
-      <div className="rp-page-head"><h1>P&L</h1><div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · нажмите на строку для детализации</div></div>
+      <div className="rp-page-head-row">
+        <div className="rp-page-head"><h1>P&L</h1><div className="rp-page-sub">{MONTHS_RU[monthIdx]} {year} · нажмите на строку для детализации</div></div>
+        {!locked && (
+          <button className="rp-btn rp-btn-ghost rp-btn-sm" onClick={resyncMonthExpenses} disabled={resyncing} title="Удалить автоматические расходы этого месяца и подтянуть их заново из iiko с исправленной категоризацией">
+            <RefreshCw size={13} className={resyncing ? 'rp-spin' : ''}/> {resyncing ? 'Пересобираю…' : 'Пересобрать авторасходы месяца'}
+          </button>
+        )}
+      </div>
+      {resyncMsg && <div className="rp-cash-check" style={{marginBottom:16}}><Info size={13}/> {resyncMsg}</div>}
 
       <Card>
         <div className="rp-pnl-section-title">Выручка</div>
