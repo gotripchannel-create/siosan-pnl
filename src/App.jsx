@@ -2532,18 +2532,6 @@ function DayEntry({ ctx }) {
   const { month, updateMonth, settings, year, monthIdx, selectedDate, setSelectedDate, logAudit } = ctx;
   const nd = daysInMonth(year, monthIdx);
 
-  // Итоги выплат считаем только по фактически проставленным сменам. Оклады,
-  // авансы и ручные корректировки намеренно не смешиваются с этим оперативным
-  // планом выплат за 1–15 и 16–конец месяца.
-  const shiftPayroll = employees
-    .filter((e) => e.payType === 'shift' || e.payType === 'hour')
-    .reduce((totals, e) => {
-      const pay = computeEmployeePay(e, month, settings);
-      totals.first += pay.base1;
-      totals.second += pay.base2;
-      return totals;
-    }, { first: 0, second: 0 });
-  shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
   const day = getDay(month, selectedDate);
   const dayClosed = !!day.closed;
   const monthClosed = month.closed;
@@ -3099,6 +3087,18 @@ function EmployeesPage({ ctx }) {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [search, setSearch] = useState('');
   const nd = daysInMonth(year, monthIdx);
+
+  // Итоги выплат считаем только по фактически проставленным сменам. Оклады,
+  // авансы и ручные корректировки не смешиваются с этим оперативным планом.
+  const shiftPayroll = employees
+    .filter((e) => e.payType === 'shift' || e.payType === 'hour')
+    .reduce((totals, e) => {
+      const pay = computeEmployeePay(e, month, settings);
+      totals.first += pay.base1;
+      totals.second += pay.base2;
+      return totals;
+    }, { first: 0, second: 0 });
+  shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
 
   // Разовая подтверждённая корректировка смены: 09.09.2026 работали Вика,
   // Лёша, Орхан и тётя Оля. Записываем стандартную смену каждому, не трогая
