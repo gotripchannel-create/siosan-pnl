@@ -77,3 +77,22 @@ export function isNoiseComment(comment) {
   const c = String(comment || '').trim().toLowerCase();
   return c === 'дб' || c === 'бк' || c === 'ошибка' || c.startsWith('закрытие кассовой смены');
 }
+
+// Категории, которые НИКОГДА не должны предлагаться ИИ для категоризации изъятий
+// наличными (kitchenExpenses/otherExpenses) — они существуют в общем списке
+// settings.expenseCategories для ДРУГИХ целей и означают там что-то другое:
+// "Поставщики" — это отдельная система накладных (см. страница "Поставщики"), не
+// изъятие наличными; "Постоянные (проверить)" — служебная категория для статей
+// фиксированных расходов, а не для разовых покупок из кассы. Если их не исключить,
+// ИИ иногда путает изъятие наличными ("закуп магнит") с этими категориями, и в
+// отчётах появляются нелогичные строки вроде "Поставщики 11 096 ₽" внутри "Прочих
+// переменных расходов", хотя реальные поставщики уже учтены отдельной строкой.
+export const NON_AI_CATEGORIES = ['поставщики', 'постоянные (проверить)'];
+
+export function filterAiCategories(categories, fixedExpenseNames = []) {
+  const fixedLower = new Set((fixedExpenseNames || []).map((n) => String(n).trim().toLowerCase()));
+  return (categories || []).filter((c) => {
+    const lower = String(c).trim().toLowerCase();
+    return !NON_AI_CATEGORIES.includes(lower) && !fixedLower.has(lower);
+  });
+}

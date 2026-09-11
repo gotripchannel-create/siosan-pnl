@@ -8,7 +8,7 @@
 export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
-import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+import { KITCHEN_CATEGORIES, normalizeKitchenCategory, filterAiCategories } from './_lib/expense-rules.js';
 import { timingSafeStringEqual } from './_lib/security.js';
 
 const MODEL = 'claude-haiku-4-5-20251001'; // быстрый и дешёвый, достаточно для извлечения полей из текста
@@ -31,6 +31,8 @@ const DEFAULT_GLOSSARY = `- «ДБ» или «Касса фактически» 
 - «озон», «вб», «валберис», «вайлдберис» (и опечатки этих слов) — покупка на маркетплейсе Ozon или Wildberries. Кладётся в otherExpenses с категорией «Маркетплейсы», даже если не ясно, что именно куплено — не пытайся угадать другую категорию для таких строк.
 - «смм», «реклама», «таргет», «раздача листовок», «листовки» — расходы на рекламу/продвижение. Категория otherExpenses = «Реклама».
 - Если комментарий явно не про кухню/расходники и не подходит ни под одну известную категорию ниже (например «квартира», аренда жилья и подобное) — категория otherExpenses = «Прочее», не выдумывай новую категорию.
+- Если среди известных категорий есть одновременно похожие по смыслу варианты (например «Хозтовары» и «Расходники», или «Хозтовары» и «Лампочки», или «Канцелярия» и «Печать») — это старые дублирующие друг друга категории, всегда выбирай более общую («Хозтовары» вместо «Расходники»/«Лампочки», «Канцелярия» вместо «Печать»), не плоди похожие категории с разными названиями для одного и того же смысла.
+- НИКОГДА не используй категории «Поставщики» или «Постоянные (проверить)» для kitchenExpenses/otherExpenses, даже если они есть в списке известных категорий — это категории для других систем учёта (накладные поставщиков и фиксированные ежемесячные платежи), не для разовых изъятий наличными.
 - В конце отчёта иногда встречается список имён без сумм (например «Вика Леша Рома теть Оля») — это roster (кто работал в смену), не advances.`;
 
 const REPORT_ITEM_SCHEMA = {
@@ -122,7 +124,7 @@ const TOOL_SCHEMA = {
 function buildSystemPrompt({ revenueChannels, employees, expenseCategories, suppliers, fixedExpenseNames, fallbackDate, glossary }) {
   const channelsList = revenueChannels.map(c => `- id="${c.id}" name="${c.name}"`).join('\n') || '(нет настроенных каналов)';
   const employeesList = employees.map(e => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
-  const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
+  const categoriesList = filterAiCategories(expenseCategories, fixedExpenseNames).join(', ') || '(не заданы)';
   const suppliersList = (suppliers || []).join(', ') || '(не заданы)';
   const fixedNamesList = (fixedExpenseNames || []).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');

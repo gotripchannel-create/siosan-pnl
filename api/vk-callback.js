@@ -19,7 +19,7 @@ export const config = { runtime: 'nodejs' };
 export const maxDuration = 60;
 
 import { timingSafeStringEqual } from './_lib/security.js';
-import { KITCHEN_CATEGORIES, normalizeKitchenCategory } from './_lib/expense-rules.js';
+import { KITCHEN_CATEGORIES, normalizeKitchenCategory, filterAiCategories } from './_lib/expense-rules.js';
 
 const RESTAURANT_ID = 'siosan';
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -64,7 +64,7 @@ const TOOL_SCHEMA = {
 function buildSystemPrompt({ revenueChannels, employees, expenseCategories, fallbackDate, glossary }) {
   const channelsList = revenueChannels.map((c) => `- id="${c.id}" name="${c.name}"`).join('\n') || '(нет настроенных каналов)';
   const employeesList = employees.map((e) => `- id="${e.id}" name="${e.name}"`).join('\n') || '(нет сотрудников)';
-  const categoriesList = (expenseCategories || []).join(', ') || '(не заданы)';
+  const categoriesList = filterAiCategories(expenseCategories).join(', ') || '(не заданы)';
   const fullGlossary = [DEFAULT_GLOSSARY, glossary].filter(Boolean).join('\n');
   const kitchenCategoriesList = KITCHEN_CATEGORIES.join(', ');
   return `Ты разбираешь ОДНО сообщение из рабочего чата ВК кафе. Найди в нём финансовый отчёт (обычно есть «наличные», «карта» и «итого выручка» с числами) и верни его через submit_parsed_reports. Если это не отчёт (обычная переписка, вопрос, приветствие) — верни пустой массив reports, ничего не выдумывай.
