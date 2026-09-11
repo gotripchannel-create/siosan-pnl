@@ -495,6 +495,29 @@ function monthPayroll(employees, month, settings, y, mIdx) {
   return { rows, totalFot, reportedHalves };
 }
 
+// Плановый ФОТ для прогноза: оклады берём за полный месяц, а обязательный
+// состав смены — по одной ставке на каждый день. Не используем случайное число
+// уже внесённых смен: для ресторана это дало бы заниженный прогноз в начале месяца.
+function forecastPayrollFromRequiredRoster(employees, month, settings, y, mIdx) {
+  const active = employees.filter((e) => isEmployeeActiveInMonth(e, y, mIdx));
+  const monthlySalaries = active.filter((e) => e.payType === 'oklad').reduce((sum, e) => sum + (Number(e.rate) || 0), 0);
+  const roleMatchers = [ /суш/i, /повар/i, /официант/i, /убор/i ];
+  const shiftCostFor = (e) => {
+    if (e.payType === 'hour') return (Number(e.rate) || 0) * (Number(e.standardShift) || Number(settings.standardShiftHours) || 13);
+    return Number(e.rate) || 0;
+  };
+  const shifts = month.shifts || {};
+  const workedHours = (e) => Object.values(shifts[e.id] || {}).reduce((sum, h) => sum + (Number(h) || 0), 0);
+  const roster = roleMatchers.map((matcher) => {
+    const candidates = active.filter((e) => e.payType !== 'oklad' && matcher.test(String(e.position || '')));
+    // Если сотрудников на одной позиции несколько, выбираем того, кто чаще
+    // работал в этом месяце; при равенстве — более низкую ставку как базовый план.
+    return candidates.sort((a, b) => workedHours(b) - workedHours(a) || shiftCostFor(a) - shiftCostFor(b))[0] || null;
+  }).filter(Boolean);
+  const dailyRosterCost = roster.reduce((sum, e) => sum + shiftCostFor(e), 0);
+  return { monthlySalaries, dailyRosterCost, total: monthlySalaries + dailyRosterCost * daysInMonth(y, mIdx), rolesCount: roster.length };
+}
+
 function allMonthKeysUpTo(monthsObj, y, mIdx) {
   const target = monthKeyOf(y, mIdx);
   return Object.keys(monthsObj).filter((k) => k <= target).sort();
@@ -1970,21 +1993,22 @@ function Dashboard({ ctx, setPage }) {
   const daysWithData = dailySeries.filter(d => d['Выручка'] > 0 || d['Расходы'] > 0).length;
   const forecast = useMemo(() => {
     if (daysWithData === 0 || daysWithData >= pnl.nd) return null;
-    // Нельзя умножать ФОТ на число дней: авансы, оклады и выплаты происходят
-    // неравномерно. Масштабируем только ежедневные переменные статьи, а ФОТ
-    // берём один раз — весь уже известный расчёт по сотрудникам на месяц.
+    // Нельзя умножать ФОТ по уже внесённым сменам: в начале месяца это всегда
+    // занижает прогноз. Масштабируем только ежедневные переменные статьи; ФОТ
+    // строим из окладов и обязательного состава на каждый день.
     const scalableExpenses = pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.otherVar.total + pnl.promo.total;
-    const payrollForecast = pnl.payroll.rows.reduce((sum, row) => sum + Math.max(0, Number(row.payout) || 0), 0);
+    const payrollPlan = forecastPayrollFromRequiredRoster(employees, month, settings, year, monthIdx);
+    const payrollForecast = payrollPlan.total;
     const projectedRevenue = (pnl.revenue / daysWithData) * pnl.nd;
     const projectedScalable = (scalableExpenses / daysWithData) * pnl.nd;
     const projectedExpenses = projectedScalable + payrollForecast + pnl.fixedTotal + pnl.fotTaxTotal;
     return {
       daysWithData, daysRemaining: pnl.nd - daysWithData,
-      projectedRevenue, projectedExpenses, payrollForecast,
+      projectedRevenue, projectedExpenses, payrollForecast, payrollPlan,
       projectedProfit: projectedRevenue - projectedExpenses,
       projectedMargin: projectedRevenue ? ((projectedRevenue - projectedExpenses) / projectedRevenue) * 100 : 0,
     };
-  }, [pnl, daysWithData]);
+  }, [pnl, daysWithData, employees, month, settings, year, monthIdx]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2416,7 +2440,7 @@ function Dashboard({ ctx, setPage }) {
           {showWidget('forecast') && forecast && (
             <Card>
               <div className="rp-card-title">Прогноз на конец месяца</div>
-              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. Выручка и переменные расходы экстраполируются; ФОТ {fmtRub(forecast.payrollForecast)} и постоянные расходы добавляются один раз.</div>
+              <div className="rp-muted" style={{marginBottom:12}}>По {forecast.daysWithData} дням с данными · осталось {forecast.daysRemaining} дн. ФОТ: оклады {fmtRub(forecast.payrollPlan.monthlySalaries)} + {forecast.payrollPlan.rolesCount} обязательные позиции × {fmtRub(forecast.payrollPlan.dailyRosterCost)} × {pnl.nd} дней = {fmtRub(forecast.payrollForecast)}.</div>
               <div className="rp-forecast-grid">
                 <div><div className="rp-forecast-label">Выручка</div><div className="rp-forecast-value">{fmtRub(forecast.projectedRevenue)}</div></div>
                 <div><div className="rp-forecast-label">Расходы</div><div className="rp-forecast-value">{fmtRub(forecast.projectedExpenses)}</div></div>
