@@ -594,7 +594,11 @@ function computePnL(data, y, mIdx) {
   const revenue = Object.values(revByChannel).reduce((s, v) => s + v, 0);
 
   const kitchen = monthKitchenExpenseTotal(month, y, mIdx);
-  const otherVar = monthOtherExpenseTotal(month, y, mIdx);
+  const allOtherVar = monthOtherExpenseTotal(month, y, mIdx);
+  // Неизвестная операция — это сигнал для проверки, а не подтверждённый расход.
+  // Она хранится в данных, но не искажает P&L, пока не будет разнесена.
+  const unallocated = { total: allOtherVar.items.filter((e) => e.category === 'Требует разнесения').reduce((s, e) => s + (Number(e.amount) || 0), 0), items: allOtherVar.items.filter((e) => e.category === 'Требует разнесения') };
+  const otherVar = { total: allOtherVar.total - unallocated.total, items: allOtherVar.items.filter((e) => e.category !== 'Требует разнесения') };
   const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7, settings.courierFixedRate || 2500);
   const promo = monthPromoTotal(month, y, mIdx);
   // В месячном отчёте «Поставщики» — это стоимость полученных накладных,
@@ -630,7 +634,7 @@ function computePnL(data, y, mIdx) {
   return {
     y, mIdx, key, nd, month,
     revenue, revByChannel,
-    kitchen, otherVar, courier, promo, supplierPay, supplierOrd, acquiring, payroll,
+    kitchen, otherVar, unallocated, courier, promo, supplierPay, supplierOrd, acquiring, payroll,
     fixedItems, fotTaxItems, otherFixed, fixedTotal, fotTaxTotal,
     variableTotal, fotTotal, totalExpenses, profit, margin,
     foodCostPct: revenue ? ((kitchen.total + supplierPay.total) / revenue) * 100 : 0,
@@ -2516,6 +2520,7 @@ function ExpenseBreakdownTable({ pnl }) {
           </tr>
         ))}
         <tr className="rp-total-row"><td>Итого расходов</td><td className="rp-num">{fmtRub(pnl.totalExpenses)}</td><td /></tr>
+        {pnl.unallocated.total > 0 && <tr style={{color:'var(--ink-2)'}}><td>Не включено в P&L: операции без категории</td><td className="rp-num">{fmtRub(pnl.unallocated.total)}</td><td className="rp-num">Требует проверки</td></tr>}
       </tbody>
     </table></div>
   );
