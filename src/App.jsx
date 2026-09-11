@@ -80,6 +80,8 @@ function defaultSettings() {
     fixedExpenses: [
       { id: uid(), name: 'Аренда', amount: 84000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
       { id: uid(), name: 'Коммунальные платежи', amount: 60000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
+      { id: uid(), name: 'Бухгалтер', amount: 35000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
+      { id: uid(), name: 'ИП (налоги/взносы)', amount: 10000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
       { id: uid(), name: 'Кофе-машина', amount: 12000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
       { id: uid(), name: 'iiko', amount: 8750, group: 'fixed', paymentMethod: 'cashless', recurring: true },
       { id: uid(), name: 'Охрана', amount: 2000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
@@ -2368,24 +2370,42 @@ function supplierDebtTotal(ctx) {
 }
 
 function ExpenseBreakdownTable({ pnl }) {
+  // Группируем "прочие переменные" и "постоянные" по конкретным категориям/названиям —
+  // раньше всё сваливалось в одну строку каждая, теперь видно Маркетплейсы/Рекламу/
+  // Прочее и каждую статью постоянных расходов (Аренда, Коммунальные и т.д.) отдельно.
+  const groupBy = (items, keyFn) => {
+    const map = new Map();
+    for (const it of items) {
+      const key = keyFn(it) || 'Без категории';
+      map.set(key, (map.get(key) || 0) + (Number(it.amount) || 0));
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  };
+
+  const otherByCategory = groupBy(pnl.otherVar.items, (e) => e.category);
+  const fixedByName = groupBy([...pnl.fixedItems, ...pnl.otherFixed], (e) => e.name);
+
   const rows = [
-    ['Закупки кухня/бар (нал)', pnl.kitchen.total],
-    ['Поставщики — оплачено', pnl.supplierPay.total],
-    ['Курьеры — ставка', pnl.courier.pay],
-    ['Курьеры — бензин', pnl.courier.fuelTotal],
+    ['Продукты (кухня/бар, наличные)', pnl.kitchen.total],
+    ['Поставщики (накладные)', pnl.supplierPay.total],
+    ['Курьер (ставка + бензин)', pnl.courier.total],
     ['Промо', pnl.promo.total],
     ['Эквайринг', pnl.acquiring.amount],
-    ['Прочие переменные', pnl.otherVar.total],
-    ['ФОТ (начислено)', pnl.payroll.totalFot],
+    ...otherByCategory.map(([name, val]) => [name, val, true]),
+    ['Зарплата сотрудников', pnl.payroll.totalFot],
     ['Налоги на сотрудников', pnl.fotTaxTotal],
-    ['Постоянные расходы', pnl.fixedTotal],
+    ...fixedByName.map(([name, val]) => [name, val, true]),
   ];
   return (
     <div className="rp-table-wrap"><table className="rp-table">
       <thead><tr><th>Статья</th><th>Сумма</th><th>% от расходов</th></tr></thead>
       <tbody>
-        {rows.map(([name, val]) => (
-          <tr key={name}><td>{name}</td><td className="rp-num">{fmtRub(val)}</td><td className="rp-num">{fmtPct(pnl.totalExpenses ? (val / pnl.totalExpenses) * 100 : 0)}</td></tr>
+        {rows.map(([name, val, isSubItem], i) => (
+          <tr key={`${name}-${i}`} style={isSubItem ? { color: 'var(--ink-2)' } : {}}>
+            <td>{isSubItem && '— '}{name}</td>
+            <td className="rp-num">{fmtRub(val)}</td>
+            <td className="rp-num">{fmtPct(pnl.totalExpenses ? (val / pnl.totalExpenses) * 100 : 0)}</td>
+          </tr>
         ))}
         <tr className="rp-total-row"><td>Итого расходов</td><td className="rp-num">{fmtRub(pnl.totalExpenses)}</td><td /></tr>
       </tbody>
