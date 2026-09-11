@@ -597,22 +597,32 @@ function computePnL(data, y, mIdx) {
   const otherVar = monthOtherExpenseTotal(month, y, mIdx);
   const courier = monthCourierStats(month, y, mIdx, settings.courierFuelRatePerKm || 7, settings.courierFixedRate || 2500);
   const promo = monthPromoTotal(month, y, mIdx);
-  const supplierPay = monthSupplierPaymentsTotal(month, suppliers);
+  // В месячном отчёте «Поставщики» — это стоимость полученных накладных,
+  // а не отдельный журнал оплат. Оплата может попасть в иной месяц и нужна
+  // для взаиморасчётов, но не должна обнулять себестоимость августа.
+  const supplierPay = monthSupplierOrdersTotal(month, suppliers);
   const supplierOrd = monthSupplierOrdersTotal(month, suppliers);
   const acquiring = computeAcquiring(month, settings, y, mIdx);
   const payroll = monthPayroll(employees, month, settings, y, mIdx);
 
-  const fixedItems = (month.monthExpenses || []).filter((f) => f.group === 'fixed');
-  const fotTaxItems = (month.monthExpenses || []).filter((f) => f.group === 'fot_tax');
-  const otherFixed = (month.monthExpenses || []).filter((f) => !['fixed', 'fot_tax'].includes(f.group));
+  // Постоянные статьи — единый справочник в «Настройках». Раньше в каждом
+  // месяце хранилась старая копия, поэтому изменение коммунальных/аренды в
+  // настройках не доходило до месячного отчёта.
+  const recurringFixed = (settings.fixedExpenses || []).filter((f) => f.recurring);
+  const fixedItems = recurringFixed.filter((f) => f.group === 'fixed');
+  const fotTaxItems = recurringFixed.filter((f) => f.group === 'fot_tax');
+  const otherFixed = recurringFixed.filter((f) => !['fixed', 'fot_tax'].includes(f.group));
 
   const fixedTotal = fixedItems.reduce((s, f) => s + (Number(f.amount) || 0), 0) + otherFixed.reduce((s, f) => s + (Number(f.amount) || 0), 0);
   const fotTaxTotal = fotTaxItems.reduce((s, f) => s + (Number(f.amount) || 0), 0);
 
-  const variableTotal = kitchen.total + supplierPay.total + courier.total + acquiring.amount + otherVar.total;
-  const fotTotal = payroll.totalFot + courier.pay + promo.total + fotTaxTotal;
-  const totalExpenses = kitchen.total + supplierPay.total + acquiring.amount + otherVar.total
-    + payroll.totalFot + courier.total + promo.total + fotTaxTotal + fixedTotal;
+  // В основной месячный отчёт входят только утверждённые операционные статьи.
+  // Эквайринг и налоги остаются доступными для аналитики, но не смешиваются с
+  // расходами ресторана, которые пользователь сверяет по утверждённой структуре.
+  const variableTotal = kitchen.total + supplierPay.total + courier.total + otherVar.total;
+  const fotTotal = payroll.totalFot + courier.pay + promo.total;
+  const totalExpenses = kitchen.total + supplierPay.total + otherVar.total
+    + payroll.totalFot + courier.total + promo.total + fixedTotal;
 
   const profit = revenue - totalExpenses;
   const margin = revenue ? (profit / revenue) * 100 : 0;
@@ -2488,10 +2498,8 @@ function ExpenseBreakdownTable({ pnl }) {
     ['Поставщики (накладные)', pnl.supplierPay.total],
     ['Курьер (ставка + бензин)', pnl.courier.total],
     ['Промо', pnl.promo.total],
-    ['Эквайринг', pnl.acquiring.amount],
     ...otherByCategory.map(([name, val]) => [name, val, true]),
     ['Зарплата сотрудников', pnl.payroll.totalFot],
-    ['Налоги на сотрудников', pnl.fotTaxTotal],
     ...fixedByName.map(([name, val]) => [name, val, true]),
   ];
   return (
@@ -4937,39 +4945,28 @@ function PnLPage({ ctx }) {
 
         <div className="rp-pnl-section-title">Переменные расходы</div>
         <Row label="Закупки кухня/бар (нал)" value={pnl.kitchen.total} indent onClick={() => setDrill('kitchen')} />
-        <Row label="Поставщики (оплата)" value={pnl.supplierPay.total} indent onClick={() => setDrill('supplierPay')} />
+        <Row label="Поставщики (накладные)" value={pnl.supplierPay.total} indent onClick={() => setDrill('supplierPay')} />
         <Row label="Доставка (курьеры: ставка + бензин)" value={pnl.courier.total} indent onClick={() => setDrill('courier')} />
-        <Row label="Эквайринг" value={pnl.acquiring.amount} indent onClick={() => setDrill('acquiring')} />
         {otherVarByCategory.map(([cat, val]) => (
           <Row key={cat} label={cat} value={val} indent onClick={() => setDrill('otherVar')} />
         ))}
-        <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.acquiring.amount + pnl.otherVar.total} bold />
+        <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.otherVar.total} bold />
 
         <div className="rp-pnl-section-title">ФОТ</div>
         <Row label="Основной ФОТ" value={pnl.payroll.totalFot} indent onClick={() => setDrill('payroll')} />
         <Row label="Курьеры (ставка, справочно)" value={pnl.courier.pay} indent />
         <Row label="Промо" value={pnl.promo.total} indent onClick={() => setDrill('promo')} />
-        <Row label="Налоги на сотрудников" value={pnl.fotTaxTotal} indent />
-        <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total + pnl.fotTaxTotal} bold />
+        <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total} bold />
         <p className="rp-muted" style={{ fontSize: 11, marginTop: 4, paddingLeft: 20 }}>
           «Курьеры (ставка, справочно)» и «Промо» здесь показаны ещё раз для расчёта доли ФОТ от выручки — в общую сумму расходов они уже включены один раз, строкой выше в «Переменных расходах». Этот блок сам по себе в прибыль не вычитается второй раз.
         </p>
 
 
-        <div className="rp-pnl-section-title">Постоянные расходы {locked && <span className="rp-muted-sm">(месяц закрыт — только просмотр)</span>}</div>
-        {pnl.fixedItems.map(EditableFixedRow)}
-        {pnl.otherFixed.map(EditableFixedRow)}
+        <div className="rp-pnl-section-title">Постоянные расходы</div>
+        {[...pnl.fixedItems, ...pnl.otherFixed].map((f) => <Row key={f.id} label={f.name} value={f.amount} indent />)}
         <Row label="Итого постоянные" value={pnl.fixedTotal} bold />
-        {!locked && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingLeft: 20, marginTop: 8, flexWrap: 'wrap' }}>
-            <input className="rp-inline-input" placeholder="Название статьи" value={newName} onChange={e => setNewName(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
-            <input className="rp-inline-input rp-num" type="number" placeholder="Сумма" value={newAmount} onChange={e => setNewAmount(e.target.value)} style={{ width: 100 }} />
-            <select value={newGroup} onChange={e => setNewGroup(e.target.value)}><option value="fixed">Постоянный</option><option value="fot_tax">Налог на ФОТ</option></select>
-            <button className="rp-btn rp-btn-sm" onClick={addExpenseItem}><Plus size={13} /> Добавить в этот месяц</button>
-          </div>
-        )}
         <p className="rp-muted" style={{ fontSize: 11, marginTop: 8, paddingLeft: 20 }}>
-          Изменения здесь касаются только {MONTHS_RU[monthIdx].toLowerCase()}а {year}. Следующий месяц, когда будет создан, унаследует этот же список — если статья больше не нужна нигде, уберите её и в «Настройки → Постоянные статьи», чтобы она не попала и в будущие месяцы.
+          Значения берутся из «Настройки → Постоянные статьи». Измените сумму там — она сразу обновится во всех месячных отчётах.
         </p>
 
         <div className="rp-pnl-divider" />
@@ -4998,7 +4995,7 @@ function DrillModal({ kind, pnl, onClose }) {
   const configs = {
     kitchen: { title: 'Закупки кухня/бар — детализация', items: pnl.kitchen.items, cols: ['date', 'category', 'amount', 'comment'] },
     otherVar: { title: 'Прочие переменные расходы', items: pnl.otherVar.items, cols: ['date', 'category', 'amount', 'comment'] },
-    supplierPay: { title: 'Оплаты поставщикам', items: pnl.supplierPay.items, cols: ['date', 'supplierName', 'amount', 'comment'] },
+    supplierPay: { title: 'Накладные поставщиков', items: pnl.supplierPay.items, cols: ['date', 'supplierName', 'amount', 'comment'] },
     courier: { title: 'Курьеры по дням', items: pnl.courier.items, cols: ['date', 'deliveries', 'pay', 'km', 'fuel'] },
     promo: { title: 'Промо по дням', items: pnl.promo.items, cols: ['date', 'pay', 'comment'] },
     acquiring: { title: 'Эквайринг', items: null },
