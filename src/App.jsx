@@ -628,8 +628,10 @@ function computePnL(data, y, mIdx) {
   // В основной месячный отчёт входят только утверждённые операционные статьи.
   // Эквайринг и налоги остаются доступными для аналитики, но не смешиваются с
   // расходами ресторана, которые пользователь сверяет по утверждённой структуре.
-  const variableTotal = kitchen.total + supplierPay.total + courier.total + otherVar.total;
-  const fotTotal = payroll.totalFot + courier.pay + promo.total;
+  // Доставка — одна фактическая сумма из изъятий наличных (ставка + бензин).
+  // Относим её к ФОТ, а не показываем повторно в переменных расходах.
+  const variableTotal = kitchen.total + supplierPay.total + otherVar.total;
+  const fotTotal = payroll.totalFot + courier.total + promo.total;
   const totalExpenses = kitchen.total + supplierPay.total + otherVar.total
     + payroll.totalFot + courier.total + promo.total + fixedTotal;
 
@@ -3459,8 +3461,7 @@ function PayrollPage({ ctx }) {
       <div className="rp-page-head"><h1>Зарплата</h1><div className="rp-page-sub">Ведомость за {MONTHS_RU[monthIdx].toLowerCase()} {year}</div></div>
       <div className="rp-grid-4">
         <Stat label="Общий ФОТ" value={fmtRub(payroll.totalFot)} />
-        <Stat label="Курьеры — ставка" value={fmtRub(pnl.courier.pay)} />
-        <Stat label="Курьеры — бензин" value={fmtRub(pnl.courier.fuelTotal)} sub={`${fmt0(pnl.courier.km)} км`} />
+        <Stat label="Доставка (изъятия наличных)" value={fmtRub(pnl.courier.total)} />
         <Stat label="Промо" value={fmtRub(pnl.promo.total)} />
         <Stat label="ФОТ % от выручки" value={fmtPct(pnl.laborCostPct)} />
       </div>
@@ -5022,20 +5023,16 @@ function PnLPage({ ctx, embedded = false }) {
         <div className="rp-pnl-section-title">Переменные расходы</div>
         <Row label="Закупки кухня/бар (нал)" value={pnl.kitchen.total} indent onClick={() => setDrill('kitchen')} />
         <Row label="Поставщики (накладные)" value={pnl.supplierPay.total} indent onClick={() => setDrill('supplierPay')} />
-        <Row label="Доставка (курьеры: ставка + бензин)" value={pnl.courier.total} indent onClick={() => setDrill('courier')} />
         {otherVarByCategory.map(([cat, val]) => (
           <Row key={cat} label={cat} value={val} indent onClick={() => setDrill('otherVar')} />
         ))}
-        <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.courier.total + pnl.otherVar.total} bold />
+        <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.otherVar.total} bold />
 
         <div className="rp-pnl-section-title">ФОТ</div>
         <Row label="Основной ФОТ" value={pnl.payroll.totalFot} indent onClick={() => setDrill('payroll')} />
-        <Row label="Курьеры (ставка, справочно)" value={pnl.courier.pay} indent />
+        <Row label="Доставка (курьеры: ставка + бензин)" value={pnl.courier.total} indent onClick={() => setDrill('courier')} />
         <Row label="Промо" value={pnl.promo.total} indent onClick={() => setDrill('promo')} />
-        <Row label="Итого ФОТ (справочно)" value={pnl.payroll.totalFot + pnl.courier.pay + pnl.promo.total} bold />
-        <p className="rp-muted" style={{ fontSize: 11, marginTop: 4, paddingLeft: 20 }}>
-          «Курьеры (ставка, справочно)» и «Промо» здесь показаны ещё раз для расчёта доли ФОТ от выручки — в общую сумму расходов они уже включены один раз, строкой выше в «Переменных расходах». Этот блок сам по себе в прибыль не вычитается второй раз.
-        </p>
+        <Row label="Итого ФОТ" value={pnl.fotTotal} bold />
 
 
         <div className="rp-pnl-section-title">Постоянные расходы</div>
@@ -7307,13 +7304,12 @@ function buildExcelFile(ctx) {
     ['ПЕРЕМЕННЫЕ РАСХОДЫ'],
     ['Закупки кухня/бар', pnl.kitchen.total],
     ['Поставщики (оплата)', pnl.supplierPay.total],
-    ['Доставка — ставка курьера', pnl.courier.pay],
-    ['Доставка — бензин', pnl.courier.fuelTotal],
     ['Эквайринг', pnl.acquiring.amount],
     ['Прочие переменные', pnl.otherVar.total],
     [],
     ['ФОТ'],
     ['Основной ФОТ', pnl.payroll.totalFot],
+    ['Доставка (курьеры: ставка + бензин)', pnl.courier.total],
     ['Промо', pnl.promo.total],
     ['Налоги на сотрудников', pnl.fotTaxTotal],
     [],
