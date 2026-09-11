@@ -269,12 +269,14 @@ function parseIikoExpenseImport(text, fallbackDate, employees) {
     const comment = match[1].trim().toLowerCase();
     const amount = Number(match[2].replace(',', '.'));
     if (!(amount > 0)) continue;
+    const namedEmployee = [...employeeByFirstName.entries()].find(([name]) => name && new RegExp(`(^|\\s)${name}(\\s|$)`, 'i').test(comment))?.[1];
+    const isBareEmployeePayout = namedEmployee && new RegExp(`^(?:зп\\s+)?${String(namedEmployee.name).trim().split(/\\s+/)[0]}(?:\\s+зп)?$`, 'i').test(comment);
     if (/\bкурьер\b|\bразвоз\b/.test(comment)) {
       report.courier.pay = (Number(report.courier.pay) || 0) + amount;
-    } else if (/\b(?:зп|аванс)\b/.test(comment)) {
-      const employee = [...employeeByFirstName.entries()].find(([name]) => name && new RegExp(`(^|\\s)${name}(\\s|$)`, 'i').test(comment))?.[1];
+    } else if (/\b(?:зп|аванс)\b/.test(comment) || isBareEmployeePayout) {
+      const employee = namedEmployee;
       if (employee) report.advances.push({ name: employee.name, amount, employeeId: employee.id, matchedName: employee.name });
-      else report.otherExpenses.push({ category: 'Прочее', amount });
+      else report.otherExpenses.push({ category: 'Требует разнесения', amount });
     } else if (/озон|\bвб\b|валберис|вайлдберис|wildberr/.test(comment)) {
       report.otherExpenses.push({ category: 'Маркетплейсы', amount });
     } else if (/смм|реклам|таргет|листовк|продвиж/.test(comment)) {
@@ -282,8 +284,13 @@ function parseIikoExpenseImport(text, fallbackDate, employees) {
     } else if (/закуп|тест|магнит|продукт|мяс|овощ|мук|сыр|молоч|напит|\bвод[аы]\b|кофе|чай/.test(comment)) {
       const category = /напит|\bвод[аы]\b|кофе|чай/.test(comment) ? 'Напитки' : 'Продукты';
       report.kitchenExpenses.push({ category, amount });
-    } else {
+    } else if (/квартир/.test(comment)) {
       report.otherExpenses.push({ category: 'Прочее', amount });
+    } else {
+      // Не называем неизвестную операцию «Прочее»: это создаёт ложное чувство,
+      // что она уже понятна. Отдельная строка видна управляющему и не смешивается
+      // с подтверждёнными расходами (например, квартирой).
+      report.otherExpenses.push({ category: 'Требует разнесения', amount });
     }
   }
   return report;
