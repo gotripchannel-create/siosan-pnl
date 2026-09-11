@@ -1629,10 +1629,10 @@ function Dashboard({ ctx, setPage }) {
   const autoFixBadCategoriesForMonth = async (y, mIdx) => {
     const mk = monthKeyOf(y, mIdx);
     const curMonth = months[mk];
-    // v4 — первая версия, которая не удаляет данные до успешной сверки всех
-    // операций. v3 могла отметить неполный результат как готовый, поэтому один
-    // раз безопасно пересобираем месяц при переходе на v4.
-    const needsMigration = settings.iikoExpensesSyncVersion !== 4;
+    // Версия хранится по месяцам: один глобальный флаг был ошибкой — после
+    // открытия сентября август мог остаться в старом, неполном состоянии.
+    // v5 также включает детерминированный разбор каждого изъятия.
+    const needsMigration = (settings.iikoExpensesSyncVersionByMonth || {})[mk] !== 5;
     if (!curMonth || (!needsMigration && !Object.values(curMonth.days || {}).some(hasBadIikoCategory))) return;
 
     const from = dateStr(y, mIdx, 1);
@@ -1692,7 +1692,8 @@ function Dashboard({ ctx, setPage }) {
         return { ...prev, [mk]: { ...cur, days } };
       });
       setSettings((prev) => ({ ...prev,
-        iikoExpensesSyncVersion: 4,
+        iikoExpensesSyncVersion: 5,
+        iikoExpensesSyncVersionByMonth: { ...(prev.iikoExpensesSyncVersionByMonth || {}), [mk]: 5 },
         iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...allExpenses.map((e) => `v4::${e.date}::${e.comment}::${e.amount}`)]
       }));
       logAudit({ what: `Автоматически пересобраны расходы с устаревшей категорией за ${MONTHS_RU[mIdx]} ${y}` });
