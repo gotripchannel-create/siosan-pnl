@@ -1743,14 +1743,24 @@ function Dashboard({ ctx, setPage }) {
     return arr;
   }, [month, year, monthIdx, pnl.nd, settings.revenueChannels]);
 
+  // Прочие переменные и постоянные — разворачиваем на конкретные категории/статьи,
+  // а не одним куском, чтобы на диаграмме сразу было видно Маркетплейсы/Рекламу/
+  // Аренду/Коммунальные и т.д. по отдельности, без похода на страницу P&L.
+  const otherVarStructure = (() => {
+    const map = new Map();
+    for (const it of pnl.otherVar.items) map.set(it.category || 'Прочее', (map.get(it.category || 'Прочее') || 0) + (Number(it.amount) || 0));
+    return [...map.entries()].map(([name, value]) => ({ name, value }));
+  })();
+  const fixedStructure = [...pnl.fixedItems, ...pnl.otherFixed].map((f) => ({ name: f.name, value: Number(f.amount) || 0 }));
+
   const structureData = [
     { name: 'Закупки/кухня', value: pnl.kitchen.total + pnl.supplierPay.total },
     { name: 'ФОТ', value: pnl.payroll.totalFot },
     { name: 'Курьеры (ставка+бензин)', value: pnl.courier.total },
     { name: 'Промо', value: pnl.promo.total },
     { name: 'Эквайринг', value: pnl.acquiring.amount },
-    { name: 'Постоянные', value: pnl.fixedTotal },
-    { name: 'Прочие пер.', value: pnl.otherVar.total },
+    ...fixedStructure,
+    ...otherVarStructure,
     { name: 'Налоги ФОТ', value: pnl.fotTaxTotal },
   ].filter((d) => d.value > 0);
 
