@@ -274,18 +274,54 @@ export default async function handler(req, res) {
       } catch (e) { result.errors.secondBranch = e.message; }
     };
 
-    // 3. Удаления
+    // 3. Удаления. Важно разделять два принципиально разных случая:
+    //   DELETED_WITH_WRITEOFF    — блюдо УЖЕ приготовили, продукты списаны со склада.
+    //                              Это реальная потеря денег.
+    //   DELETED_WITHOUT_WRITEOFF — позицию убрали из заказа ДО готовки (клиент
+    //                              передумал, кассир перебил чек). Потери нет вообще.
+    // Раньше обе суммы складывались в одно число, из-за чего итог выглядел пугающе
+    // большим (напр. 24 833 ₽ при выручке 50 489 ₽), хотя настоящие потери в разы
+    // меньше. Дополнительно тянем причину и комментарий кассира — так сразу видно,
+    // что именно произошло, без гаданий.
     const fetchDeletions = async () => {
-      try {
-        const rows = await queryDay(serverUrl, token, date, ['DishName'], ['DishSumInt', 'DishAmountInt'], {
-          'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] }
+      const buildResult = (rows, withReason) => {
+        const parse = (r) => ({
+          name: r['DishName'] || 'Без названия',
+          qty: Number(r['DishAmountInt']) || 0,
+          amount: Number(r['DishSumInt']) || 0,
+          reason: withReason ? (r['RemovalType'] || '') : '',
+          comment: withReason ? (r['DeletionComment'] || '') : '',
+          withWriteoff: r['DeletedWithWriteoff'] === 'DELETED_WITH_WRITEOFF',
         });
-        result.deletions = {
-          total: Math.round(rows.reduce((s, r) => s + (Number(r['DishSumInt']) || 0), 0) * 100) / 100,
-          count: rows.reduce((s, r) => s + (Number(r['DishAmountInt']) || 0), 0),
-          items: rows.map(r => ({ name: r['DishName'] || 'Без названия', qty: Number(r['DishAmountInt']) || 0, amount: Number(r['DishSumInt']) || 0 })).sort((a,b) => b.amount - a.amount)
+        const all = rows.map(parse);
+        const sum = (list) => Math.round(list.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+        const cnt = (list) => list.reduce((s, r) => s + r.qty, 0);
+        const withWriteoff = all.filter((r) => r.withWriteoff).sort((a, b) => b.amount - a.amount);
+        const withoutWriteoff = all.filter((r) => !r.withWriteoff).sort((a, b) => b.amount - a.amount);
+        return {
+          // total/count/items оставлены для обратной совместимости со старым кодом
+          total: sum(all), count: cnt(all), items: all.sort((a, b) => b.amount - a.amount),
+          hasReasons: withReason,
+          writeoff: { total: sum(withWriteoff), count: cnt(withWriteoff), items: withWriteoff },
+          edits: { total: sum(withoutWriteoff), count: cnt(withoutWriteoff), items: withoutWriteoff },
         };
-      } catch (e) { result.errors.deletions = e.message; }
+      };
+
+      const filters = { 'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['DELETED_WITH_WRITEOFF', 'DELETED_WITHOUT_WRITEOFF'] } };
+      try {
+        // Сначала пробуем с причиной и комментарием кассира. Набор доступных полей
+        // зависит от версии сервера iiko, поэтому при ошибке — откат на базовый запрос.
+        const rows = await queryDay(serverUrl, token, date,
+          ['DishName', 'DeletedWithWriteoff', 'RemovalType', 'DeletionComment'],
+          ['DishSumInt', 'DishAmountInt'], filters);
+        result.deletions = buildResult(rows, true);
+      } catch (e) {
+        try {
+          const rows = await queryDay(serverUrl, token, date,
+            ['DishName', 'DeletedWithWriteoff'], ['DishSumInt', 'DishAmountInt'], filters);
+          result.deletions = buildResult(rows, false);
+        } catch (e2) { result.errors.deletions = e2.message; }
+      }
     };
 
     // 4. Кассовая смена(ы) за этот день
