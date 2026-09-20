@@ -6076,9 +6076,8 @@ function IikoDashboardPage({ ctx }) {
               <Stat label="Чеков" value={fmt0(dayReport.revenue?.checks)} />
               <Stat label="Скидки" value={fmtRub(dayReport.discount?.total)} accent={COLORS.accent2} />
               <Stat
-                label="Списано (реальные потери)"
-                value={fmtRub(dayReport.deletions?.writeoff?.total ?? dayReport.deletions?.total)}
-                sub={dayReport.deletions?.edits?.total > 0 ? `+ правок заказов на ${fmtRub(dayReport.deletions.edits.total)} (не потери)` : undefined}
+                label="Удалённые позиции"
+                value={fmtRub(dayReport.deletions?.total)}
                 accent={COLORS.danger}
               />
             </div>
@@ -6163,14 +6162,13 @@ function IikoDashboardPage({ ctx }) {
               </Section>
             )}
 
-            {dayReport.deletions?.writeoff?.items?.length > 0 && (
-              <Section title="Списано — реальные потери" count={dayReport.deletions.writeoff.items.length} defaultOpen={true}>
-                <p className="rp-muted" style={{fontSize:11, marginBottom:8}}>Блюдо уже приготовили, продукты списаны со склада. Это деньги, которые реально потеряли.</p>
+            {dayReport.deletions?.items?.length > 0 && (
+              <Section title="Удалённые позиции" count={dayReport.deletions.items.length} defaultOpen={true}>
                 <div className="rp-table-wrap">
                   <table className="rp-table">
                     <thead><tr><th>Блюдо</th>{dayReport.deletions.hasReasons && <th>Причина / комментарий</th>}<th>Кол-во</th><th>Сумма</th></tr></thead>
                     <tbody>
-                      {dayReport.deletions.writeoff.items.map((d,i) => (
+                      {dayReport.deletions.items.map((d,i) => (
                         <tr key={i}>
                           <td>{d.name}</td>
                           {dayReport.deletions.hasReasons && <td className="rp-muted" style={{fontSize:12}}>{[d.reason, d.comment].filter(Boolean).join(' · ') || '—'}</td>}
@@ -6178,28 +6176,7 @@ function IikoDashboardPage({ ctx }) {
                           <td className="rp-num">{fmtRub(d.amount)}</td>
                         </tr>
                       ))}
-                      <tr className="rp-total-row"><td colSpan={dayReport.deletions.hasReasons ? 3 : 2}>Итого потерь</td><td className="rp-num">{fmtRub(dayReport.deletions.writeoff.total)}</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </Section>
-            )}
-
-            {dayReport.deletions?.edits?.items?.length > 0 && (
-              <Section title="Правки заказов — не потери" count={dayReport.deletions.edits.items.length} defaultOpen={false}>
-                <p className="rp-muted" style={{fontSize:11, marginBottom:8}}>Позицию убрали из заказа до готовки: клиент передумал, кассир перебил чек. Продукты не тратились, денег не потеряли.</p>
-                <div className="rp-table-wrap">
-                  <table className="rp-table">
-                    <thead><tr><th>Блюдо</th>{dayReport.deletions.hasReasons && <th>Причина / комментарий</th>}<th>Кол-во</th><th>Сумма</th></tr></thead>
-                    <tbody>
-                      {dayReport.deletions.edits.items.map((d,i) => (
-                        <tr key={i}>
-                          <td>{d.name}</td>
-                          {dayReport.deletions.hasReasons && <td className="rp-muted" style={{fontSize:12}}>{[d.reason, d.comment].filter(Boolean).join(' · ') || '—'}</td>}
-                          <td className="rp-num">{fmt0(d.qty)}</td>
-                          <td className="rp-num">{fmtRub(d.amount)}</td>
-                        </tr>
-                      ))}
+                      <tr className="rp-total-row"><td colSpan={dayReport.deletions.hasReasons ? 3 : 2}>Итого</td><td className="rp-num">{fmtRub(dayReport.deletions.total)}</td></tr>
                     </tbody>
                   </table>
                 </div>
