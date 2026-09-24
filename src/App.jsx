@@ -3201,6 +3201,27 @@ function EmployeesPage({ ctx }) {
     }, { first: 0, second: 0 });
   shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
 
+  // Последний день месяца, за который реально проставлены смены, отдельно для каждой
+  // половины. Нужно, чтобы подпись «16–30 число» не выглядела как закрытый итог: в
+  // середине месяца там лежит сумма только за уже отработанные дни, и без этой
+  // пометки непонятно, почему цифра меняется день ото дня.
+  const lastShiftDayInHalf = (half) => {
+    const from = half === 1 ? 1 : 16;
+    const to = half === 1 ? 15 : nd;
+    const prefix = `${year}-${pad2(monthIdx + 1)}-`;
+    let last = 0;
+    for (const empShifts of Object.values(month.shifts || {})) {
+      for (const [ds, val] of Object.entries(empShifts || {})) {
+        if (val == null || !ds.startsWith(prefix)) continue;
+        const d = Number(ds.slice(8, 10));
+        if (d >= from && d <= to && d > last) last = d;
+      }
+    }
+    return last;
+  };
+  const lastDayFirst = lastShiftDayInHalf(1);
+  const lastDaySecond = lastShiftDayInHalf(2);
+
   // Разовая подтверждённая корректировка смены: 09.09.2026 работали Вика,
   // Лёша, Орхан и тётя Оля. Записываем стандартную смену каждому, не трогая
   // уже существующие часы и не создавая дублей.
@@ -3239,8 +3260,16 @@ function EmployeesPage({ ctx }) {
       <Card style={{ marginBottom: 16 }}>
         <div className="rp-card-title">К выплате по сменам на данный момент</div>
         <div className="rp-stat-grid">
-          <Stat label="1–15 число" value={fmtRub(shiftPayroll.first)} />
-          <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
+          <Stat
+            label={lastDayFirst > 0 && lastDayFirst < 15 ? `1–${lastDayFirst} число` : '1–15 число'}
+            value={fmtRub(shiftPayroll.first)}
+            sub={lastDayFirst > 0 && lastDayFirst < 15 ? `смены проставлены по ${lastDayFirst}-е` : undefined}
+          />
+          <Stat
+            label={lastDaySecond > 0 && lastDaySecond < nd ? `16–${lastDaySecond} число` : `16–${nd} число`}
+            value={fmtRub(shiftPayroll.second)}
+            sub={lastDaySecond > 0 && lastDaySecond < nd ? `смены проставлены по ${lastDaySecond}-е` : undefined}
+          />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
         <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Здесь — фактическое состояние на сегодня: по сменной и почасовой оплате считаются только реально проставленные смены, оклад делится поровну (50% в каждую половину). В P&L за незакрытый месяц вторая половина не учитывается до конца месяца, поэтому там сумма может быть меньше.</p>
