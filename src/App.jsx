@@ -3295,7 +3295,7 @@ function EmployeesPage({ ctx }) {
 
       <Card>
         <div className="rp-table-wrap"><table className="rp-table">
-          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:120}}>Выплачено ЗП</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
+          <thead><tr><th>Сотрудник</th><th>Должность</th><th>Оплата</th><th>Ставка</th><th>Статус</th><th>Смены / часы</th><th style={{minWidth:100}}>Аванс</th><th style={{minWidth:110}}>Удержания</th><th style={{minWidth:120}}>Выплачено ЗП</th><th style={{minWidth:110}}>Начислено</th><th style={{minWidth:110}}>К выплате</th><th /></tr></thead>
           <tbody>
             {visible.map((e) => {
               const pay = computeEmployeePay(e, month, settings);
@@ -3308,6 +3308,7 @@ function EmployeesPage({ ctx }) {
                   <td><span className={`rp-badge ${e.status === 'active' ? 'ok' : 'off'}`}>{e.status === 'active' ? 'активен' : 'уволен'}</span></td>
                   <td className="rp-num rp-link" onClick={() => setShiftsFor(e.id)}>{pay.shiftsCount != null ? `${pay.shiftsCount} см.` : `${fmt0(pay.hours)} ч`}</td>
                   <td className="rp-num">{pay.advance ? fmtRub(pay.advance) : '—'}</td>
+                  <td className="rp-num" style={pay.deduct ? { color: COLORS.danger } : {}}>{pay.deduct ? `−${fmtRub(pay.deduct)}` : '—'}</td>
                   <td className="rp-num">{pay.salaryPayment ? fmtRub(pay.salaryPayment) : '—'}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.accrued)}</td>
                   <td className="rp-num rp-strong">{fmtRub(pay.payout)}</td>
@@ -3318,7 +3319,7 @@ function EmployeesPage({ ctx }) {
                 </tr>
               );
             })}
-            {visible.length === 0 && <tr><td colSpan={11}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
+            {visible.length === 0 && <tr><td colSpan={12}><EmptyState icon={<Users size={24} color={COLORS.inkSoft} />} title="Сотрудники не найдены" /></td></tr>}
           </tbody>
         </table></div>
       </Card>
