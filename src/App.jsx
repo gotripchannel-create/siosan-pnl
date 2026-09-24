@@ -3191,8 +3191,13 @@ function EmployeesPage({ ctx }) {
   // не попадает в P&L — иначе во второй половине открытого месяца тут висел бы ноль,
   // хотя люди уже отработали (именно это и сбивало с толку). Для P&L правило
   // осталось прежним, см. monthPayroll.
+  // Блок называется «К выплате по сменам» — поэтому окладные сотрудники сюда не
+  // входят: их сумма не зависит от смен и делится поровну между половинами, из-за
+  // чего искажала сравнение половин между собой (в одной половине оклад мог быть
+  // полностью закрыт авансом, в другой — висеть целиком). Оклад считается отдельно
+  // и показан под блоком, чтобы не потерялся.
   const shiftPayroll = employees
-    .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx))
+    .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx) && e.payType !== 'oklad')
     .reduce((totals, e) => {
       const pay = computeEmployeePay(e, month, settings);
       totals.first += pay.payout1;
@@ -3200,6 +3205,10 @@ function EmployeesPage({ ctx }) {
       return totals;
     }, { first: 0, second: 0 });
   shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
+
+  const okladPayroll = employees
+    .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx) && e.payType === 'oklad')
+    .reduce((s, e) => s + computeEmployeePay(e, month, settings).payout, 0);
 
   // Последний день месяца, за который реально проставлены смены, отдельно для каждой
   // половины. Нужно, чтобы подпись «16–30 число» не выглядела как закрытый итог: в
@@ -3272,7 +3281,7 @@ function EmployeesPage({ ctx }) {
           />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
-        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Здесь — фактическое состояние на сегодня: по сменной и почасовой оплате считаются только реально проставленные смены, оклад делится поровну (50% в каждую половину). В P&L за незакрытый месяц вторая половина не учитывается до конца месяца, поэтому там сумма может быть меньше.</p>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Только сменная и почасовая оплата — считаются реально проставленные смены на сегодня, за вычетом авансов и выплат.{okladPayroll !== 0 && <> Оклад сюда не входит: по окладным сотрудникам к выплате ещё <b>{fmtRub(okladPayroll)}</b> — см. таблицу ниже.</>} В P&L за незакрытый месяц вторая половина не учитывается до конца месяца, поэтому там сумма может быть меньше.</p>
       </Card>
 
       <div className="rp-toolbar">
