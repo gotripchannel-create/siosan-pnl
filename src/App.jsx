@@ -3185,13 +3185,18 @@ function EmployeesPage({ ctx }) {
   // В верхнем блоке — реальный остаток к выплате всему активному персоналу.
   // Для оклада это ровно половина ставки в каждую половину месяца, для сменной
   // и почасовой оплаты — только реально проставленные смены/часы.
+  // Блок «на данный момент» показывает фактическое состояние: сколько смен реально
+  // проставлено в каждой половине месяца. Здесь НЕ применяется правило отчётных
+  // половин (payrollReportedHalves), по которому в незакрытом месяце вторая половина
+  // не попадает в P&L — иначе во второй половине открытого месяца тут висел бы ноль,
+  // хотя люди уже отработали (именно это и сбивало с толку). Для P&L правило
+  // осталось прежним, см. monthPayroll.
   const shiftPayroll = employees
     .filter((e) => isEmployeeActiveInMonth(e, year, monthIdx))
     .reduce((totals, e) => {
       const pay = computeEmployeePay(e, month, settings);
-      const reportedHalves = payrollReportedHalves(year, monthIdx);
-      if (reportedHalves >= 1) totals.first += pay.payout1;
-      if (reportedHalves >= 2) totals.second += pay.payout2;
+      totals.first += pay.payout1;
+      totals.second += pay.payout2;
       return totals;
     }, { first: 0, second: 0 });
   shiftPayroll.total = shiftPayroll.first + shiftPayroll.second;
@@ -3238,7 +3243,7 @@ function EmployeesPage({ ctx }) {
           <Stat label={`16–${nd} число`} value={fmtRub(shiftPayroll.second)} />
           <Stat label="Итого за месяц" value={fmtRub(shiftPayroll.total)} />
         </div>
-        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Оклад делится поровну: 50% в первую и 50% во вторую половину. В открытом месяце в отчётах показывается только первая половина; вторая попадёт в итог после окончания месяца.</p>
+        <p className="rp-muted" style={{fontSize:11, marginTop:10}}>Здесь — фактическое состояние на сегодня: по сменной и почасовой оплате считаются только реально проставленные смены, оклад делится поровну (50% в каждую половину). В P&L за незакрытый месяц вторая половина не учитывается до конца месяца, поэтому там сумма может быть меньше.</p>
       </Card>
 
       <div className="rp-toolbar">
