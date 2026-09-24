@@ -409,13 +409,13 @@ function monthPromoTotal(month, y, mIdx) {
 
 function employeeHoursForHalf(month, empId, half) {
   const shifts = month.shifts?.[empId] || {};
-  let hours = 0; const items = [];
+  let hours = 0, days = 0; const items = [];
   Object.entries(shifts).forEach(([ds, h]) => {
     const d = dayOfMonthFromDateStr(ds);
     const inHalf = half === 1 ? d <= 15 : d > 15;
-    if (inHalf && Number(h) > 0) { hours += Number(h); items.push({ date: ds, hours: Number(h) }); }
+    if (inHalf && Number(h) > 0) { hours += Number(h); days += 1; items.push({ date: ds, hours: Number(h) }); }
   });
-  return { hours, items };
+  return { hours, days, items };
 }
 
 function employeeAdjustments(month, empId) {
@@ -438,13 +438,17 @@ function computeEmployeePay(emp, month, settings) {
   const salaryPayment2 = sumType(2, ['salary_payment']);
 
   let base1 = 0, base2 = 0;
-  if (emp.payType === 'shift') { base1 = emp.rate * (h1.hours / standardShift); base2 = emp.rate * (h2.hours / standardShift); }
+  // Для «руб/смена» день работы = полная смена, независимо от того, сколько часов
+  // записано. Раньше считалось пропорционально часам (rate × часы / стандартная
+  // смена), из-за чего 9 отработанных дней превращались, например, в «6,7 смены» и
+  // сотрудник недополучал. Почасовая оплата по-прежнему считается по часам.
+  if (emp.payType === 'shift') { base1 = emp.rate * h1.days; base2 = emp.rate * h2.days; }
   else if (emp.payType === 'hour') { base1 = emp.rate * h1.hours; base2 = emp.rate * h2.hours; }
   else if (emp.payType === 'oklad') { base1 = emp.rate / 2; base2 = emp.rate / 2; }
 
   const accrued1 = base1 + bonus1, accrued2 = base2 + bonus2;
   const payout1 = accrued1 - deduct1 - advance1 - salaryPayment1, payout2 = accrued2 - deduct2 - advance2 - salaryPayment2;
-  const shiftsCount = emp.payType === 'shift' ? Math.round(((h1.hours + h2.hours) / standardShift) * 10) / 10 : null;
+  const shiftsCount = emp.payType === 'shift' ? (h1.days + h2.days) : null;
 
   return {
     empId: emp.id, name: emp.name, position: emp.position, payType: emp.payType, rate: emp.rate,
