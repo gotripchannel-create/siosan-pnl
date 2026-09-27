@@ -7,6 +7,10 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   build: {
+    // Ярлык «На экран Домой» на старых iPhone использует более старый WebKit,
+    // чем обычный Safari. ES2018 покрывает такие версии и не даёт приложению
+    // упасть до первого рендера из-за неподдерживаемого синтаксиса.
+    target: 'es2018',
     rollupOptions: {
       output: {
         manualChunks(id) {
