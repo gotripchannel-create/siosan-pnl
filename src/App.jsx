@@ -1354,11 +1354,13 @@ function Dashboard({ ctx, setPage }) {
     try {
       const from = customFrom || dateStr(year, monthIdx, 1);
       const to = customTo || dateStr(year, monthIdx, daysInMonth(year, monthIdx));
-      const resp = await fetch('/api/iiko-dashboard', {
+      // Локальный iiko-сервер может не ответить. Ограничиваем ожидание, чтобы
+      // интерфейс не оставался в вечной загрузке.
+      const resp = await fetchWithTimeout('/api/iiko-dashboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ from, to })
-      });
+      }, 15000);
       const data = await resp.json();
       if (!resp.ok) { setRevSyncError(data?.error || 'Не удалось получить выручку из iiko.'); return; }
 
@@ -1558,7 +1560,7 @@ function Dashboard({ ctx, setPage }) {
       const to = customTo || dateStr(year, monthIdx, daysInMonth(year, monthIdx));
       const authHeaders = { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
 
-      const expResp = await fetch('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) });
+      const expResp = await fetchWithTimeout('/api/iiko-expenses', { method: 'POST', headers: authHeaders, body: JSON.stringify({ from, to }) }, 15000);
       const expData = await expResp.json();
       if (!expResp.ok) { setExpSyncError(expData?.error || 'Не удалось получить расходы из iiko.'); return; }
 
@@ -1793,13 +1795,23 @@ function Dashboard({ ctx, setPage }) {
     setMonthChecksStats(null);
     const t = setTimeout(async () => {
       if (cancelled) return;
-      try { await syncRevenueFromIiko(); } catch (e) { console.error('Автосинхронизация выручки при открытии месяца не удалась:', e); }
+      // Не пересобираем весь месяц на каждом открытии страницы. Это порождало
+      // десятки одновременных запросов к iiko/ИИ и делало сайт нестабильным.
+      // Автоматически подхватываем лишь новые операции ЗА СЕГОДНЯ и не чаще
+      // раза в 15 минут; полная сверка остаётся доступна вручную.
+      const now = todayObj();
+      if (year !== now.y || monthIdx !== now.m) return;
+      const autoSyncKey = `siosan:auto-iiko-sync:${monthKey}`;
+      const lastSyncAt = Number(sessionStorage.getItem(autoSyncKey) || 0);
+      if (Date.now() - lastSyncAt < 15 * 60 * 1000) return;
+      sessionStorage.setItem(autoSyncKey, String(Date.now()));
+      const today = dateStr(now.y, now.m, now.d);
+      try { await syncRevenueFromIiko(today, today); } catch (e) { console.error('Автосинхронизация выручки за сегодня не удалась:', e); }
       if (cancelled) return;
       if (!expenseSyncInFlightRef.current.has(monthKey)) {
         expenseSyncInFlightRef.current.add(monthKey);
         try {
-          await syncExpensesFromIikoOnDashboard();
-          if (!cancelled) await autoFixBadCategoriesForMonth(year, monthIdx);
+          await syncExpensesFromIikoOnDashboard(today, today);
         } catch (e) { console.error('Автосинхронизация расходов при открытии месяца не удалась:', e); } finally { expenseSyncInFlightRef.current.delete(monthKey); }
       }
     }, 300);
@@ -5086,12 +5098,9 @@ function PnLPage({ ctx, embedded = false }) {
     }
   };
 
-  // P&L — не просто витрина старого снимка: при открытии он сам получает
-  // актуальные изъятия из iiko. Раньше это происходило только на «Отчётах»,
-  // из-за чего здесь месяц мог оставаться на старых 10 тыс. после исправления.
-  useEffect(() => {
-    if (!embedded && !locked) resyncMonthExpenses(true);
-  }, [year, monthIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Полная пересборка запускается только по явной кнопке. Раньше она происходила
+  // при каждом открытии P&L и заново обрабатывала весь месяц, что могло надолго
+  // занять iiko и сделать приложение недоступным.
 
   const Row = ({ label, value, pctOf = pnl.revenue, bold, onClick, indent }) => (
     <div className={`rp-pnl-row ${bold ? 'bold' : ''} ${onClick ? 'rp-clickable' : ''}`} style={indent ? { paddingLeft: 20 } : {}} onClick={onClick}>
