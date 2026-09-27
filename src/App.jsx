@@ -1802,9 +1802,12 @@ function Dashboard({ ctx, setPage }) {
       const now = todayObj();
       if (year !== now.y || monthIdx !== now.m) return;
       const autoSyncKey = `siosan:auto-iiko-sync:${monthKey}`;
-      const lastSyncAt = Number(sessionStorage.getItem(autoSyncKey) || 0);
+      // На iPhone в приватном режиме хранилище иногда запрещено. Автосинхронизация
+      // не должна из-за этого уронить всю страницу.
+      let lastSyncAt = 0;
+      try { lastSyncAt = Number(sessionStorage.getItem(autoSyncKey) || 0); } catch (_) {}
       if (Date.now() - lastSyncAt < 15 * 60 * 1000) return;
-      sessionStorage.setItem(autoSyncKey, String(Date.now()));
+      try { sessionStorage.setItem(autoSyncKey, String(Date.now())); } catch (_) {}
       const today = dateStr(now.y, now.m, now.d);
       try { await syncRevenueFromIiko(today, today); } catch (e) { console.error('Автосинхронизация выручки за сегодня не удалась:', e); }
       if (cancelled) return;
