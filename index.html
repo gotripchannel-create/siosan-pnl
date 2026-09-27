@@ -7,13 +7,12 @@
     <meta name="description" content="СИОСАН — управленческий P&L ресторана" />
     <title>СИОСАН — Управленческий P&L</title>
 
-    <!-- PWA: делает приложение устанавливаемым на экран телефона -->
+    <!-- Иконка для «На экран Домой». Режим отдельного PWA намеренно отключён:
+         на части iPhone он запускал устаревший изолированный WebView и давал
+         белый экран. Ярлык будет открывать тот же стабильный Safari. -->
     <link rel="manifest" href="/manifest.json" />
 
-    <!-- iOS: без этих тегов Safari откроет обычную вкладку браузера с адресной строкой,
-         а не полноэкранное «как приложение» окно после добавления на экран -->
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Не используем apple-mobile-web-app-capable: см. комментарий выше. -->
     <meta name="apple-mobile-web-app-title" content="СиоСан" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
