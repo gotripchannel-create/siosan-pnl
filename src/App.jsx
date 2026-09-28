@@ -85,8 +85,8 @@ function defaultSettings() {
       // отнести одно и то же). «Поставщики» и «Постоянные (проверить)» убраны совсем —
       // это категории ДРУГИХ систем (накладные поставщиков и фиксированные расходы),
       // они никогда не должны предлагаться для разовых изъятий наличными.
-      'Связь', 'Канцелярия', 'Хозтовары', 'Ремонт', 'Реклама', 'Посуда',
-      'Упаковка', 'Avito', 'Маркетплейсы', 'Прочее',
+      'Аренда жилья', 'Связь', 'Канцелярия', 'Хозтовары', 'Ремонт', 'Реклама', 'Посуда',
+      'Упаковка', 'Avito', 'Маркетплейсы', 'Прочее', 'Требует разнесения',
     ],
     fixedExpenses: [
       { id: uid(), name: 'Аренда', amount: 84000, group: 'fixed', paymentMethod: 'cashless', recurring: true },
@@ -293,6 +293,24 @@ function normalizeKitchenCategory(raw) {
   if (/ремонт|поломк|запчаст|мастер/.test(s)) return 'Ремонт оборудования';
   if (/хозтовар|бытов|уборк|моющ|перчатк|пакет|стакан|салфет|канцеляр|расходник/.test(s)) return 'Хозтовары кухни';
   return 'Прочее';
+}
+
+// Классификация уже известных кассовых комментариев. Это не ИИ-подсказка, а
+// строгая страховка для iiko: «квартира» не должна сливаться с маркетплейсами
+// или безымянным «прочим», а неизвестная строка не получает выдуманную статью.
+function canonicalIikoOtherCategory(comment, currentCategory) {
+  const c = String(comment || '').trim().toLowerCase();
+  if (/квартир|аренда\s+жиль/.test(c)) return 'Аренда жилья';
+  if (/озон|\bвб\b|валберис|вайлдберис|wildberr/.test(c)) return 'Маркетплейсы';
+  if (/смм|реклам|таргет|листовк|продвиж/.test(c)) return 'Реклама';
+  if (/канцеляр|скрепк|ручк|бумаг|степлер|картридж/.test(c)) return 'Канцелярия';
+  if (/хозтовар|бытов|уборк|моющ|перчатк|салфет/.test(c)) return 'Хозтовары';
+  if (/упаковк|контейнер|пакет|коробк/.test(c)) return 'Упаковка';
+  if (/посуда|тарелк|стакан|чашк/.test(c)) return 'Посуда';
+  if (/ремонт|сантехник|электрик|мастер|запчаст/.test(c)) return 'Ремонт';
+  if (/связь|интернет|телефон|сим[ -]?карт/.test(c)) return 'Связь';
+  if (/авито/.test(c)) return 'Avito';
+  return currentCategory;
 }
 
 function matchIikoCashierToEmployee(iikoName, employees) {
@@ -951,10 +969,10 @@ export default function App() {
 
         if (parsed) {
           const loadedSettings = parsed.settings || defaultSettings();
-          // На случай, если у пользователя уже сохранены свои settings.expenseCategories
-          // без новых категорий "Поставщики"/"Постоянные (проверить)" — дополняем их,
-          // не трогая остальной список (порядок и прочие категории не меняются).
-          const mustHave = ['Поставщики', 'Постоянные (проверить)'];
+          // Добавляем только реальные категории кассовых расходов. «Поставщики» и
+          // «Постоянные (проверить)» сюда намеренно не входят: это другие разделы
+          // учёта, они не должны появляться в разнесении изъятий наличных.
+          const mustHave = ['Аренда жилья', 'Требует разнесения'];
           const missing = mustHave.filter((c) => !(loadedSettings.expenseCategories || []).includes(c));
           if (missing.length > 0) {
             loadedSettings.expenseCategories = [...(loadedSettings.expenseCategories || []), ...missing];
@@ -1873,6 +1891,34 @@ function Dashboard({ ctx, setPage }) {
           else days[ds] = day;
         }
         next[mk] = monthChanged ? { ...m, days } : m;
+      }
+      return changedAny ? next : prev;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Единоразово исправляем ранее загруженные из iiko строки, для которых смысл
+  // однозначен по комментарию. Ручные расходы не меняем. Так «квартира» становится
+  // «Аренда жилья», а не остаётся среди безымянного прочего; в P&L это сразу
+  // показывается отдельной строкой категории.
+  useEffect(() => {
+    setMonths((prev) => {
+      let changedAny = false;
+      const next = {};
+      for (const [mk, month] of Object.entries(prev)) {
+        let monthChanged = false;
+        const days = {};
+        for (const [ds, day] of Object.entries(month.days || {})) {
+          const other = day.otherExpenses || [];
+          const normalized = other.map((item) => {
+            if (item.source !== 'iiko') return item;
+            const category = canonicalIikoOtherCategory(item.comment, item.category);
+            if (category === item.category) return item;
+            changedAny = true; monthChanged = true;
+            return { ...item, category };
+          });
+          days[ds] = monthChanged ? { ...day, otherExpenses: normalized } : day;
+        }
+        next[mk] = monthChanged ? { ...month, days } : month;
       }
       return changedAny ? next : prev;
     });
