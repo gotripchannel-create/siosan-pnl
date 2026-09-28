@@ -5236,7 +5236,9 @@ function PnLPage({ ctx, embedded = false }) {
         <Row label="Закупки кухня/бар (нал)" value={pnl.kitchen.total} indent onClick={() => setDrill('kitchen')} />
         <Row label="Поставщики (накладные)" value={pnl.supplierPay.total} indent onClick={() => setDrill('supplierPay')} />
         {otherVarByCategory.map(([cat, val]) => (
-          <Row key={cat} label={cat} value={val} indent onClick={() => setDrill('otherVar')} />
+          // В детализации должен быть ровно тот же срез, что и в строке P&L.
+          // Раньше любая категория открывала общий список всех прочих расходов.
+          <Row key={cat} label={cat} value={val} indent onClick={() => setDrill({ kind: 'otherVar', category: cat })} />
         ))}
         <Row label="Итого переменные" value={pnl.kitchen.total + pnl.supplierPay.total + pnl.otherVar.total} bold />
 
@@ -5276,10 +5278,15 @@ function PnLPage({ ctx, embedded = false }) {
   );
 }
 
-function DrillModal({ kind, pnl, onClose }) {
+function DrillModal({ kind: drill, pnl, onClose }) {
+  const kind = typeof drill === 'string' ? drill : drill.kind;
+  const selectedCategory = typeof drill === 'object' ? drill.category : null;
+  const otherItems = selectedCategory
+    ? pnl.otherVar.items.filter((item) => (item.category || 'Без категории') === selectedCategory)
+    : pnl.otherVar.items;
   const configs = {
     kitchen: { title: 'Закупки кухня/бар — детализация', items: pnl.kitchen.items, cols: ['date', 'category', 'amount', 'comment'] },
-    otherVar: { title: 'Прочие переменные расходы', items: pnl.otherVar.items, cols: ['date', 'category', 'amount', 'comment'] },
+    otherVar: { title: selectedCategory ? `${selectedCategory} — детализация` : 'Прочие переменные расходы', items: otherItems, cols: ['date', 'category', 'amount', 'comment'] },
     supplierPay: { title: 'Накладные поставщиков', items: pnl.supplierPay.items, cols: ['date', 'supplierName', 'amount', 'comment'] },
     courier: { title: 'Курьеры по дням', items: pnl.courier.items, cols: ['date', 'deliveries', 'pay', 'km', 'fuel'] },
     promo: { title: 'Промо по дням', items: pnl.promo.items, cols: ['date', 'pay', 'comment'] },
