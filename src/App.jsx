@@ -1583,29 +1583,61 @@ function Dashboard({ ctx, setPage }) {
       // при синхронизации за много месяцев это в разы быстрее, чем строго по одному.
       let addedCount = 0;
       let failedDays = 0;
-      const successfulDates = [];
+      // Ключи помечаем пооперационно, а не целым днём: курьерские изъятия не
+      // зависят от ИИ-категоризации и должны попадать в отчёт, даже если по
+      // другой строке того же дня ИИ временно не ответил.
+      const processedKeys = [];
       await runWithConcurrency([...byDay.entries()], 5, async ([date, items]) => {
         try {
-          const syntheticText = `Расходы за ${date}:\n` + items.map((i) => `${i.comment} ${i.amount}`).join('\n');
-          const resp = await fetchWithTimeout('/api/parse-report', {
-            method: 'POST', headers: authHeaders,
-            body: JSON.stringify({
-              text: syntheticText,
-              revenueChannels: settings.revenueChannels || [], employees: employees || [],
-              expenseCategories: settings.expenseCategories || [],
-              suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
-              fixedExpenseNames: (settings.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
-              fallbackDate: date,
-              glossary: settings.reportGlossary || ''
-            })
-          }, 25000);
-          const data = await resp.json();
-          if (!resp.ok) { failedDays += 1; return; }
-          const report = (data.reports || [])[0];
-          // Не помечаем сырьё обработанным, если ИИ вернул неполную сумму. В таком
-          // случае следующий запуск повторит попытку, а в P&L не появится тихая
-          // недостача изъятий.
-          if (!isReconciledIikoReport(report, items)) { failedDays += 1; return; }
+          // Курьер — реальный расход из изъятия наличных с комментарием
+          // «курьер». Его нельзя пропускать из-за сбоя разбора закупок/прочего.
+          // Сохраняем каждую операцию отдельно с исходным ключом: две одинаковые
+          // суммы в один день остаются двумя разными изъятиями, а повторный sync
+          // не создаёт дубль.
+          const courierItems = items.filter((i) => /курьер/i.test(i.comment || ''));
+          const regularItems = items.filter((i) => !/курьер/i.test(i.comment || ''));
+          let report = { kitchenExpenses: [], otherExpenses: [], advances: [], salaryPayments: [] };
+
+          // Сохраняем курьера до обращения к ИИ. Если разбор прочих расходов
+          // этого же дня не сработал, курьер всё равно не потеряется.
+          if (courierItems.length > 0) {
+            const mk = date.slice(0, 7);
+            setMonths((prev) => {
+              const curMonth = prev[mk] || emptyMonth(settings, null);
+              const day = { ...getDay(curMonth, date) };
+              const existingCourier = day.courierAuto || [];
+              const newCourierPayments = courierItems
+                .filter((item) => !existingCourier.some((saved) => saved.sourceKey === keyOf(item)))
+                .map((item) => ({ id: uid(), amount: Number(item.amount) || 0, source: 'iiko', sourceKey: keyOf(item), comment: item.comment }));
+              if (newCourierPayments.length === 0) return prev;
+              day.courierAuto = [...existingCourier, ...newCourierPayments];
+              return { ...prev, [mk]: { ...curMonth, days: { ...curMonth.days, [date]: day } } };
+            });
+            addedCount += courierItems.length;
+            processedKeys.push(...courierItems.map(keyOf));
+          }
+
+          if (regularItems.length > 0) {
+            const syntheticText = `Расходы за ${date}:\n` + regularItems.map((i) => `${i.comment} ${i.amount}`).join('\n');
+            const resp = await fetchWithTimeout('/api/parse-report', {
+              method: 'POST', headers: authHeaders,
+              body: JSON.stringify({
+                text: syntheticText,
+                revenueChannels: settings.revenueChannels || [], employees: employees || [],
+                expenseCategories: settings.expenseCategories || [],
+                suppliers: (suppliers || []).map((s) => s.name).filter(Boolean),
+                fixedExpenseNames: (settings.fixedExpenses || []).filter((f) => f.group === 'fixed').map((f) => f.name).filter(Boolean),
+                fallbackDate: date,
+                glossary: settings.reportGlossary || ''
+              })
+            }, 25000);
+            const data = await resp.json();
+            if (!resp.ok) { failedDays += 1; return; }
+            report = (data.reports || [])[0];
+            // Не помечаем обычные расходы обработанными, если ИИ вернул неполную
+            // сумму. Курьерские строки выше при этом всё равно сохраняются.
+            if (!isReconciledIikoReport(report, regularItems)) { failedDays += 1; return; }
+          }
 
           const mk = date.slice(0, 7);
           const newKitchen = (report.kitchenExpenses || []).map((e) => ({ id: uid(), category: normalizeKitchenCategory(e.category), amount: e.amount, comment: e.comment || 'Из iiko (авто)', method: 'cash', source: 'iiko' }));
@@ -1622,17 +1654,6 @@ function Dashboard({ ctx, setPage }) {
             // независимо от того, откуда взялась гонка.
             day.kitchenExpenses = [...(day.kitchenExpenses || []), ...dedupeAgainstExisting(day.kitchenExpenses, newKitchen)];
             day.otherExpenses = [...(day.otherExpenses || []), ...dedupeAgainstExisting(day.otherExpenses, newOther)];
-            if (report.courier?.pay) {
-              // Раньше суммы курьера накапливались через "+=" прямо в day.courier —
-              // если одно и то же изъятие обрабатывалось дважды (гонка клиент/cron),
-              // сумма молча задваивалась и оставалась задвоенной навсегда. Теперь
-              // храним КАЖДОЕ распознанное изъятие курьера отдельной записью в
-              // массиве (source:'iiko') с той же дедупликацией по сумме, что и для
-              // остальных расходов — повторная обработка того же изъятия больше не
-              // может задвоить итог.
-              const newCourierPayment = [{ id: uid(), amount: Number(report.courier.pay), source: 'iiko' }];
-              day.courierAuto = [...(day.courierAuto || []), ...dedupeAgainstExisting(day.courierAuto, newCourierPayment)];
-            }
             // Изъятия вида "рома зп"/"леша аванс" — ИИ уже сопоставил имя с
             // конкретным сотрудником (employeeId). Добавляем как аванс этому
             // сотруднику за соответствующую половину месяца. Несопоставленные
@@ -1653,7 +1674,7 @@ function Dashboard({ ctx, setPage }) {
             return { ...prev, [mk]: { ...monthWithAdvances, days: { ...monthWithAdvances.days, [date]: day } } };
           });
           addedCount += newKitchen.length + newOther.length;
-          successfulDates.push(date);
+          processedKeys.push(...regularItems.map(keyOf));
         } catch (e) {
           failedDays += 1;
         }
@@ -1662,9 +1683,7 @@ function Dashboard({ ctx, setPage }) {
         setExpSyncError(`Не удалось обработать ${failedDays} из ${byDay.size} дней — попробуйте синхронизировать ещё раз, необработанные дни попытаются снова.`);
       }
 
-      const successfulDatesSet = new Set(successfulDates);
-      const actuallyProcessedKeys = newExpenses.filter((e) => successfulDatesSet.has(e.date)).map(keyOf);
-      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...actuallyProcessedKeys] }));
+      setSettings((prev) => ({ ...prev, iikoExpensesSyncedKeys: [...(prev.iikoExpensesSyncedKeys || []), ...processedKeys] }));
       logAudit({ what: 'Синхронизация расходов из iiko', amount: newExpenses.reduce((s, e) => s + e.amount, 0) });
       setExpSyncSummary({ added: addedCount, total: allExpenses.length, skipped: allExpenses.length - newExpenses.length });
     } catch (e) {
@@ -5370,7 +5389,7 @@ function SettingsPage({ ctx }) {
               некритичное предупреждение с точными цифрами, которое можно скрыть. Значение по умолчанию — 60%.
             </p>
           </Card>
-          <ExpenseReconciliationPanel months={months} setMonths={setMonths} session={session} />
+          <ExpenseReconciliationPanel months={months} setMonths={setMonths} settings={settings} session={session} />
         </>
       )}
 
@@ -5387,7 +5406,7 @@ function SettingsPage({ ctx }) {
 // ПОКАЗЫВАЕТ расхождения, ничего не удаляет и не меняет сам — после инцидента с
 // автосверкой на странице "День" (см. историю) массовые автоматические изменения
 // финансовых данных без явного разбора конкретного дня — плохая идея.
-function ExpenseReconciliationPanel({ months, setMonths, session }) {
+function ExpenseReconciliationPanel({ months, setMonths, settings, session }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
@@ -5425,9 +5444,14 @@ function ExpenseReconciliationPanel({ months, setMonths, session }) {
       const courierIssues = [];
       const issues = [];
       let checkedDays = 0;
+      const storedCourierByDate = new Map();
       for (const [mk, m] of Object.entries(months || {})) {
         for (const [ds, day] of Object.entries(m.days || {})) {
           if (ds < from || ds > to) continue;
+          const storedCourierAuto = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+          const storedCourierOld = (Number(day.courier?.pay) || 0) + (Number(day.courier?.fuel) || 0);
+          const storedCourierTotal = storedCourierAuto + storedCourierOld;
+          if (storedCourierTotal > 0) storedCourierByDate.set(ds, storedCourierTotal);
           const hasIikoStored = (day.kitchenExpenses || []).some((e) => e.source === 'iiko') || (day.otherExpenses || []).some((e) => e.source === 'iiko');
           const hasLive = liveByDate.has(ds);
           if (!hasIikoStored && !hasLive) continue; // обычный день без иикошных операций вообще — не о чем сообщать
@@ -5449,17 +5473,19 @@ function ExpenseReconciliationPanel({ months, setMonths, session }) {
             issues.push({ date: ds, orphaned, unsynced: pool });
           }
 
-          // Отдельная проверка курьера: сумма живых курьерских изъятий за день
-          // должна совпадать с тем, что сохранено (либо в новом формате
-          // courierAuto, либо ещё в старом day.courier.pay/fuel — для дней,
-          // которые ещё не были синхронизированы после перехода на новый формат).
-          const liveCourierSum = (courierLiveByDate.get(ds) || []).reduce((s, a) => s + a, 0);
-          const storedCourierAuto = (day.courierAuto || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-          const storedCourierOld = (Number(day.courier?.pay) || 0) + (Number(day.courier?.fuel) || 0);
-          const storedCourierTotal = storedCourierAuto + storedCourierOld;
-          if ((liveCourierSum > 0 || storedCourierTotal > 0) && Math.abs(liveCourierSum - storedCourierTotal) > 0.5) {
-            courierIssues.push({ date: ds, live: liveCourierSum, stored: storedCourierTotal });
-          }
+        }
+      }
+      // Важно: проверяем объединение дат. Раньше обход шёл только по уже
+      // созданным дням приложения, поэтому изъятие, например 11 сентября,
+      // не попадало даже в список расхождений, если в этом дне ещё не было
+      // других данных. Теперь такие даты тоже будут видны и исправляемы.
+      const courierDates = new Set([...courierLiveByDate.keys(), ...storedCourierByDate.keys()]);
+      for (const ds of courierDates) {
+        if (ds < from || ds > to) continue;
+        const liveCourierSum = (courierLiveByDate.get(ds) || []).reduce((s, a) => s + a, 0);
+        const storedCourierTotal = storedCourierByDate.get(ds) || 0;
+        if (Math.abs(liveCourierSum - storedCourierTotal) > 0.5) {
+          courierIssues.push({ date: ds, live: liveCourierSum, stored: storedCourierTotal });
         }
       }
       setResult({
@@ -5491,14 +5517,12 @@ function ExpenseReconciliationPanel({ months, setMonths, session }) {
       const next = { ...prev };
       for (const issue of result.courierIssues) {
         const mk = issue.date.slice(0, 7);
-        const month = next[mk];
-        if (!month) continue;
-        const day = month.days?.[issue.date];
-        if (!day) continue;
+        const month = next[mk] || emptyMonth(settings, null);
+        const day = { ...getDay(month, issue.date) };
         const newDay = {
           ...day,
           courier: { ...day.courier, pay: 0, fuel: 0 },
-          courierAuto: issue.live > 0 ? [{ id: uid(), amount: issue.live, source: 'iiko' }] : [],
+          courierAuto: issue.live > 0 ? [{ id: uid(), amount: issue.live, source: 'iiko', sourceKey: `reconciled::${issue.date}::${issue.live}` }] : [],
         };
         next[mk] = { ...month, days: { ...month.days, [issue.date]: newDay } };
       }
